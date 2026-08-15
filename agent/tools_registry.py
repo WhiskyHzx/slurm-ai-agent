@@ -219,6 +219,38 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "inspect_project",
+            "description": (
+                "只读扫描用户指定的项目目录，读取安全的小型文本文件，"
+                "帮助判断训练入口、依赖文件、运行命令、是否需要 GPU、"
+                "以及适合使用的作业脚本模板。"
+                "当用户说'分析当前项目''读取待提交作业文件''帮我根据代码生成提交脚本'时调用。"
+                "当用户要求训练/运行/提交某个项目或代码，但没有明确给出入口文件、运行命令、"
+                "资源参数、脚本内容时，也应先调用本工具分析项目。"
+                "本工具不会修改任何文件，也不会提交作业。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "要扫描的项目目录路径，如 '.'、'$HOME/my_project'、"
+                            "'/public/home/用户名/project'。默认当前目录。"
+                        ),
+                    },
+                    "max_files": {
+                        "type": "integer",
+                        "description": "最多读取多少个关键文本文件内容，默认 12。",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_templates",
             "description": (
                 "列出所有可用的作业脚本模板。"
@@ -349,6 +381,7 @@ TOOL_DESCRIPTIONS = {
     "get_qos": "查询 QoS 资源配额",
     "get_jobs_history": "查询历史作业（含已完成/失败）",
     "search_knowledge": "搜索平台知识库",
+    "inspect_project": "只读扫描项目文件并推断提交方案",
     "list_templates": "列出可用作业脚本模板",
     "generate_script": "根据模板生成 sbatch 脚本",
     "read_job_log": "读取作业的输出/错误日志文件",
@@ -438,6 +471,13 @@ class ToolExecutor:
                 if not query:
                     return "（search_knowledge 需要提供 query 参数）"
                 return search(query)
+
+            elif tool_name == "inspect_project":
+                from core.project_inspector import inspect_project
+                return inspect_project(
+                    path=arguments.get("path", "."),
+                    max_files=arguments.get("max_files", 12),
+                )
 
             elif tool_name == "list_templates":
                 from core.template_engine import format_templates_for_llm

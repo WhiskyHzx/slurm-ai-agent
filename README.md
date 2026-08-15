@@ -13,10 +13,11 @@ slurm-ai-agent/
 ├── agent/                      # 智能体核心
 │   ├── agent_loop.py           # Function Calling 主循环 + 终端交互
 │   ├── llm_provider.py         # LLM 调用封装（OpenAI 兼容接口）
-│   └── tools_registry.py       # 工具注册表（12 个工具定义 + 执行调度）
+│   └── tools_registry.py       # 工具注册表（13 个工具定义 + 执行调度）
 ├── core/                       # 平台 API 封装
 │   ├── slurm_client.py         # Slurm REST API 客户端（含 Token 管理）
 │   ├── knowledge_base.py       # 知识库检索（平台文档 RAG）
+│   ├── project_inspector.py    # 待读取项目的只读扫描与提交线索分析
 │   └── template_engine.py      # 作业脚本模板引擎
 ├── config/                     # 配置
 │   ├── settings.py             # 全局配置（分区、API 地址、LLM 参数等）
@@ -91,7 +92,7 @@ PYTHONPATH=. python agent/agent_loop.py -i
 - `reset` — 重置对话历史
 - `quit` / `exit` — 退出
 
-## 可用工具（12 个）
+## 可用工具（13 个）
 
 ### 作业管理
 
@@ -117,8 +118,29 @@ PYTHONPATH=. python agent/agent_loop.py -i
 | 工具 | 功能 | 说明 |
 |------|------|------|
 | `search_knowledge` | 搜索平台知识库 | 基于 17 篇平台文档的关键词检索 |
+| `inspect_project` | 只读扫描项目文件 | 读取安全文本文件，推断入口、依赖、运行命令和推荐模板 |
 | `list_templates` | 列出可用作业脚本模板 | 6 个模板（PyTorch/CPU/Jupyter/Job Array 等） |
 | `generate_script` | 根据模板生成 sbatch 脚本 | 支持自定义参数填充 |
+
+### 根据项目代码生成提交脚本
+
+可以让助手只读分析待提交项目目录，例如：
+
+```text
+请只读分析 /public/home/你的用户名/my_project，帮我生成训练作业脚本，先不要提交。
+```
+
+用户也可以直接说：
+
+```text
+帮我训练这个项目，先生成提交方案，不要直接提交。
+```
+
+当用户要求训练/运行/提交项目但没有明确给出入口文件、运行命令或资源参数时，助手会主动调用 `inspect_project` 分析当前目录或用户指定目录。
+
+助手会调用 `inspect_project` 扫描安全文本文件，默认跳过 `.env`、密钥、Token、数据集、模型权重、压缩包、大文件和输出目录。它会展示已读取文件、入口候选、依赖文件、推荐运行命令和推荐模板。
+
+生成脚本后，助手必须先展示脚本和提交参数，并等待用户明确确认后才调用 `submit_job` 提交。
 
 ## 分区说明
 
@@ -159,4 +181,5 @@ PYTHONPATH=. python agent/agent_loop.py -i
 - `.env` 和 `*.token` 文件已在 `.gitignore` 中排除
 - 所有 HTTP 请求统一封装在 `core/slurm_client.py` 中
 - 取消作业操作有二次确认机制
+- 项目扫描工具只读文件，默认跳过密钥、Token、数据集、模型权重和大文件
 - Token / API Key 绝不会被传入外部大模型消息内容
