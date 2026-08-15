@@ -1,0 +1,55 @@
+stages:
+  - build
+  - docker
+
+variables:
+  SITE_URL: "https://107.ustc.edu.cn/docs/"
+  DOCKER_TLS_CERTDIR: ""
+  IMAGE_SHA: '$REGISTRY_URL/$REGISTRY_IMAGE:$CI_COMMIT_SHA'
+  IMAGE_LATEST: '$REGISTRY_URL/$REGISTRY_IMAGE:latest'
+  IMAGE_CACHE: '$REGISTRY_URL/$REGISTRY_IMAGE:cache'
+  MKDOCS_OPTIMIZE_IMAGES: 'true'
+
+build:
+  stage: build
+  image: python:3.12-slim
+  tags:
+    - build-runner
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libcairo2-dev libfreetype6-dev libffi-dev libjpeg-dev libpng-dev libz-dev pngquant && rm -rf /var/lib/apt/lists/*
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt
+  script:
+    - mkdocs build --strict
+  artifacts:
+    paths:
+      - site/
+    expire_in: 1 day
+  only:
+    - main
+
+docker:
+  stage: docker
+  image: docker:27
+  tags:
+    - build-runner
+  services:
+    - name: docker:27-dind
+      alias: docker
+      variables:
+        HEALTHCHECK_TCP_PORT: "2375"
+  variables:
+    DOCKER_HOST: 'tcp://docker:2375'
+    DOCKER_TLS_CERTDIR: ''
+  before_script:
+    - docker login -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD" "$REGISTRY_URL"
+  script:
+    - docker pull "$IMAGE_CACHE" || true
+    - docker build --pull --cache-from "$IMAGE_CACHE" -f deploy/Dockerfile -t "$IMAGE_SHA" -t "$IMAGE_LATEST" -t "$IMAGE_CACHE" .
+    - docker push "$IMAGE_SHA"
+    - docker push "$IMAGE_LATEST"
+    - docker push "$IMAGE_CACHE"
+  needs:
+    - build
+  only:
+    - main

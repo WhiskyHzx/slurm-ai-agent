@@ -1,0 +1,50 @@
+[
+  {
+    "id": "pytorch_single_gpu",
+    "file": "pytorch_single_gpu.json",
+    "display_name": "PyTorch 单卡训练",
+    "description": "适用于课程深度学习作业、模型微调等单 GPU 训练任务。使用 conda 环境 + srun 启动训练脚本。",
+    "tags": ["pytorch", "gpu", "训练", "深度学习", "单卡"],
+    "difficulty": "beginner"
+  },
+  {
+    "id": "pytorch_ddp",
+    "file": "pytorch_ddp.json",
+    "display_name": "PyTorch 多卡训练 (DDP)",
+    "description": "适用于大数据集、大模型的多 GPU 分布式训练。使用 torchrun + DDP 策略。",
+    "tags": ["pytorch", "gpu", "多卡", "ddp", "分布式", "训练"],
+    "difficulty": "advanced"
+  },
+  {
+    "id": "jupyter_interactive",
+    "file": "jupyter_interactive.json",
+    "display_name": "Jupyter 交互式开发",
+    "description": "在计算节点上启动 Jupyter Notebook/Lab，通过端口转发在本地浏览器中使用。适合数据探索和调试。",
+    "tags": ["jupyter", "notebook", "交互式", "调试", "gpu"],
+    "difficulty": "beginner"
+  },
+  {
+    "id": "cpu_batch",
+    "file": "cpu_batch.json",
+    "display_name": "通用 CPU 批处理",
+    "description": "适用于数据处理、特征工程、参数扫描、编译等不需要 GPU 的批处理任务。",
+    "tags": ["cpu", "批处理", "数据处理", "脚本"],
+    "difficulty": "beginner"
+  },
+  {
+    "id": "job_array",
+    "file": "job_array.json",
+    "display_name": "多任务数组作业 (Job Array)",
+    "description": "适用于超参搜索、批量实验、参数扫描等需要运行多个相似任务的场景。每个子任务独立运行。",
+    "tags": ["array", "批量", "超参搜索", "并行", "gpu", "cpu"],
+    "difficulty": "advanced"
+  },
+  {
+    "id": "simple_script",
+    "file": "simple_script.json",
+    "display_name": "conda 环境 + 单脚本",
+    "description": "最简单的通用模板：激活指定 conda 环境后运行一条命令。适合'帮我跑个脚本'的快速需求。",
+    "tags": ["通用", "conda", "简单", "快速"],
+    "difficulty": "beginner"
+  }
+]

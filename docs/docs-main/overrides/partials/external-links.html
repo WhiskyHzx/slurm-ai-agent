@@ -1,0 +1,28 @@
+{% set links = [
+  {
+    "title": "返回平台",
+    "url": "https://107.ustc.edu.cn/dashboard",
+    "class": "docs-platform-link"
+  },
+  {
+    "title": "文档仓库",
+    "url": "https://git.ustc.edu.cn/107/docs",
+    "class": "docs-repository-link"
+  }
+] %}
+
+{% for link in links %}
+  {% if docs_external_links_variant == "tabs" %}
+    <li class="md-tabs__item docs-external-item {{ link.class }}">
+      <a href="{{ link.url }}" class="md-tabs__link docs-external-link">
+        {{ link.title }}
+      </a>
+    </li>
+  {% else %}
+    <li class="md-nav__item docs-external-item {{ link.class }}">
+      <a href="{{ link.url }}" class="md-nav__link docs-external-link">
+        <span class="md-ellipsis">{{ link.title }}</span>
+      </a>
+    </li>
+  {% endif %}
+{% endfor %}

@@ -1,0 +1,73 @@
+{
+  "id": "jupyter_interactive",
+  "display_name": "Jupyter 交互式开发",
+  "description": "在计算节点上启动 Jupyter Notebook/Lab，适合数据探索和代码调试。",
+  "parameters": {
+    "job_name": {
+      "type": "string",
+      "label": "作业名称",
+      "default": "jupyter",
+      "description": "在队列中显示的作业名"
+    },
+    "partition": {
+      "type": "choice",
+      "label": "分区",
+      "choices": ["P107-RTX5090", "P107-A100", "CPU-6530", "CPU-8358P"],
+      "default": "P107-RTX5090",
+      "description": "计算分区"
+    },
+    "gpu_count": {
+      "type": "int",
+      "label": "GPU 数量",
+      "default": 1,
+      "min": 0,
+      "max": 4,
+      "description": "申请的 GPU 卡数（0 表示纯 CPU）"
+    },
+    "cpu_count": {
+      "type": "int",
+      "label": "CPU 核数",
+      "default": 4,
+      "min": 1,
+      "max": 16,
+      "description": "申请的 CPU 核数"
+    },
+    "time_hours": {
+      "type": "int",
+      "label": "运行时间（小时）",
+      "default": 4,
+      "min": 1,
+      "max": 24,
+      "description": "交互式会话最长保持时间"
+    },
+    "conda_env": {
+      "type": "string",
+      "label": "conda 环境名",
+      "default": "dl",
+      "description": "已配置好的 conda 环境名称"
+    },
+    "port": {
+      "type": "int",
+      "label": "Jupyter 端口",
+      "default": 8888,
+      "min": 8000,
+      "max": 9999,
+      "description": "Jupyter 服务监听端口"
+    },
+    "use_lab": {
+      "type": "choice",
+      "label": "使用 JupyterLab",
+      "choices": ["yes", "no"],
+      "default": "yes",
+      "description": "yes 启动 JupyterLab，no 启动经典 Notebook"
+    },
+    "work_dir": {
+      "type": "string",
+      "label": "工作目录",
+      "default": "$HOME",
+      "description": "Notebook 的根目录"
+    }
+  },
+  "script_template": "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --partition={{ partition }}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n{% if gpu_count > 0 %}#SBATCH --gpus={{ gpu_count }}\n{% endif %}#SBATCH --cpus-per-task={{ cpu_count }}\n#SBATCH --time={{ time_hours }}:00:00\n#SBATCH --output=logs/{{ job_name }}_%j.out\n#SBATCH --error=logs/{{ job_name }}_%j.err\n\n# 进入工作目录\ncd {{ work_dir }} || { echo \"目录 {{ work_dir }} 不存在\"; exit 1; }\n\n# 创建日志目录\nmkdir -p logs\n\n# 激活 conda 环境\nsource $(conda info --base)/etc/profile.d/conda.sh\nconda activate {{ conda_env }} || { echo \"conda 环境 {{ conda_env }} 激活失败\"; exit 1; }\n\n# 安装 jupyter（如果未安装）\npip install jupyter jupyterlab 2>/dev/null\n\necho \"==========================================\"\necho \"作业 ID: $SLURM_JOB_ID\"\necho \"节点: $(hostname)\"\necho \"端口: {{ port }}\"\necho \"开始时间: $(date)\"\necho \"==========================================\"\n\n{% if use_lab == \"yes\" %}# 启动 JupyterLab\njupyter lab --no-browser --port={{ port }} --ip=0.0.0.0\n{% else %}# 启动 Jupyter Notebook\njupyter notebook --no-browser --port={{ port }} --ip=0.0.0.0\n{% endif %}\n\necho \"==========================================\"\necho \"Jupyter 已停止: $(date)\"\necho \"==========================================\"\n",
+  "notes": "启动后，需要在本地终端执行端口转发：ssh -L {{ port }}:localhost:{{ port }} 你的用户名@107.ustc.edu.cn。然后在浏览器打开 http://localhost:{{ port }}。"
+}

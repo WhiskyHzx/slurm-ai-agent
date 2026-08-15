@@ -1,0 +1,69 @@
+{
+  "id": "job_array",
+  "display_name": "多任务数组作业 (Job Array)",
+  "description": "适用于超参搜索、批量实验等需要运行多个相似任务的场景。每个子任务使用 $SLURM_ARRAY_TASK_ID 区分。",
+  "parameters": {
+    "job_name": {
+      "type": "string",
+      "label": "作业名称",
+      "default": "array_task",
+      "description": "在队列中显示的作业名"
+    },
+    "partition": {
+      "type": "choice",
+      "label": "分区",
+      "choices": ["P107-RTX5090", "P107-A100", "CPU-6530", "CPU-8358P"],
+      "default": "P107-RTX5090",
+      "description": "计算分区"
+    },
+    "array_range": {
+      "type": "string",
+      "label": "数组范围",
+      "default": "1-10",
+      "description": "任务 ID 范围，如 1-10 或 1,3,5,7"
+    },
+    "gpu_count": {
+      "type": "int",
+      "label": "GPU 数量（每个子任务）",
+      "default": 1,
+      "min": 0,
+      "max": 4,
+      "description": "每个子任务申请的 GPU 卡数"
+    },
+    "cpu_count": {
+      "type": "int",
+      "label": "CPU 核数（每个子任务）",
+      "default": 4,
+      "min": 1,
+      "max": 16,
+      "description": "每个子任务申请的 CPU 核数"
+    },
+    "time_hours": {
+      "type": "int",
+      "label": "运行时间（小时）",
+      "default": 4,
+      "min": 1,
+      "max": 72,
+      "description": "每个子任务的最长运行时间"
+    },
+    "conda_env": {
+      "type": "string",
+      "label": "conda 环境名",
+      "default": "dl",
+      "description": "已配置好的 conda 环境名称"
+    },
+    "command": {
+      "type": "string",
+      "label": "运行命令",
+      "default": "python train.py --lr 0.001 --task-id $SLURM_ARRAY_TASK_ID",
+      "description": "要执行的命令，可用 $SLURM_ARRAY_TASK_ID 获取当前子任务编号"
+    },
+    "work_dir": {
+      "type": "string",
+      "label": "工作目录",
+      "default": "$HOME/projects/dl",
+      "description": "代码和数据所在目录"
+    }
+  },
+  "script_template": "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --partition={{ partition }}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --array={{ array_range }}\n{% if gpu_count > 0 %}#SBATCH --gpus={{ gpu_count }}\n{% endif %}#SBATCH --cpus-per-task={{ cpu_count }}\n#SBATCH --time={{ time_hours }}:00:00\n#SBATCH --output=logs/{{ job_name }}_%A_%a.out\n#SBATCH --error=logs/{{ job_name }}_%A_%a.err\n\n# 进入工作目录\ncd {{ work_dir }} || { echo \"目录 {{ work_dir }} 不存在\"; exit 1; }\n\n# 创建日志目录\nmkdir -p logs\n\n# 激活 conda 环境\nsource $(conda info --base)/etc/profile.d/conda.sh\nconda activate {{ conda_env }} || { echo \"conda 环境 {{ conda_env }} 激活失败\"; exit 1; }\n\n# 记录环境信息\necho \"==========================================\"\necho \"作业 ID: $SLURM_ARRAY_JOB_ID\"\necho \"子任务 ID: $SLURM_ARRAY_TASK_ID\"\necho \"节点: $(hostname)\"\necho \"开始时间: $(date)\"\necho \"==========================================\"\n\n# 执行命令（$SLURM_ARRAY_TASK_ID 可用于区分不同子任务）\n{{ command }}\n\necho \"==========================================\"\necho \"子任务 $SLURM_ARRAY_TASK_ID 结束: $(date)\"\necho \"==========================================\"\n"
+}

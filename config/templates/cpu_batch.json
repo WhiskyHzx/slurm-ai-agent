@@ -1,0 +1,55 @@
+{
+  "id": "cpu_batch",
+  "display_name": "通用 CPU 批处理",
+  "description": "适用于数据处理、特征工程、编译等不需要 GPU 的批处理任务。",
+  "parameters": {
+    "job_name": {
+      "type": "string",
+      "label": "作业名称",
+      "default": "cpu_task",
+      "description": "在队列中显示的作业名"
+    },
+    "partition": {
+      "type": "choice",
+      "label": "分区",
+      "choices": ["CPU-6530", "CPU-8358P"],
+      "default": "CPU-6530",
+      "description": "CPU 计算分区"
+    },
+    "cpu_count": {
+      "type": "int",
+      "label": "CPU 核数",
+      "default": 4,
+      "min": 1,
+      "max": 16,
+      "description": "申请的 CPU 核数"
+    },
+    "time_hours": {
+      "type": "int",
+      "label": "运行时间（小时）",
+      "default": 4,
+      "min": 1,
+      "max": 72,
+      "description": "作业最长运行时间"
+    },
+    "conda_env": {
+      "type": "string",
+      "label": "conda 环境名",
+      "default": "base",
+      "description": "已配置好的 conda 环境名称"
+    },
+    "command": {
+      "type": "string",
+      "label": "运行命令",
+      "default": "python script.py",
+      "description": "要执行的命令（可以是 Python 脚本、shell 命令等）"
+    },
+    "work_dir": {
+      "type": "string",
+      "label": "工作目录",
+      "default": "$HOME",
+      "description": "代码和数据所在目录"
+    }
+  },
+  "script_template": "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --partition={{ partition }}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task={{ cpu_count }}\n#SBATCH --time={{ time_hours }}:00:00\n#SBATCH --output=logs/{{ job_name }}_%j.out\n#SBATCH --error=logs/{{ job_name }}_%j.err\n\n# 进入工作目录\ncd {{ work_dir }} || { echo \"目录 {{ work_dir }} 不存在\"; exit 1; }\n\n# 创建日志目录\nmkdir -p logs\n\n# 激活 conda 环境\nsource $(conda info --base)/etc/profile.d/conda.sh\nconda activate {{ conda_env }}\n\n# 记录环境信息\necho \"==========================================\"\necho \"作业 ID: $SLURM_JOB_ID\"\necho \"节点: $(hostname)\"\necho \"CPU 核数: {{ cpu_count }}\"\necho \"开始时间: $(date)\"\necho \"==========================================\"\n\n# 执行用户命令\n{{ command }}\n\necho \"==========================================\"\necho \"结束时间: $(date)\"\necho \"==========================================\"\n"
+}

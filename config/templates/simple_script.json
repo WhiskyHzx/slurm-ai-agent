@@ -1,0 +1,63 @@
+{
+  "id": "simple_script",
+  "display_name": "conda 环境 + 单脚本",
+  "description": "最简单的通用模板：激活指定 conda 环境后运行一条命令。适合快速提交。",
+  "parameters": {
+    "job_name": {
+      "type": "string",
+      "label": "作业名称",
+      "default": "my_job",
+      "description": "在队列中显示的作业名"
+    },
+    "partition": {
+      "type": "choice",
+      "label": "分区",
+      "choices": ["P107-RTX5090", "P107-A100", "GPU-RTX5090", "GPU-A100", "CPU-6530", "CPU-8358P", "Students"],
+      "default": "P107-RTX5090",
+      "description": "计算分区"
+    },
+    "gpu_count": {
+      "type": "int",
+      "label": "GPU 数量",
+      "default": 1,
+      "min": 0,
+      "max": 4,
+      "description": "申请的 GPU 卡数（0 表示纯 CPU 任务）"
+    },
+    "cpu_count": {
+      "type": "int",
+      "label": "CPU 核数",
+      "default": 4,
+      "min": 1,
+      "max": 16,
+      "description": "申请的 CPU 核数"
+    },
+    "time_hours": {
+      "type": "int",
+      "label": "运行时间（小时）",
+      "default": 4,
+      "min": 1,
+      "max": 72,
+      "description": "作业最长运行时间"
+    },
+    "conda_env": {
+      "type": "string",
+      "label": "conda 环境名",
+      "default": "base",
+      "description": "要激活的 conda 环境名称"
+    },
+    "command": {
+      "type": "string",
+      "label": "运行命令",
+      "default": "echo 'Hello, Slurm!'",
+      "description": "要执行的命令或脚本"
+    },
+    "work_dir": {
+      "type": "string",
+      "label": "工作目录",
+      "default": "$HOME",
+      "description": "命令执行时的工作目录"
+    }
+  },
+  "script_template": "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --partition={{ partition }}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n{% if gpu_count > 0 %}#SBATCH --gpus={{ gpu_count }}\n{% endif %}#SBATCH --cpus-per-task={{ cpu_count }}\n#SBATCH --time={{ time_hours }}:00:00\n#SBATCH --output=logs/{{ job_name }}_%j.out\n#SBATCH --error=logs/{{ job_name }}_%j.err\n\ncd {{ work_dir }} || { echo \"目录 {{ work_dir }} 不存在\"; exit 1; }\nmkdir -p logs\n\nsource $(conda info --base)/etc/profile.d/conda.sh\nconda activate {{ conda_env }}\n\necho \"作业 {{ job_name }} 开始于 $(date)，节点: $(hostname)\"\n\n{{ command }}\n\necho \"作业 {{ job_name }} 结束于 $(date)\"\n"
+}
