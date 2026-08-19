@@ -4,11 +4,34 @@ config/settings.py — 项目全局配置。
 所有可调参数集中管理，避免散落在各模块中。
 """
 
+import os
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """轻量加载项目根目录 .env，避免额外引入 python-dotenv 依赖。"""
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+_load_dotenv()
+
 # ---------------------------------------------------------------------------
 # 算力平台 REST API
 # ---------------------------------------------------------------------------
-BASE_URL = "http://107.ustc.edu.cn:6820"
-API_PREFIX = "/slurm/v0.0.41"
+BASE_URL = os.environ.get("SLURM_API_BASE_URL", "http://107.ustc.edu.cn:6820")
+API_PREFIX = os.environ.get("SLURM_API_PREFIX", "/slurm/v0.0.41")
+SLURM_API_PROXY = os.environ.get("SLURM_API_PROXY", "")
 
 # ---------------------------------------------------------------------------
 # Token
@@ -51,9 +74,9 @@ REQUEST_TIMEOUT = 30  # 秒
 # 大模型 (LLM) 配置
 # ---------------------------------------------------------------------------
 # API Key 从环境变量 LLM_API_KEY 读取，绝不硬编码
-LLM_BASE_URL = "https://api.llm.ustc.edu.cn/v1"
-LLM_MODEL = "deepseek-v4-pro"           # 主力模型（Function Calling）
-LLM_FALLBACK_MODEL = "deepseek-v4-flash"  # 备用模型（快速/降级）
-LLM_TEMPERATURE = 0.3                    # 工具调用场景建议低温度
-LLM_MAX_TOKENS = 2048
-LLM_MAX_TOOL_TURNS = 10                  # 单轮对话最多工具调用轮数，防止死循环
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.llm.ustc.edu.cn/v1")
+LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")        # 主力模型（Function Calling）
+LLM_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "deepseek-v4-flash")  # 备用模型（快速/降级）
+LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.3"))                    # 工具调用场景建议低温度
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "2048"))
+LLM_MAX_TOOL_TURNS = int(os.environ.get("LLM_MAX_TOOL_TURNS", "10"))                  # 单轮对话最多工具调用轮数，防止死循环

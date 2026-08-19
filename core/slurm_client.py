@@ -19,6 +19,15 @@ from typing import Optional, Dict, Any
 
 import requests
 
+from config.settings import (
+    BASE_URL,
+    API_PREFIX as CONFIG_API_PREFIX,
+    AUTO_REFRESH_TOKEN,
+    DEFAULT_TOKEN_LIFESPAN as CONFIG_DEFAULT_TOKEN_LIFESPAN,
+    REQUEST_TIMEOUT,
+    SLURM_API_PROXY,
+)
+
 # ---------------------------------------------------------------------------
 # 日志
 # ---------------------------------------------------------------------------
@@ -27,9 +36,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # 常量（可通过 config/settings.py 覆盖）
 # ---------------------------------------------------------------------------
-DEFAULT_BASE_URL = "http://107.ustc.edu.cn:6820"
-API_PREFIX = "/slurm/v0.0.41"
-DEFAULT_TOKEN_LIFESPAN = 86400  # 默认 1 天
+DEFAULT_BASE_URL = BASE_URL
+API_PREFIX = CONFIG_API_PREFIX
+DEFAULT_TOKEN_LIFESPAN = CONFIG_DEFAULT_TOKEN_LIFESPAN  # 默认 1 天
 
 # ---------------------------------------------------------------------------
 # Token 管理
@@ -105,13 +114,18 @@ class SlurmClient:
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
-        auto_refresh_token: bool = True,
+        auto_refresh_token: bool = AUTO_REFRESH_TOKEN,
         token_lifespan: int = DEFAULT_TOKEN_LIFESPAN,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_prefix = API_PREFIX
         self.auto_refresh = auto_refresh_token
         self.token_lifespan = token_lifespan
+        self.proxies = (
+            {"http": SLURM_API_PROXY, "https": SLURM_API_PROXY}
+            if SLURM_API_PROXY
+            else None
+        )
 
     # ---- 内部方法 ----
 
@@ -122,8 +136,10 @@ class SlurmClient:
 
     def _headers(self) -> Dict[str, str]:
         """构造带 Bearer Token 的请求头。"""
+        token = self._token
         return {
-            "Authorization": f"Bearer {self._token}",
+            # 107 的 slurmrestd 实测不能同时接收 Bearer 和 X-SLURM-USER-TOKEN。
+            "X-SLURM-USER-TOKEN": token,
             "Content-Type": "application/json",
         }
 
@@ -178,7 +194,8 @@ class SlurmClient:
                 headers=self._headers(),
                 json=json_data,
                 params=params,
-                timeout=30,
+                proxies=self.proxies,
+                timeout=REQUEST_TIMEOUT,
             )
 
             # Token 过期自动刷新（仅尝试一次）
@@ -191,7 +208,8 @@ class SlurmClient:
                     headers=self._headers(),
                     json=json_data,
                     params=params,
-                    timeout=30,
+                    proxies=self.proxies,
+                    timeout=REQUEST_TIMEOUT,
                 )
 
             # 检查 HTTP 状态码

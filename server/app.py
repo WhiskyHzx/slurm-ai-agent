@@ -23,6 +23,8 @@ from pydantic import BaseModel
 from agent.agent_loop import AgentLoop, SYSTEM_PROMPT
 from agent.llm_provider import LLMProvider
 from agent.tools_registry import TOOL_DEFINITIONS, ToolExecutor
+from core.local_env import find_existing_socks_proxy, load_dotenv, set_dotenv_value
+from core.token_manager import get_token_status, refresh_token_via_ssh, update_token
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,10 @@ class ChatRequest(BaseModel):
 
 class ResetResponse(BaseModel):
     status: str
+
+
+class TokenUpdateRequest(BaseModel):
+    token: str
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +195,96 @@ async def reset():
     else:
         agent = AgentLoop()
     return ResetResponse(status="ok")
+
+
+@app.get("/api/token/status")
+async def token_status():
+    """Return local SLURM_JWT status without exposing the token."""
+    status = get_token_status()
+    return {
+        "present": status.present,
+        "preview": status.preview,
+        "expires_at": status.expires_at,
+        "seconds_remaining": status.seconds_remaining,
+        "expired": status.expired,
+        "refresh_command": status.refresh_command,
+        "ssh_host": status.ssh_host,
+    }
+
+
+@app.post("/api/token/update")
+async def token_update(req: TokenUpdateRequest):
+    """
+    Update local SLURM_JWT from a user-provided token.
+
+    Manual fallback for users who cannot run remote ssh commands from the local
+    app process.
+    """
+    try:
+        status = update_token(req.token)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    return {
+        "status": "ok",
+        "present": status.present,
+        "preview": status.preview,
+        "expires_at": status.expires_at,
+        "seconds_remaining": status.seconds_remaining,
+        "expired": status.expired,
+    }
+
+
+@app.post("/api/token/refresh")
+async def token_refresh():
+    """
+    Refresh SLURM_JWT by running `scontrol token ...` over system ssh.
+
+    This does not implement SSH login. It succeeds when the user's local ssh
+    setup can already run non-interactive remote commands.
+    """
+    try:
+        status = refresh_token_via_ssh()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+    return {
+        "status": "ok",
+        "present": status.present,
+        "preview": status.preview,
+        "expires_at": status.expires_at,
+        "seconds_remaining": status.seconds_remaining,
+        "expired": status.expired,
+        "ssh_host": status.ssh_host,
+    }
+
+
+@app.post("/api/proxy/refresh")
+async def proxy_refresh():
+    """
+    Re-scan existing VS Code Remote-SSH SOCKS proxy and store it in .env.
+
+    This does not start SSH. It only reuses a proxy from an already-connected
+    VS Code Remote-SSH session or a user-started `ssh -D` SOCKS tunnel.
+    """
+    env_values = load_dotenv()
+    proxy = find_existing_socks_proxy(env_values.get("SLURM_API_PROXY", ""))
+    if not proxy:
+        return JSONResponse(
+            {
+                "error": (
+                    "未找到可用的 VS Code Remote-SSH SOCKS 端口。"
+                    "请先在 VS Code 连接 107.ustc.edu.cn。"
+                )
+            },
+            status_code=404,
+        )
+
+    changed = proxy != env_values.get("SLURM_API_PROXY", "")
+    if changed:
+        set_dotenv_value("SLURM_API_PROXY", proxy)
+
+    return {"status": "ok", "proxy": proxy, "changed": changed}
 
 
 # ---------------------------------------------------------------------------

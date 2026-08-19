@@ -133,7 +133,6 @@
     font-size: 14px;
     line-height: 1.6;
     word-break: break-word;
-    white-space: pre-wrap;
   }
 
   .message.user .bubble {
@@ -161,9 +160,68 @@
     padding: 10px;
     border-radius: 8px;
     overflow-x: auto;
-    margin: 6px 0;
+    margin: 8px 0;
     font-size: 13px;
+    white-space: pre;
   }
+
+  .bubble pre code {
+    background: none;
+    padding: 0;
+    font-family: "SF Mono", "Fira Code", monospace;
+  }
+
+  .bubble table {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 13px;
+    width: 100%;
+  }
+
+  .bubble th, .bubble td {
+    border: 1px solid rgba(0,0,0,0.15);
+    padding: 6px 10px;
+    text-align: left;
+  }
+
+  .bubble th {
+    background: rgba(0,0,0,0.06);
+    font-weight: 600;
+  }
+
+  .bubble ul, .bubble ol {
+    margin: 6px 0;
+    padding-left: 22px;
+  }
+
+  .bubble li {
+    margin: 3px 0;
+  }
+
+  .bubble h1, .bubble h2, .bubble h3, .bubble h4 {
+    margin: 10px 0 6px;
+    font-weight: 600;
+  }
+  .bubble h1 { font-size: 20px; }
+  .bubble h2 { font-size: 18px; }
+  .bubble h3 { font-size: 16px; }
+  .bubble h4 { font-size: 15px; }
+
+  .bubble hr {
+    border: none;
+    border-top: 1px solid rgba(0,0,0,0.1);
+    margin: 10px 0;
+  }
+
+  .bubble blockquote {
+    border-left: 3px solid var(--primary);
+    margin: 8px 0;
+    padding: 4px 12px;
+    color: #475569;
+    background: rgba(0,0,0,0.03);
+  }
+
+  .bubble strong { font-weight: 600; }
 
   /* Tool call card */
   .tool-card {
@@ -222,6 +280,15 @@
   .error-banner {
     background: var(--error-bg);
     color: var(--error-text);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin: 4px 0;
+  }
+
+  .notice-banner {
+    background: #ecfdf5;
+    color: #047857;
     padding: 10px 14px;
     border-radius: 8px;
     font-size: 13px;
@@ -318,6 +385,7 @@
   <div class="header">
     <h1><span class="icon">🤖</span> 算力平台智能助手</h1>
     <div class="header-actions">
+      <button class="btn" onclick="refreshKey()" title="扫描 VS Code SSH 端口并更新 SLURM_JWT">🔑 刷新 Key</button>
       <button class="btn" onclick="resetChat()" title="重置对话">🔄 新对话</button>
     </div>
   </div>
@@ -351,6 +419,7 @@ const userInput = document.getElementById('userInput');
 const sendBtn = document.getElementById('sendBtn');
 let isProcessing = false;
 let currentAiBubble = null;    // 当前正在流式输出的 AI 气泡
+let currentAiMarkdown = '';    // 当前流式输出的 AI 原始 markdown 文本
 let currentToolCard = null;    // 当前工具调用卡片
 
 // ---- Helpers ----
@@ -408,6 +477,15 @@ function addErrorBanner(text) {
   scrollToBottom();
 }
 
+function addNoticeBanner(text) {
+  clearEmptyHint();
+  const div = document.createElement('div');
+  div.className = 'notice-banner';
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  scrollToBottom();
+}
+
 // ---- Tool Card ----
 
 function createToolCard(toolName) {
@@ -440,6 +518,177 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// ---- Markdown Rendering ----
+// 一个轻量、自包含、无外部依赖的 markdown 渲染器。
+// 支持：代码块、行内代码、标题、加粗、斜体、链接、表格、无序/有序列表、分隔线、引用、段落。
+
+
+// 行内渲染：顺序很重要 —— 先转义特殊字符，再生成标签，最后还原行内代码占位。
+function renderInline(text) {
+  const codeSpans = [];
+  // 1. 保护行内代码（占位符），避免后续转义影响代码内容
+  text = text.replace(/`([^`]+)`/g, (m, c) => {
+    codeSpans.push(c);
+    return '\u0000' + (codeSpans.length - 1) + '\u0000';
+  });
+  // 2. 先转义剩余原文中的 HTML 特殊字符（此时还没有生成任何标签）
+  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // 3. 再生成加粗 / 斜体 / 链接标签（对不包含特殊符号的内容安全）
+  text = text
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // 4. 还原行内代码占位
+  text = text.replace(/\u0000(\d+)\u0000/g, (m, i) => '<code>' + escapeHtml(codeSpans[+i]) + '</code>');
+  return text;
+}
+
+function renderTable(lines, i) {
+  // lines[i] 是表头行，lines[i+1] 是分隔行
+  const header = lines[i].trim().replace(/^\||\|$/g, '').split('|').map(s => s.trim());
+  const rows = [];
+  let j = i + 2;
+  while (j < lines.length && lines[j].trim().includes('|')) {
+    const cells = lines[j].trim().replace(/^\||\|$/g, '').split('|').map(s => s.trim());
+    rows.push(cells);
+    j++;
+  }
+  let html = '<table><thead><tr>';
+  for (const h of header) html += '<th>' + renderInline(h) + '</th>';
+  html += '</tr></thead><tbody>';
+  for (const row of rows) {
+    html += '<tr>';
+    for (const cell of row) html += '<td>' + renderInline(cell) + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  return { html, nextIndex: j };
+}
+
+function isTableSeparator(line) {
+  // 类似 | --- | --- |
+  const t = line.trim();
+  if (!t.includes('|')) return false;
+  const parts = t.replace(/^\||\|$/g, '').split('|');
+  return parts.every(p => /^:?-+:?$/.test(p.trim()));
+}
+
+function renderMarkdown(md) {
+  if (!md) return '';
+  const lines = md.split('\n');
+  let html = '';
+  let i = 0;
+  let inCodeBlock = false;
+  let codeBuf = [];
+  let listItems = [];
+
+  const closeLists = () => {
+    if (listItems.length) {
+      const isOl = listItems[0].ordered;
+      const tag = isOl ? 'ol' : 'ul';
+      html += '<' + tag + '>';
+      for (const item of listItems) html += '<li>' + renderInline(item.text) + '</li>';
+      html += '</' + tag + '>';
+      listItems = [];
+    }
+  };
+
+  while (i < lines.length) {
+    const raw = lines[i];
+    const line = raw.trim();
+
+    // 代码块
+    if (/^```/.test(line)) {
+      if (!inCodeBlock) {
+        inCodeBlock = true;
+        codeBuf = [];
+      } else {
+        inCodeBlock = false;
+        html += '<pre><code>' + escapeHtml(codeBuf.join('\n')) + '</code></pre>';
+      }
+      i++;
+      continue;
+    }
+    if (inCodeBlock) {
+      codeBuf.push(raw);
+      i++;
+      continue;
+    }
+
+    // 空行：关闭列表
+    if (line === '') {
+      closeLists();
+      i++;
+      continue;
+    }
+
+    // 表格
+    if (line.includes('|') && isTableSeparator(lines[i + 1] || '')) {
+      closeLists();
+      const res = renderTable(lines, i);
+      html += res.html;
+      i = res.nextIndex;
+      continue;
+    }
+
+    // 标题
+    const hm = line.match(/^(#{1,6})\s+(.*)/);
+    if (hm) {
+      closeLists();
+      const lvl = hm[1].length;
+      html += `<h${lvl}>${renderInline(hm[2])}</h${lvl}>`;
+      i++;
+      continue;
+    }
+
+    // 分隔线
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) {
+      closeLists();
+      html += '<hr>';
+      i++;
+      continue;
+    }
+
+    // 引用
+    if (line.startsWith('>')) {
+      closeLists();
+      html += '<blockquote>' + renderInline(line.replace(/^>\s?/, '')) + '</blockquote>';
+      i++;
+      continue;
+    }
+
+    // 无序列表
+    const ulm = line.match(/^[-*+]\s+(.*)/);
+    if (ulm) {
+      listItems.push({ ordered: false, text: ulm[1] });
+      i++;
+      continue;
+    }
+
+    // 有序列表（只有当序号行后面有实际内容时才识别为列表，
+    // 纯数字行如 "2026" 不做列表处理，走普通段落）
+    const olm = line.match(/^(\d+)[.)]\s+(.*)/);
+    if (olm && olm[2].trim() !== '') {
+      listItems.push({ ordered: true, text: olm[2] });
+      i++;
+      continue;
+    }
+
+    // 普通段落
+    closeLists();
+    html += '<p>' + renderInline(line) + '</p>';
+    i++;
+  }
+
+  // 处理结尾未闭合代码块（不丢内容）
+  if (inCodeBlock) {
+    html += '<pre><code>' + escapeHtml(codeBuf.join('\n')) + '</code></pre>';
+  }
+  closeLists();
+
+  return html;
+}
+
 // ---- SSE Chat ----
 
 async function sendMessage() {
@@ -455,6 +704,7 @@ async function sendMessage() {
   addTypingIndicator();
 
   currentAiBubble = null;
+  currentAiMarkdown = '';
   currentToolCard = null;
 
   try {
@@ -528,7 +778,9 @@ function handleSSEEvent(event) {
       if (!currentAiBubble) {
         currentAiBubble = createAiBubble();
       }
-      currentAiBubble.textContent += event.content;
+      currentAiMarkdown += event.content;
+      // 流式渲染 markdown，边收边渲染（最终格式完整）
+      currentAiBubble.innerHTML = renderMarkdown(currentAiMarkdown);
       scrollToBottom();
       break;
 
@@ -558,9 +810,51 @@ async function resetChat() {
       </div>
     `;
     currentAiBubble = null;
+    currentAiMarkdown = '';
     currentToolCard = null;
   } catch (e) {
     addErrorBanner('重置失败: ' + e.message);
+  }
+}
+
+// ---- Token Refresh ----
+
+function formatTokenRemaining(seconds) {
+  if (seconds === null || seconds === undefined) return '未知';
+  if (seconds <= 0) return '已过期';
+  const hours = seconds / 3600;
+  if (hours >= 1) return hours.toFixed(1) + ' 小时';
+  return Math.ceil(seconds / 60) + ' 分钟';
+}
+
+async function refreshKey() {
+  if (isProcessing) return;
+
+  try {
+    const proxyResp = await fetch('/api/proxy/refresh', { method: 'POST' });
+    const proxyData = await proxyResp.json();
+    if (!proxyResp.ok) {
+      addErrorBanner(proxyData.error || '未找到可用的 SSH SOCKS 端口');
+      return;
+    }
+
+    addNoticeBanner(`已扫描代理：${proxyData.proxy}，正在通过 SSH 生成新 Key...`);
+
+    const refreshResp = await fetch('/api/token/refresh', { method: 'POST' });
+    const refreshData = await refreshResp.json();
+    if (!refreshResp.ok) {
+      addErrorBanner(
+        (refreshData.error || 'Key 刷新失败') +
+        '。请确认本机 ssh 可以非交互执行：ssh 107.ustc.edu.cn "scontrol token lifespan=86400"'
+      );
+      return;
+    }
+
+    addNoticeBanner(
+      `Key 已更新：${refreshData.preview}，剩余 ${formatTokenRemaining(refreshData.seconds_remaining)}。`
+    );
+  } catch (e) {
+    addErrorBanner('刷新 Key 失败: ' + e.message);
   }
 }
 </script>
