@@ -1,162 +1,153 @@
-# 算力平台答疑与作业脚本生成智能体
+# Slurm AI Agent
 
-"一〇七杯"算力与智能体开发大赛 · 智能体开发类命题
+面向 USTC 107 算力平台的 Slurm 智能助手。项目运行在算力平台登录节点上，提供 Web 控制台和智能体聊天窗口，用于查看资源/作业状态、创建计算项目、上传文件、生成提交前建议报告，并在用户确认后继续准备 Slurm 作业提交。
 
-基于大模型 Function Calling 的算力平台智能助手，支持自然语言查询作业、提交/取消作业、脚本生成、报错诊断、日志分析等功能。
+## 功能概览
 
-提供**终端交互模式**和 **Web 聊天界面**两种使用方式。
+- 资源看板：展示节点、GPU/CPU 使用情况、作业列表和当前用户作业。
+- 智能助手：通过 OpenAI 兼容接口调用大模型，支持 Function Calling 调用 Slurm 工具。
+- Slurm 工具：查询作业、查询节点/QoS、提交/取消作业、读取日志、生成 sbatch 脚本。
+- 项目工作流：新建作业目录、记录用户需求、自动准备 per-project conda 环境。
+- 文件上传：浏览器选择文件或文件夹，服务端打包、SHA256 校验并解压到项目目录。
+- 提交前报告：读取项目目录、用户需求记录和可阅读源码/脚本/配置文本，生成依赖和算力配置建议。
+- 确认执行：报告生成后由用户确认，再交给智能体继续生成提交命令或提交作业。
 
 ## 项目结构
 
-```
+```text
 slurm-ai-agent/
-├── agent/                      # 智能体核心
-│   ├── agent_loop.py           # Function Calling 主循环 + 终端交互
-│   ├── llm_provider.py         # LLM 调用封装（OpenAI 兼容接口）
-│   └── tools_registry.py       # 工具注册表（12 个工具定义 + 执行调度）
-├── core/                       # 平台 API 封装
-│   ├── slurm_client.py         # Slurm REST API 客户端（含 Token 管理）
-│   ├── knowledge_base.py       # 知识库检索（平台文档 RAG）
-│   └── template_engine.py      # 作业脚本模板引擎
-├── config/                     # 配置
-│   ├── settings.py             # 全局配置（分区、API 地址、LLM 参数等）
-│   └── templates/              # 作业脚本模板（6 个模板）
-│       ├── index.json          # 模板索引
-│       ├── pytorch_single_gpu.json
-│       ├── pytorch_ddp.json
-│       ├── jupyter_interactive.json
-│       ├── cpu_batch.json
-│       ├── job_array.json
-│       └── simple_script.json
-├── server/                     # Web 服务
-│   ├── app.py                  # FastAPI 后端（SSE 流式 API）
-│   └── static/
-│       └── index.html          # 聊天界面（纯 HTML/CSS/JS）
-├── docs/docs-main/docs/        # 平台知识库文档（17 个 .md 文件）
-├── tests/                      # 单元测试
-├── requirements.txt            # Python 依赖
-└── README.md                   # 本文件
+├── agent/
+│   ├── agent_loop.py          # Function Calling 主循环和终端交互
+│   ├── llm_provider.py        # OpenAI 兼容 LLM 客户端
+│   └── tools_registry.py      # Slurm/知识库/模板工具定义与执行调度
+├── config/
+│   ├── settings.py            # API、模型、分区和默认参数
+│   └── templates/             # sbatch 脚本模板
+├── core/
+│   ├── file_transfer.py       # 项目目录、上传归档、SHA 校验、conda 环境创建
+│   ├── knowledge_base.py      # 文档知识库检索
+│   ├── slurm_client.py        # Slurm REST API 客户端和 JWT 刷新
+│   └── template_engine.py     # 作业脚本模板渲染
+├── server/
+│   ├── app.py                 # FastAPI 后端、Dashboard API、项目/上传/报告 API
+│   └── static/index.html      # Web 控制台和智能体界面
+├── docs/docs-main/            # 107 平台文档镜像，用于知识库
+├── evaluation/                # API 能力确认、比赛方案评估和使用说明
+├── requirements.txt
+└── README.md
 ```
 
-## 快速开始
-
-### 1. 环境要求
+## 运行环境
 
 - Python 3.10+
-- 在算力平台登录节点（tradmin-01 / tradmin-02）上运行
-- 网络可访问 `http://107.ustc.edu.cn:6820`（Slurm REST API）和 `https://api.llm.ustc.edu.cn`（LLM API）
+- Miniconda/conda 可用，用于为每个项目创建独立环境
+- 在 107 算力平台登录节点运行，例如 `tradmin-01` / `tradmin-02`
+- 可访问 Slurm REST API：`http://107.ustc.edu.cn:6820`
+- 可访问 LLM API：`https://api.llm.ustc.edu.cn/v1`
 
-### 2. 安装依赖
+## 安装
 
 ```bash
 cd slurm-ai-agent
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. 配置环境变量
+如果直接使用登录节点上的 Miniconda Python，也可以在对应 conda 环境里安装依赖。
+
+## 配置
+
+项目只从环境变量或本地 `.env` 读取密钥，`.env` 不会提交到 Git。
 
 ```bash
-# 获取 Slurm JWT Token（有效期 1 天）
-export SLURM_JWT=$(scontrol token lifespan=86400 | sed 's/SLURM_JWT=//')
+export LLM_API_KEY="你的学校大模型 API Key"
+export LLM_MODEL="deepseek-v4-flash"
 
-# 设置 LLM API Key
-export LLM_API_KEY=sk-你的APIKey
+# 可选。默认会在需要时通过 scontrol token 自动刷新。
+export SLURM_JWT="$(scontrol token lifespan=86400 | sed 's/SLURM_JWT=//')"
 ```
 
-> ⚠️ Token 和 API Key 仅从环境变量读取，不会硬编码或提交到 Git。
-
-### 4. 启动 Web 聊天界面（推荐）
+常用可选变量：
 
 ```bash
+export SLURM_API_BASE_URL="http://107.ustc.edu.cn:6820"
+export SLURM_REMOTE_PROJECTS_BASE="~/projects"
+export SLURM_CONDA_EXE="$HOME/miniconda3/bin/conda"
+export SLURM_PROJECT_CONDA_PYTHON="3.10"
+export SLURM_UPLOAD_MAX_BYTES="2147483648"
+```
+
+## 启动 Web 控制台
+
+```bash
+cd slurm-ai-agent
 PYTHONPATH=. uvicorn server.app:app --host 0.0.0.0 --port 8080
 ```
 
-启动后通过以下方式访问：
+在 VS Code Remote SSH 中使用时，通常可以通过端口转发访问本地浏览器里的 `http://localhost:8080`。
 
-| 方式 | 地址 | 适用场景 |
-|------|------|----------|
-| **VS Code 端口转发**（推荐） | 点击终端中弹出的 `[算力平台智能助手](http://localhost:8080/)` 链接 | VS Code Remote 远程开发时使用 |
-| 直接访问 | `http://<服务器IP>:8080` | 与服务器在同一网络时使用 |
+## Web 工作流
 
-> 💡 VS Code 会自动将远程服务器的 8080 端口映射到本地 `localhost:8080`，无需额外配置。获取服务器 IP：`hostname -I \| awk '{print $1}'`
+1. 点击右上角 `+ 新作业`。
+2. 填写作业目录名称、环境依赖要求、算力特别需求。
+3. 后端创建 `~/projects/<项目名>`，并初始化 `<项目目录>/.slurm-agent/conda-env`。
+4. 在智能体输入框上方点击 `文件` 或 `文件夹` 上传项目内容。
+5. 点击 `建议报告`。
+6. 后端读取：
+   - 项目名称和项目目录
+   - 用户输入记录 `PROJECT_NOTES.txt`
+   - 项目目录摘要
+   - 可直接阅读的文本/源码/脚本/配置文件
+   - conda 包查询结果
+7. 智能体返回依赖安装建议、算力配置建议、输出路径规范、待确认问题和 sbatch 草案。
+8. 如需修改，在输入框补充意见后再次点击 `建议报告`。
+9. 确认无误后点击 `确认执行`，智能体继续准备提交命令或调用提交工具。
 
-### 5. 启动终端交互模式
+输出路径规范：
+
+- 程序结果：`runs/<作业名>-%j/`
+- Slurm stdout：`runs/<作业名>-%j.out`
+- Slurm stderr：`runs/<作业名>-%j.err`
+
+## 终端模式
 
 ```bash
 PYTHONPATH=. python agent/agent_loop.py -i
 ```
 
-交互命令：
-- 直接输入问题，如"帮我看看 P107-RTX5090 分区有什么作业"
-- `reset` — 重置对话历史
-- `quit` / `exit` — 退出
+可直接输入自然语言问题，例如：
 
-## 可用工具（12 个）
+```text
+帮我看看 P107-RTX5090 分区有哪些正在运行的作业
+帮我生成一个单 GPU PyTorch 训练脚本
+读取 40301 的错误日志并分析失败原因
+```
 
-### 作业管理
+## 主要 API
 
-| 工具 | 功能 | API 端点 |
-|------|------|----------|
-| `list_jobs` | 查询作业列表，可按分区过滤 | `GET /slurm/v0.0.41/jobs` |
-| `get_job` | 查询单个作业详情 | `GET /slurm/v0.0.41/job/{id}` |
-| `submit_job` | 提交新作业 | `POST /slurm/v0.0.41/job/submit` |
-| `cancel_job` | 取消指定作业 | `DELETE /slurm/v0.0.41/job/{id}` |
-| `get_jobs_history` | 查询历史作业（含已完成/失败） | `GET /slurmdb/v0.0.41/jobs` |
-| `read_job_log` | 读取作业输出/错误日志文件 | REST + 本地文件系统 |
+- `GET /`：Web 控制台
+- `GET /health`：健康检查
+- `GET /api/dashboard`：资源和作业概览
+- `POST /api/slurm/refresh`：在登录节点刷新 Slurm JWT
+- `POST /api/projects`：创建项目目录、初始化 conda、记录需求
+- `POST /api/files/upload`：上传文件/文件夹并 SHA256 校验
+- `POST /api/projects/report`：生成提交前建议报告
+- `POST /chat`：智能体 SSE 聊天接口
+- `POST /reset`：重置智能体上下文
 
-### 集群信息
+## 安全说明
 
-| 工具 | 功能 | API 端点 |
-|------|------|----------|
-| `get_diag` | 查看集群整体统计 | `GET /slurm/v0.0.41/diag` |
-| `get_nodes` | 查询节点详细信息 | `GET /slurm/v0.0.41/nodes` |
-| `get_qos` | 查询 QoS 资源配额 | `GET /slurmdb/v0.0.41/qos` |
+- 不提交 `.env`、Token、API Key、日志、运行输出和上传缓存。
+- 上传路径会拒绝绝对路径、`..` 和 `.slurm-agent` 目录。
+- 上传归档会在服务端保存后重新计算 SHA256。
+- 每个项目使用独立 conda 环境，避免污染全局环境。
+- 报告阶段不会自动安装依赖或提交作业，必须由用户点击 `确认执行`。
 
-### 知识库与脚本生成
+## 验证
 
-| 工具 | 功能 | 说明 |
-|------|------|------|
-| `search_knowledge` | 搜索平台知识库 | 基于 17 篇平台文档的关键词检索 |
-| `list_templates` | 列出可用作业脚本模板 | 6 个模板（PyTorch/CPU/Jupyter/Job Array 等） |
-| `generate_script` | 根据模板生成 sbatch 脚本 | 支持自定义参数填充 |
+```bash
+python3 -m py_compile server/app.py core/file_transfer.py core/slurm_client.py agent/agent_loop.py agent/tools_registry.py
+```
 
-## 分区说明
-
-| 分区 | 节点 | GPU | 账户 | 最大节点 |
-|------|------|-----|------|:---:|
-| P107-RTX5090 | anode[01-15] | RTX 5090 × 8 | competition | 15 |
-| P107-A100 | anode[16-26] | A100 80G × 8 | competition | 2 |
-| GPU-RTX5090 | anode[01-15] | RTX 5090 × 8 | demo_admin, cmet | 15 |
-| GPU-A100 | anode[16-26] | A100 80G × 8 | — | 2 |
-| CPU-6530 | anode[01-15] | — | demo_admin, cmet | 15 |
-| CPU-8358P | anode[16-26] | — | demo_admin, cmet | 2 |
-| Students | — | — | stu, stu001 等 | 2 |
-
-## 开发阶段
-
-| 阶段 | 内容 | 状态 |
-|:---:|------|:---:|
-| 1 | slurm_client.py — REST API 封装 + Token 管理 | ✅ 完成 |
-| 2 | Function Calling 核心循环 + 工具注册 | ✅ 完成 |
-| 3 | 知识库 RAG + 脚本模板引擎 + 报错诊断 | ✅ 完成 |
-| 4 | 日志/资源分析与优化建议 | ⏭️ 跳过（平台已有 Grafana 监控） |
-| 5 | Web 聊天界面 + 演示 | ✅ 完成 |
-
-## 技术栈
-
-- **语言**：Python 3.12+
-- **LLM SDK**：openai >= 1.0.0（兼容 OpenAI 接口）
-- **Web 框架**：FastAPI + Uvicorn（SSE 流式响应）
-- **HTTP 客户端**：requests
-- **LLM 模型**：deepseek-v4-pro（通过 https://api.llm.ustc.edu.cn）
-- **平台 API**：Slurm REST API v0.0.41 (slurmrestd + slurmdbd)
-- **调度系统**：Slurm 25.11.2
-
-## 安全注意事项
-
-- Token 通过 `SLURM_JWT` 环境变量传入，绝不硬编码
-- LLM API Key 通过 `LLM_API_KEY` 环境变量传入
-- `.env` 和 `*.token` 文件已在 `.gitignore` 中排除
-- 所有 HTTP 请求统一封装在 `core/slurm_client.py` 中
-- 取消作业操作有二次确认机制
-- Token / API Key 绝不会被传入外部大模型消息内容
+前端是纯 HTML/CSS/JS，无构建步骤；可以通过浏览器访问运行中的 FastAPI 服务验证。

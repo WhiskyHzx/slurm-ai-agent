@@ -13,9 +13,15 @@ server/app.py — FastAPI 后端入口。
 
 import json
 import logging
+import re
+import subprocess
+import tempfile
+import getpass
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -23,8 +29,16 @@ from pydantic import BaseModel
 from agent.agent_loop import AgentLoop, SYSTEM_PROMPT
 from agent.llm_provider import LLMProvider
 from agent.tools_registry import TOOL_DEFINITIONS, ToolExecutor
-from core.local_env import find_existing_socks_proxy, load_dotenv, set_dotenv_value
-from core.token_manager import get_token_status, refresh_token_via_ssh, update_token
+from core.file_transfer import (
+    CHUNK_SIZE,
+    FileTransferError,
+    ensure_project_workspace,
+    find_conda_executable,
+    get_max_upload_bytes,
+    package_and_upload,
+    safe_relative_path,
+)
+from core.slurm_client import SlurmClient, refresh_slurm_token, token_preview
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +72,348 @@ class ResetResponse(BaseModel):
     status: str
 
 
-class TokenUpdateRequest(BaseModel):
-    token: str
+class ProjectCreateRequest(BaseModel):
+    name: str
+    environment_requirements: str = ""
+    compute_requirements: str = ""
+
+
+class ProjectReportRequest(BaseModel):
+    name: str
+    extra_notes: str = ""
+
+
+PROJECT_NOTES_FILENAME = "PROJECT_NOTES.txt"
+MAX_CONTEXT_TEXT_CHARS = 18000
+MAX_BASH_FILES = 12
+MAX_BASH_FILE_CHARS = 3000
+MAX_PACKAGE_QUERIES = 6
+MAX_READABLE_TEXT_FILES = 24
+MAX_READABLE_TEXT_FILE_CHARS = 5000
+READABLE_TEXT_SUFFIXES = {
+    ".sh", ".bash", ".sbatch", ".txt", ".md", ".rst", ".log",
+    ".py", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".java",
+    ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml", ".toml",
+    ".ini", ".cfg", ".conf", ".cmake", ".mk", ".makefile",
+    ".r", ".m", ".jl", ".f", ".f90", ".for",
+}
+DATA_OR_SPECIAL_SUFFIXES = {
+    ".csv", ".tsv", ".dat", ".bin", ".npy", ".npz", ".h5", ".hdf5",
+    ".nc", ".mat", ".pdb", ".xtc", ".trr", ".tpr", ".edr", ".gro",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".doc", ".docx",
+    ".ppt", ".pptx", ".xls", ".xlsx", ".zip", ".tar", ".gz", ".bz2",
+    ".xz", ".7z", ".rar", ".so", ".dylib", ".o", ".a", ".exe",
+}
+
+
+def _state_text(value) -> str:
+    if value is None:
+        return "UNKNOWN"
+    if isinstance(value, list):
+        return ",".join(str(v) for v in value) or "UNKNOWN"
+    if isinstance(value, dict):
+        return str(value.get("current") or value.get("state") or value)
+    return str(value)
+
+
+def _number(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _gpu_count_from_text(value) -> int:
+    text = str(value or "")
+    match = re.search(r"(?:gres/)?gpu(?:[:=][^,:()]+)?[:=](\d+)", text, re.IGNORECASE)
+    if match:
+        return _number(match.group(1))
+    return 0
+
+
+def _summarize_node(node: dict) -> dict:
+    state = _state_text(node.get("state") or node.get("state_flags"))
+    cpus = _number(node.get("cpus") or node.get("cpu_count"))
+    alloc_cpus = _number(node.get("alloc_cpus") or node.get("allocated_cpus"))
+    memory = _number(node.get("real_memory") or node.get("memory"))
+    alloc_memory = _number(node.get("alloc_memory") or node.get("allocated_memory"))
+    gres = node.get("gres") or node.get("active_features") or ""
+    tres = node.get("tres") or ""
+    gres_used = node.get("gres_used") or ""
+    tres_used = node.get("tres_used") or ""
+    gpus = _gpu_count_from_text(gres) or _gpu_count_from_text(tres)
+    alloc_gpus = _gpu_count_from_text(gres_used) or _gpu_count_from_text(tres_used)
+    return {
+        "name": node.get("name") or node.get("hostname") or "-",
+        "state": state,
+        "partition": node.get("partition") or node.get("partitions") or "-",
+        "cpus": cpus,
+        "alloc_cpus": alloc_cpus,
+        "memory": memory,
+        "alloc_memory": alloc_memory,
+        "gres": gres,
+        "gpus": gpus,
+        "alloc_gpus": alloc_gpus,
+    }
+
+
+def _summarize_job(job: dict) -> dict:
+    return {
+        "id": job.get("job_id") or job.get("jobid") or job.get("id") or "-",
+        "name": job.get("name") or job.get("job_name") or "-",
+        "user": job.get("user_name") or job.get("user") or "-",
+        "partition": job.get("partition") or "-",
+        "state": _state_text(job.get("job_state") or job.get("state")),
+        "nodes": job.get("nodes") or job.get("node_count") or "-",
+        "time_limit": job.get("time_limit") or job.get("time_limit_number") or "-",
+    }
+
+
+def _count_by_state(items: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        primary = str(item.get("state") or "UNKNOWN").split(",", 1)[0].upper()
+        counts[primary] = counts.get(primary, 0) + 1
+    return counts
+
+
+def _trim_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[内容过长，已截断]"
+
+
+def _append_project_notes(
+    project_dir: Path,
+    environment_requirements: str = "",
+    compute_requirements: str = "",
+    extra_notes: str = "",
+) -> Path:
+    notes_path = project_dir / PROJECT_NOTES_FILENAME
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sections = []
+    if environment_requirements.strip():
+        sections.append(("环境依赖要求", environment_requirements.strip()))
+    if compute_requirements.strip():
+        sections.append(("算力特别需求", compute_requirements.strip()))
+    if extra_notes.strip():
+        sections.append(("补充说明", extra_notes.strip()))
+
+    if not notes_path.exists():
+        notes_path.write_text(
+            "# 项目需求记录\n\n"
+            "这里记录用户补充的环境依赖、算力需求和后续修改意见，供智能体生成作业建议报告使用。\n\n",
+            encoding="utf-8",
+        )
+
+    if sections:
+        with notes_path.open("a", encoding="utf-8") as f:
+            f.write(f"## {timestamp}\n\n")
+            for title, body in sections:
+                f.write(f"### {title}\n{body}\n\n")
+    return notes_path
+
+
+def _is_probably_text(path: Path) -> bool:
+    try:
+        chunk = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    if b"\x00" in chunk:
+        return False
+    if not chunk:
+        return True
+    control_bytes = sum(1 for byte in chunk if byte < 9 or (13 < byte < 32))
+    return control_bytes / max(1, len(chunk)) < 0.08
+
+
+def _is_readable_text_file(path: Path) -> bool:
+    if path.name.startswith("."):
+        return False
+    suffix = path.suffix.lower()
+    if suffix in DATA_OR_SPECIAL_SUFFIXES:
+        return False
+    if path.name.lower() in {"makefile", "dockerfile", "cmakelists.txt"}:
+        return _is_probably_text(path)
+    if suffix in READABLE_TEXT_SUFFIXES:
+        return _is_probably_text(path)
+    try:
+        head = path.read_text(encoding="utf-8", errors="ignore")[:160]
+    except OSError:
+        return False
+    if head.startswith("#!") and any(shell in head.splitlines()[0] for shell in ("sh", "bash", "python")):
+        return True
+    return False
+
+
+def _project_tree(project_dir: Path) -> str:
+    lines: list[str] = []
+    skip_parts = {".git", "__pycache__", "conda-env", "uploads"}
+    for path in sorted(project_dir.rglob("*")):
+        rel = path.relative_to(project_dir)
+        if ".slurm-agent" in rel.parts and len(rel.parts) > 1:
+            continue
+        if any(part in skip_parts for part in rel.parts):
+            continue
+        if len(lines) >= 160:
+            lines.append("...[文件较多，已截断]")
+            break
+        suffix = "/" if path.is_dir() else ""
+        lines.append(f"- {rel}{suffix}")
+    return "\n".join(lines) or "- 目录暂时为空"
+
+
+def _collect_readable_text_files(project_dir: Path) -> str:
+    chunks: list[str] = []
+    for path in sorted(project_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(project_dir)
+        if ".slurm-agent" in rel.parts or ".git" in rel.parts:
+            continue
+        if not _is_readable_text_file(path):
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        language = path.suffix.lower().lstrip(".") or "text"
+        if path.name.lower() == "makefile":
+            language = "makefile"
+        chunks.append(
+            f"### {rel}\n```{language}\n{_trim_text(content, MAX_READABLE_TEXT_FILE_CHARS)}\n```"
+        )
+        if len(chunks) >= MAX_READABLE_TEXT_FILES:
+            chunks.append("...[可阅读文本文件较多，已截断]")
+            break
+    return "\n\n".join(chunks) or "未发现可直接阅读的文本/源码/脚本文件。"
+
+
+def _infer_package_candidates(text: str) -> list[str]:
+    aliases = {
+        "pytorch": "pytorch",
+        "torch": "pytorch",
+        "tensorflow": "tensorflow",
+        "gromacs": "gromacs",
+        "cuda": "cuda-toolkit",
+        "cudatoolkit": "cudatoolkit",
+        "openmpi": "openmpi",
+        "mpi": "openmpi",
+        "numpy": "numpy",
+        "scipy": "scipy",
+        "pandas": "pandas",
+    }
+    candidates: list[str] = []
+    lowered = text.lower()
+    for token, package in aliases.items():
+        if token in lowered and package not in candidates:
+            candidates.append(package)
+
+    for match in re.finditer(r"(?:conda|pip)\s+install\s+([a-z0-9_.-]+)", lowered):
+        package = match.group(1).strip("._-")
+        if package and package not in candidates:
+            candidates.append(package)
+    return candidates[:MAX_PACKAGE_QUERIES]
+
+
+def _conda_package_queries(notes_text: str) -> str:
+    candidates = _infer_package_candidates(notes_text)
+    if not candidates:
+        return "未从需求记录中识别到明确包名；报告中请给出需要用户确认的包管理查询命令。"
+
+    try:
+        conda_exe = find_conda_executable()
+    except FileTransferError as e:
+        return f"未执行 conda search：{e}"
+
+    lines: list[str] = []
+    for package in candidates:
+        try:
+            result = subprocess.run(
+                [
+                    conda_exe,
+                    "search",
+                    "--override-channels",
+                    "-c",
+                    "conda-forge",
+                    package,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            lines.append(f"### {package}\nconda search 超时，请稍后手动确认。")
+            continue
+        except OSError as e:
+            lines.append(f"### {package}\nconda search 执行失败：{e}")
+            continue
+
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode != 0:
+            lines.append(f"### {package}\n查询失败：{_trim_text(output, 800)}")
+        else:
+            useful = "\n".join(output.splitlines()[-12:])
+            lines.append(f"### {package}\n```text\n{_trim_text(useful, 1200)}\n```")
+    return "\n\n".join(lines)
+
+
+def _build_project_report_prompt(workspace, extra_notes: str = "") -> str:
+    notes_path = workspace.project_dir / PROJECT_NOTES_FILENAME
+    notes_text = notes_path.read_text(encoding="utf-8", errors="ignore") if notes_path.exists() else "暂无项目需求记录。"
+    if extra_notes.strip():
+        notes_text += f"\n\n## 本次追加意见\n{extra_notes.strip()}\n"
+
+    context = f"""
+你是运行在 USTC 107 算力平台上的 Slurm 项目准备助手。下面的输入结构是严格的，不要忽略任何字段。
+
+<任务>
+根据项目目录、用户输入记录、可直接阅读的文本/源码/脚本文件，以及包管理查询结果，出具提交前建议报告。
+</任务>
+
+<硬性规则>
+1. 不要声称已经安装依赖、写入脚本或提交作业；这里只生成“将要做什么”的建议和命令草案。
+2. 输出目录必须规范化：程序结果保存到项目目录下 runs/<作业名>-%j/。
+3. Slurm 标准输出和标准错误必须使用 runs/<作业名>-%j.out 与 runs/<作业名>-%j.err。
+4. 必要时在脚本开头 mkdir -p runs "$RUN_DIR"。
+5. 每个项目的 conda 环境已准备在 <conda_env>，依赖安装命令优先使用该环境。
+6. 如果依赖名称、入口命令、数据路径或算力需求不确定，必须列入“需要用户确认的问题”，不能擅自假设。
+7. 如果包管理查询结果不足，请给出可复制的 conda/pip 查询命令。
+8. 输出使用 Markdown，必须严格包含以下标题：
+   - ## 1. 项目理解
+   - ## 2. 将要安装的依赖
+   - ## 3. 将要准备的算力配置
+   - ## 4. 输出路径规范
+   - ## 5. 需要用户确认的问题
+   - ## 6. sbatch 脚本草案
+   - ## 7. 提交命令草案
+</硬性规则>
+
+<项目元信息>
+<folder_name>{workspace.project_name}</folder_name>
+<folder_path>{workspace.project_dir}</folder_path>
+<conda_env>{workspace.conda_env_dir}</conda_env>
+</项目元信息>
+
+<用户输入记录>
+以下内容来自用户在创建项目、补充说明和后续修改意见中的所有文字输入：
+{notes_text}
+</用户输入记录>
+
+<包管理查询结果>
+{_conda_package_queries(notes_text)}
+</包管理查询结果>
+
+<项目目录摘要>
+{_project_tree(workspace.project_dir)}
+</项目目录摘要>
+
+<可直接阅读的文本文件内容>
+说明：这里收集非二进制、非明显数据文件、非特殊格式文件的内容，例如 .sh、.txt、.c、.cpp、.py、.md、配置文件等；明显数据文件和二进制文件已排除。
+{_collect_readable_text_files(workspace.project_dir)}
+</可直接阅读的文本文件内容>
+"""
+    return _trim_text(context, MAX_CONTEXT_TEXT_CHARS)
 
 
 # ---------------------------------------------------------------------------
@@ -197,94 +551,206 @@ async def reset():
     return ResetResponse(status="ok")
 
 
-@app.get("/api/token/status")
-async def token_status():
-    """Return local SLURM_JWT status without exposing the token."""
-    status = get_token_status()
-    return {
-        "present": status.present,
-        "preview": status.preview,
-        "expires_at": status.expires_at,
-        "seconds_remaining": status.seconds_remaining,
-        "expired": status.expired,
-        "refresh_command": status.refresh_command,
-        "ssh_host": status.ssh_host,
-    }
-
-
-@app.post("/api/token/update")
-async def token_update(req: TokenUpdateRequest):
-    """
-    Update local SLURM_JWT from a user-provided token.
-
-    Manual fallback for users who cannot run remote ssh commands from the local
-    app process.
-    """
+@app.post("/api/slurm/refresh")
+async def slurm_refresh():
+    """Refresh SLURM_JWT on the login node and verify Slurm REST API access."""
     try:
-        status = update_token(req.token)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-
-    return {
-        "status": "ok",
-        "present": status.present,
-        "preview": status.preview,
-        "expires_at": status.expires_at,
-        "seconds_remaining": status.seconds_remaining,
-        "expired": status.expired,
-    }
-
-
-@app.post("/api/token/refresh")
-async def token_refresh():
-    """
-    Refresh SLURM_JWT by running `scontrol token ...` over system ssh.
-
-    This does not implement SSH login. It succeeds when the user's local ssh
-    setup can already run non-interactive remote commands.
-    """
-    try:
-        status = refresh_token_via_ssh()
+        token = refresh_slurm_token()
+        diag = SlurmClient(auto_refresh_token=False).get_diag()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=502)
 
     return {
         "status": "ok",
-        "present": status.present,
-        "preview": status.preview,
-        "expires_at": status.expires_at,
-        "seconds_remaining": status.seconds_remaining,
-        "expired": status.expired,
-        "ssh_host": status.ssh_host,
+        "token_preview": token_preview(token),
+        "diag_keys": sorted(diag.keys())[:8] if isinstance(diag, dict) else [],
     }
 
 
-@app.post("/api/proxy/refresh")
-async def proxy_refresh():
-    """
-    Re-scan existing VS Code Remote-SSH SOCKS proxy and store it in .env.
+@app.get("/api/dashboard")
+async def dashboard():
+    """Return a compact resource and job snapshot for the console UI."""
+    client = SlurmClient()
+    errors: list[str] = []
+    nodes: list[dict] = []
+    jobs: list[dict] = []
+    diag: dict = {}
 
-    This does not start SSH. It only reuses a proxy from an already-connected
-    VS Code Remote-SSH session or a user-started `ssh -D` SOCKS tunnel.
-    """
-    env_values = load_dotenv()
-    proxy = find_existing_socks_proxy(env_values.get("SLURM_API_PROXY", ""))
-    if not proxy:
-        return JSONResponse(
-            {
-                "error": (
-                    "未找到可用的 VS Code Remote-SSH SOCKS 端口。"
-                    "请先在 VS Code 连接 107.ustc.edu.cn。"
-                )
-            },
-            status_code=404,
+    try:
+        node_data = client.get_nodes()
+        raw_nodes = node_data.get("nodes", []) if isinstance(node_data, dict) else []
+        nodes = [_summarize_node(node) for node in raw_nodes if isinstance(node, dict)]
+    except Exception as e:
+        errors.append(f"节点数据获取失败: {e}")
+
+    try:
+        job_data = client.list_jobs()
+        raw_jobs = job_data.get("jobs", []) if isinstance(job_data, dict) else []
+        jobs = [_summarize_job(job) for job in raw_jobs if isinstance(job, dict)]
+    except Exception as e:
+        errors.append(f"作业数据获取失败: {e}")
+
+    try:
+        diag = client.get_diag()
+    except Exception as e:
+        errors.append(f"诊断数据获取失败: {e}")
+
+    total_cpus = sum(node["cpus"] for node in nodes)
+    alloc_cpus = sum(node["alloc_cpus"] for node in nodes)
+    current_user = getpass.getuser()
+    my_jobs = [job for job in jobs if str(job.get("user")) == current_user]
+
+    return {
+        "status": "ok" if not errors else "partial",
+        "errors": errors,
+        "updated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "summary": {
+            "node_count": len(nodes),
+            "job_count": len(jobs),
+            "current_user": current_user,
+            "my_job_count": len(my_jobs),
+            "total_cpus": total_cpus,
+            "alloc_cpus": alloc_cpus,
+            "node_states": _count_by_state(nodes),
+            "job_states": _count_by_state(jobs),
+            "my_job_states": _count_by_state(my_jobs),
+        },
+        "nodes": nodes[:120],
+        "jobs": jobs[:80],
+        "my_jobs": my_jobs[:80],
+        "diag_keys": sorted(diag.keys())[:8] if isinstance(diag, dict) else [],
+    }
+
+
+@app.post("/api/projects")
+async def create_project(req: ProjectCreateRequest):
+    """Create a project directory and its per-project conda environment."""
+    try:
+        workspace = ensure_project_workspace(req.name)
+        notes_path = _append_project_notes(
+            workspace.project_dir,
+            environment_requirements=req.environment_requirements,
+            compute_requirements=req.compute_requirements,
         )
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": f"创建项目失败: {e}"}, status_code=500)
 
-    changed = proxy != env_values.get("SLURM_API_PROXY", "")
-    if changed:
-        set_dotenv_value("SLURM_API_PROXY", proxy)
+    return {
+        "status": "ok",
+        "project_name": workspace.project_name,
+        "project_dir": str(workspace.project_dir),
+        "conda_env_dir": str(workspace.conda_env_dir),
+        "conda_created": workspace.conda_created,
+        "notes_path": str(notes_path),
+    }
 
-    return {"status": "ok", "proxy": proxy, "changed": changed}
+
+@app.post("/api/projects/report")
+async def project_report(req: ProjectReportRequest):
+    """Generate a confirmation report before installing dependencies/submitting jobs."""
+    try:
+        workspace = ensure_project_workspace(req.name)
+        notes_path = _append_project_notes(
+            workspace.project_dir,
+            extra_notes=req.extra_notes,
+        )
+        prompt = _build_project_report_prompt(workspace, req.extra_notes)
+        llm = LLMProvider()
+        response = llm.chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是谨慎的 HPC/Slurm 作业准备助手，负责生成提交前建议报告。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=2600,
+        )
+        report = response.choices[0].message.content or "未生成报告，请补充需求后重试。"
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("生成项目建议报告失败")
+        return JSONResponse({"error": f"生成项目建议报告失败: {e}"}, status_code=500)
+
+    return {
+        "status": "ok",
+        "project_name": workspace.project_name,
+        "project_dir": str(workspace.project_dir),
+        "conda_env_dir": str(workspace.conda_env_dir),
+        "conda_created": workspace.conda_created,
+        "notes_path": str(notes_path),
+        "report": report,
+    }
+
+
+@app.post("/api/files/upload")
+async def files_upload(
+    project_name: str = Form(...),
+    files: list[UploadFile] = File(...),
+):
+    """
+    Receive browser-selected files, package them, store them on the server,
+    and verify SHA256 before extracting.
+
+    The backend deliberately accepts file streams only; it does not take local
+    filesystem paths from the browser.
+    """
+    if not files:
+        return JSONResponse({"error": "请选择至少一个文件"}, status_code=400)
+
+    max_bytes = get_max_upload_bytes()
+    total_bytes = 0
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="slurm-agent-upload-") as tmp:
+            staging_dir = Path(tmp)
+            file_count = 0
+
+            for upload in files:
+                relative_path = safe_relative_path(upload.filename or "uploaded-file")
+                target = staging_dir / relative_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+
+                with target.open("wb") as out:
+                    while True:
+                        chunk = await upload.read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        total_bytes += len(chunk)
+                        if total_bytes > max_bytes:
+                            raise FileTransferError(
+                                f"上传总大小超过限制：{max_bytes} bytes"
+                            )
+                        out.write(chunk)
+                file_count += 1
+
+            result = package_and_upload(staging_dir, file_count, project_name)
+
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    except Exception as e:
+        logger.exception("文件上传失败")
+        return JSONResponse({"error": f"文件上传失败: {e}"}, status_code=500)
+    finally:
+        for upload in files:
+            await upload.close()
+
+    return {
+        "status": "ok",
+        "upload_id": result.upload_id,
+        "project_name": result.project_name,
+        "file_count": result.file_count,
+        "archive_name": result.archive_name,
+        "archive_size": result.archive_size,
+        "local_sha256": result.local_sha256,
+        "remote_project_dir": result.remote_project_dir,
+        "conda_env_dir": result.conda_env_dir,
+        "conda_created": result.conda_created,
+    }
 
 
 # ---------------------------------------------------------------------------

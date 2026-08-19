@@ -15,6 +15,7 @@ API 版本：Slurm REST API v0.0.41 (slurmrestd)
 import os
 import subprocess
 import logging
+import re
 from typing import Optional, Dict, Any
 
 import requests
@@ -25,7 +26,6 @@ from config.settings import (
     AUTO_REFRESH_TOKEN,
     DEFAULT_TOKEN_LIFESPAN as CONFIG_DEFAULT_TOKEN_LIFESPAN,
     REQUEST_TIMEOUT,
-    SLURM_API_PROXY,
 )
 
 # ---------------------------------------------------------------------------
@@ -98,6 +98,20 @@ def _refresh_token(lifespan: int = DEFAULT_TOKEN_LIFESPAN) -> str:
         )
 
 
+def token_preview(token: str) -> str:
+    """Return a short non-secret token preview for UI/status messages."""
+    if not token:
+        return "missing"
+    if len(token) <= 12:
+        return f"present len={len(token)}"
+    return f"{token[:6]}...{token[-4:]} len={len(token)}"
+
+
+def refresh_slurm_token(lifespan: int = DEFAULT_TOKEN_LIFESPAN) -> str:
+    """Public wrapper for refreshing SLURM_JWT on the login node."""
+    return _refresh_token(lifespan)
+
+
 # ---------------------------------------------------------------------------
 # 内部 HTTP 请求封装
 # ---------------------------------------------------------------------------
@@ -121,18 +135,18 @@ class SlurmClient:
         self.api_prefix = API_PREFIX
         self.auto_refresh = auto_refresh_token
         self.token_lifespan = token_lifespan
-        self.proxies = (
-            {"http": SLURM_API_PROXY, "https": SLURM_API_PROXY}
-            if SLURM_API_PROXY
-            else None
-        )
 
     # ---- 内部方法 ----
 
     @property
     def _token(self) -> str:
         """获取当前 Token（优先环境变量，支持自动刷新）。"""
-        return _get_token_from_env()
+        try:
+            return _get_token_from_env()
+        except RuntimeError:
+            if self.auto_refresh:
+                return _refresh_token(self.token_lifespan)
+            raise
 
     def _headers(self) -> Dict[str, str]:
         """构造带 Bearer Token 的请求头。"""
@@ -194,7 +208,6 @@ class SlurmClient:
                 headers=self._headers(),
                 json=json_data,
                 params=params,
-                proxies=self.proxies,
                 timeout=REQUEST_TIMEOUT,
             )
 
@@ -208,7 +221,6 @@ class SlurmClient:
                     headers=self._headers(),
                     json=json_data,
                     params=params,
-                    proxies=self.proxies,
                     timeout=REQUEST_TIMEOUT,
                 )
 
@@ -330,15 +342,23 @@ class SlurmClient:
             - Slurm 25.11 要求必须提供 current_working_directory。
             - nodes 字段在 OpenAPI 中定义为 string 类型。
             - time_limit 字段名不是 time（后者会被忽略）。
+            - 作业名会先经过安全清洗：去除所有路径分隔符（/ 反斜杠）、".."、
+              以及文件系统不安全的字符，保证不会写出到子文件夹或越权目录。
         """
+        # 清洗作业名：只能包含字母、数字、下划线、短横线和点，
+        # 去掉可能构成路径穿越（/ \ ..）或建立子文件夹的字符
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]", "", str(name or "")).strip(".-")
+        if not safe_name:
+            safe_name = "api-job"
+
         job_spec: Dict[str, Any] = {
-            "name": name,
+            "name": safe_name,
             "partition": partition,
             "nodes": str(nodes),          # OpenAPI 要求 string 类型
             "time_limit": time_limit,     # 字段名是 time_limit，不是 time
             "current_working_directory": os.getcwd(),
-            "standard_output": f"{name}-%j.out",
-            "standard_error": f"{name}-%j.err",
+            "standard_output": f"{safe_name}-%j.out",
+            "standard_error": f"{safe_name}-%j.err",
             # Slurm 25.11 要求必须提供 environment，否则报 I/O error
             "environment": {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),

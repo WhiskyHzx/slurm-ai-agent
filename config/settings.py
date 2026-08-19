@@ -31,7 +31,6 @@ _load_dotenv()
 # ---------------------------------------------------------------------------
 BASE_URL = os.environ.get("SLURM_API_BASE_URL", "http://107.ustc.edu.cn:6820")
 API_PREFIX = os.environ.get("SLURM_API_PREFIX", "/slurm/v0.0.41")
-SLURM_API_PROXY = os.environ.get("SLURM_API_PROXY", "")
 
 # ---------------------------------------------------------------------------
 # Token

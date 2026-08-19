@@ -3,709 +3,1784 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>算力平台智能助手</title>
+<title>107 算力控制台</title>
 <style>
   :root {
-    --bg: #f5f6fa;
-    --chat-bg: #ffffff;
-    --primary: #2563eb;
-    --primary-hover: #1d4ed8;
-    --text: #1e293b;
-    --text-secondary: #64748b;
-    --user-bubble: #2563eb;
-    --user-text: #ffffff;
-    --ai-bubble: #f1f5f9;
-    --ai-text: #1e293b;
-    --border: #e2e8f0;
-    --tool-bg: #fefce8;
-    --tool-border: #facc15;
+    --bg: #f4f5f2;
+    --surface: #ffffff;
+    --surface-soft: #f8faf6;
+    --ink: #18212f;
+    --muted: #687484;
+    --line: #dfe5dc;
+    --blue: #2563eb;
+    --teal: #0f766e;
+    --amber: #b45309;
+    --red: #b91c1c;
+    --green: #15803d;
+    --shadow: 0 10px 28px rgba(24, 33, 47, 0.08);
+    --topbar-bg: rgba(255, 255, 255, 0.94);
+    --focus-ring: rgba(37, 99, 235, 0.12);
+    --modal-scrim: rgba(24, 33, 47, 0.28);
+    --modal-shadow: 0 18px 50px rgba(24, 33, 47, 0.22);
+    --group-bg: #fbfcf8;
+    --group-hover: #f1f5ec;
+    --notice-ink: #065f46;
+    --notice-bg: #ecfdf5;
+    --notice-line: #a7f3d0;
     --error-bg: #fef2f2;
-    --error-text: #dc2626;
-    --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
-    --radius: 12px;
+    --error-line: #fecaca;
+    --code-bg: rgba(0, 0, 0, 0.06);
+    --assistant-shadow: 0 18px 42px rgba(37, 99, 235, 0.28);
+    --assistant-hover: #1d4ed8;
+    --tool-line: #fde68a;
+    --tool-bg: #fffbeb;
+    --tool-ink: #78350f;
+    --primary-ink: #ffffff;
+    --icon-btn-size: 36px;
   }
 
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root[data-theme="dark"] {
+    --bg: #0d0d0e;
+    --surface: #171719;
+    --surface-soft: #222225;
+    --ink: #f3f4f6;
+    --muted: #a1a1aa;
+    --line: #343437;
+    --blue: #818cf8;
+    --teal: #2dd4bf;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --green: #34d399;
+    --shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+    --topbar-bg: rgba(17, 17, 19, 0.96);
+    --focus-ring: rgba(129, 140, 248, 0.2);
+    --modal-scrim: rgba(0, 0, 0, 0.58);
+    --modal-shadow: 0 18px 50px rgba(0, 0, 0, 0.56);
+    --group-bg: #1d1d20;
+    --group-hover: #28282b;
+    --notice-ink: #86efac;
+    --notice-bg: #10251c;
+    --notice-line: #1f6f4a;
+    --error-bg: #2a1517;
+    --error-line: #7f1d1d;
+    --code-bg: rgba(255, 255, 255, 0.08);
+    --assistant-shadow: 0 18px 42px rgba(129, 140, 248, 0.24);
+    --assistant-hover: #6366f1;
+    --tool-line: #7c5c18;
+    --tool-bg: #2b2110;
+    --tool-ink: #fde68a;
+    --primary-ink: #ffffff;
+  }
 
+  * { box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
     background: var(--bg);
-    height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
   }
 
-  .app {
-    width: 100%;
-    max-width: 800px;
-    height: 100vh;
-    max-height: 900px;
-    display: flex;
-    flex-direction: column;
-    background: var(--chat-bg);
-    box-shadow: var(--shadow);
+  button, input {
+    font: inherit;
   }
 
-  @media (min-width: 800px) {
-    .app {
-      border-radius: 16px;
-      margin: 20px;
-      height: calc(100vh - 40px);
-    }
+  .shell {
+    min-height: 100vh;
+    display: grid;
+    grid-template-rows: auto 1fr;
   }
 
-  /* ---- Header ---- */
-  .header {
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--border);
+  .topbar {
+    min-height: 64px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--line);
+    background: var(--topbar-bg);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    flex-shrink: 0;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
   }
 
-  .header h1 {
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--text);
+  .brand {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 180px;
+  }
+
+  .brand-title {
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+
+  .brand-subtitle {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .top-actions {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 8px;
   }
 
-  .header h1 .icon { font-size: 22px; }
+  .project-input {
+    width: 210px;
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+  }
 
-  .header-actions {
-    display: flex;
-    gap: 8px;
+  .project-input:focus {
+    outline: none;
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--focus-ring);
   }
 
   .btn {
-    padding: 6px 14px;
-    border: 1px solid var(--border);
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
     border-radius: 8px;
-    background: var(--chat-bg);
-    color: var(--text-secondary);
-    font-size: 13px;
+    background: var(--surface);
+    color: var(--ink);
     cursor: pointer;
-    transition: all 0.15s;
+    white-space: nowrap;
   }
 
-  .btn:hover {
-    background: var(--ai-bubble);
-    color: var(--text);
+  .btn:hover { background: var(--surface-soft); }
+  .btn.primary {
+    border-color: var(--blue);
+    background: var(--blue);
+    color: var(--primary-ink);
+  }
+  .btn.teal {
+    border-color: var(--teal);
+    background: var(--teal);
+    color: var(--primary-ink);
+  }
+  :root[data-theme="dark"] .btn.primary,
+  :root[data-theme="dark"] .btn.teal {
+    border-color: var(--blue);
+    background: #6366f1;
+    color: #ffffff;
   }
 
-  /* ---- Messages ---- */
-  .messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px 20px;
+  :root[data-theme="dark"] .btn.teal {
+    border-color: var(--teal);
+    background: #0f766e;
+  }
+
+  :root[data-theme="dark"] .btn.primary:hover {
+    background: #4f46e5;
+  }
+
+  :root[data-theme="dark"] .btn.teal:hover {
+    background: #0d9488;
+  }
+
+  .theme-toggle {
+    width: var(--icon-btn-size);
+    min-width: var(--icon-btn-size);
+    padding: 0;
+    display: inline-grid;
+    place-items: center;
+    font-size: 17px;
+  }
+  .btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .layout {
+    display: block;
+    padding: 18px;
+    padding-bottom: 88px;
+    max-width: 1680px;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .main {
+    min-width: 0;
+  }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+  }
+
+  .dashboard-stack {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 6px;
+    height: calc(100vh - 172px);
+    min-height: 460px;
+  }
+
+  .resource-module {
+    display: block;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .resource-module .panel {
+    height: 100%;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .panel-head {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
     gap: 12px;
   }
 
-  .message {
-    display: flex;
-    flex-direction: column;
-    max-width: 85%;
-    animation: fadeIn 0.2s ease;
+  .panel-heading {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
   }
 
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
+  .panel-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .panel-stat {
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.45;
+  }
+
+  .panel-stat.secondary {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .dashboard-footer {
+    min-height: 34px;
+    padding: 0 2px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+  }
+
+  .refresh-stamp {
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    min-height: 34px;
+    padding: 4px 14px;
+    font-size: 13px;
+  }
+
+  .refresh-stamp::after {
+    content: attr(data-label);
+  }
+
+  .refresh-stamp:hover {
+    border-color: var(--line);
+    background: var(--surface-soft);
+    color: var(--ink);
+  }
+
+  .refresh-stamp:hover::after {
+    content: attr(data-hover);
+  }
+
+  .dropdown {
+    position: relative;
+  }
+
+  .dropdown-menu {
+    position: absolute;
+    top: 42px;
+    right: 0;
+    min-width: 132px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    display: none;
+    z-index: 30;
+  }
+
+  .dropdown.open .dropdown-menu {
+    display: grid;
+    gap: 4px;
+  }
+
+  .dropdown-menu button {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: var(--modal-scrim);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+    padding: 20px;
+  }
+
+  .modal-backdrop.open {
+    display: flex;
+  }
+
+  .modal {
+    width: min(420px, 100%);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: var(--modal-shadow);
+  }
+
+  .modal-head, .modal-body, .modal-actions {
+    padding: 14px 16px;
+  }
+
+  .modal-head {
+    border-bottom: 1px solid var(--line);
+    font-weight: 750;
+  }
+
+  .modal-body {
+    display: grid;
+    gap: 8px;
+  }
+
+  .modal-body label {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .modal-body input {
+    height: 38px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  .upload-choice {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .modal-actions {
+    border-top: 1px solid var(--line);
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .content-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 18px;
+    min-height: 0;
+  }
+
+  .table-wrap {
+    overflow: auto;
+    min-height: 0;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  th, td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+    white-space: nowrap;
+  }
+
+  th {
+    color: var(--muted);
+    background: var(--surface-soft);
+    font-weight: 650;
+    position: sticky;
+    top: 0;
+  }
+
+  .group-row {
+    background: var(--group-bg);
+    cursor: pointer;
+  }
+
+  .group-row:hover {
+    background: var(--group-hover);
+  }
+
+  .group-title {
+    font-weight: 750;
+  }
+
+  .group-caret {
+    display: inline-block;
+    width: 16px;
+    color: var(--muted);
+  }
+
+  .truncate {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .truncate.expanded {
+    max-width: 420px;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface-soft);
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .pill.green { color: var(--green); border-color: var(--notice-line); background: var(--notice-bg); }
+  .pill.blue { color: var(--blue); border-color: var(--line); background: var(--surface-soft); }
+  .pill.amber { color: var(--amber); border-color: var(--tool-line); background: var(--tool-bg); }
+  .pill.red { color: var(--red); border-color: var(--error-line); background: var(--error-bg); }
+
+  :root[data-theme="dark"] .pill.green {
+    color: #86efac;
+    border-color: rgba(52, 211, 153, 0.36);
+    background: rgba(22, 101, 52, 0.24);
+  }
+
+  :root[data-theme="dark"] .pill.blue {
+    color: #a5b4fc;
+    border-color: rgba(129, 140, 248, 0.36);
+    background: rgba(67, 56, 202, 0.22);
+  }
+
+  :root[data-theme="dark"] .pill.amber {
+    color: #fcd34d;
+    border-color: rgba(251, 191, 36, 0.38);
+    background: rgba(146, 64, 14, 0.24);
+  }
+
+  :root[data-theme="dark"] .pill.red {
+    color: #fca5a5;
+    border-color: rgba(248, 113, 113, 0.38);
+    background: rgba(127, 29, 29, 0.25);
+  }
+
+  .toast-stack {
+    position: fixed;
+    top: 76px;
+    right: 18px;
+    width: min(380px, calc(100vw - 36px));
+    display: grid;
+    gap: 10px;
+    z-index: 50;
+    pointer-events: none;
+  }
+
+  .toast {
+    padding: 11px 36px 11px 13px;
+    border-radius: 8px;
+    font-size: 13px;
+    border: 1px solid;
+    box-shadow: var(--shadow);
+    animation: toastIn 0.18s ease-out;
+    position: relative;
+    pointer-events: auto;
+  }
+
+  .toast.notice {
+    color: var(--notice-ink);
+    background: var(--notice-bg);
+    border-color: var(--notice-line);
+  }
+
+  .toast.error {
+    color: var(--red);
+    background: var(--error-bg);
+    border-color: var(--error-line);
+  }
+
+  :root[data-theme="dark"] .toast.error {
+    color: #fecaca;
+    background: #2a1517;
+    border-color: rgba(248, 113, 113, 0.42);
+  }
+
+  .toast-close {
+    position: absolute;
+    top: 6px;
+    right: 7px;
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+
+  .toast-close:hover {
+    background: var(--code-bg);
+  }
+
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .assistant-toggle {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    width: 58px;
+    height: 58px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--blue);
+    color: var(--primary-ink);
+    box-shadow: var(--assistant-shadow);
+    cursor: pointer;
+    font-size: 24px;
+    font-weight: 750;
+    z-index: 40;
+  }
+
+  .assistant-toggle:hover {
+    background: var(--assistant-hover);
+  }
+
+  .assistant {
+    position: fixed;
+    right: 22px;
+    bottom: 92px;
+    width: min(430px, calc(100vw - 32px));
+    height: min(680px, calc(100vh - 120px));
+    z-index: 45;
+    display: none;
+  }
+
+  .assistant.open {
+    display: block;
+  }
+
+  .assistant .panel {
+    height: 100%;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    overflow: hidden;
+  }
+
+  .messages {
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .message {
+    max-width: 92%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .message.markdown {
+    white-space: normal;
+  }
+
+  .message.markdown p {
+    margin: 0 0 8px;
+  }
+
+  .message.markdown p:last-child,
+  .message.markdown ul:last-child,
+  .message.markdown ol:last-child,
+  .message.markdown pre:last-child {
+    margin-bottom: 0;
+  }
+
+  .message.markdown h1,
+  .message.markdown h2,
+  .message.markdown h3,
+  .message.markdown h4,
+  .message.markdown h5,
+  .message.markdown h6 {
+    margin: 10px 0 6px;
+    font-size: 15px;
+    line-height: 1.35;
+  }
+
+  .message.markdown ul,
+  .message.markdown ol {
+    margin: 6px 0 10px 18px;
+    padding: 0;
+  }
+
+  .message.markdown li {
+    margin: 3px 0;
+  }
+
+  .message.markdown pre {
+    margin: 8px 0;
+    padding: 10px;
+    overflow-x: auto;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--code-bg);
+  }
+
+  .message.markdown code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+
+  .message.markdown :not(pre) > code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--code-bg);
+  }
+
+  .message.markdown table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    margin: 8px 0;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  .message.markdown th,
+  .message.markdown td {
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .message.markdown th {
+    background: var(--group-bg);
+    font-weight: 700;
+  }
+
+  .message.markdown blockquote {
+    margin: 8px 0;
+    padding: 2px 0 2px 10px;
+    border-left: 3px solid var(--line);
+    color: var(--muted);
+  }
+
+  .message.markdown hr {
+    border: 0;
+    border-top: 1px solid var(--line);
+    margin: 10px 0;
+  }
+
+  .message.markdown a {
+    color: var(--blue);
   }
 
   .message.user {
     align-self: flex-end;
+    background: var(--blue);
+    color: var(--primary-ink);
   }
 
   .message.ai {
     align-self: flex-start;
+    background: var(--surface-soft);
+    border: 1px solid var(--line);
   }
 
-  .bubble {
-    padding: 10px 14px;
-    border-radius: var(--radius);
-    font-size: 14px;
-    line-height: 1.6;
-    word-break: break-word;
-  }
-
-  .message.user .bubble {
-    background: var(--user-bubble);
-    color: var(--user-text);
-    border-bottom-right-radius: 4px;
-  }
-
-  .message.ai .bubble {
-    background: var(--ai-bubble);
-    color: var(--ai-text);
-    border-bottom-left-radius: 4px;
-  }
-
-  .bubble code {
-    background: rgba(0,0,0,0.08);
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 13px;
-    font-family: "SF Mono", "Fira Code", monospace;
-  }
-
-  .bubble pre {
-    background: rgba(0,0,0,0.06);
-    padding: 10px;
-    border-radius: 8px;
-    overflow-x: auto;
-    margin: 8px 0;
-    font-size: 13px;
-    white-space: pre;
-  }
-
-  .bubble pre code {
-    background: none;
-    padding: 0;
-    font-family: "SF Mono", "Fira Code", monospace;
-  }
-
-  .bubble table {
-    border-collapse: collapse;
-    margin: 8px 0;
-    font-size: 13px;
-    width: 100%;
-  }
-
-  .bubble th, .bubble td {
-    border: 1px solid rgba(0,0,0,0.15);
-    padding: 6px 10px;
-    text-align: left;
-  }
-
-  .bubble th {
-    background: rgba(0,0,0,0.06);
-    font-weight: 600;
-  }
-
-  .bubble ul, .bubble ol {
-    margin: 6px 0;
-    padding-left: 22px;
-  }
-
-  .bubble li {
-    margin: 3px 0;
-  }
-
-  .bubble h1, .bubble h2, .bubble h3, .bubble h4 {
-    margin: 10px 0 6px;
-    font-weight: 600;
-  }
-  .bubble h1 { font-size: 20px; }
-  .bubble h2 { font-size: 18px; }
-  .bubble h3 { font-size: 16px; }
-  .bubble h4 { font-size: 15px; }
-
-  .bubble hr {
-    border: none;
-    border-top: 1px solid rgba(0,0,0,0.1);
-    margin: 10px 0;
-  }
-
-  .bubble blockquote {
-    border-left: 3px solid var(--primary);
-    margin: 8px 0;
-    padding: 4px 12px;
-    color: #475569;
-    background: rgba(0,0,0,0.03);
-  }
-
-  .bubble strong { font-weight: 600; }
-
-  /* Tool call card */
   .tool-card {
+    border: 1px solid var(--tool-line);
     background: var(--tool-bg);
-    border: 1px solid var(--tool-border);
+    color: var(--tool-ink);
     border-radius: 8px;
-    padding: 8px 12px;
-    margin: 4px 0;
-    font-size: 13px;
-  }
-
-  .tool-card .tool-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
-    color: #92400e;
-    font-weight: 500;
-  }
-
-  .tool-card .tool-header .arrow {
-    font-size: 10px;
-    transition: transform 0.15s;
-  }
-
-  .tool-card.open .tool-header .arrow {
-    transform: rotate(90deg);
-  }
-
-  .tool-card .tool-body {
-    display: none;
-    margin-top: 6px;
-    padding-top: 6px;
-    border-top: 1px dashed var(--tool-border);
+    padding: 9px 10px;
     font-size: 12px;
-    color: #78350f;
-    max-height: 200px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    font-family: "SF Mono", "Fira Code", monospace;
   }
 
-  .tool-card.open .tool-body {
-    display: block;
+  .assistant-workflow {
+    border-top: 1px solid var(--line);
+    padding: 10px 12px 0;
+    display: grid;
+    gap: 8px;
   }
 
-  .tool-card .tool-status {
-    font-size: 12px;
-    margin-left: auto;
-  }
-
-  .tool-card .tool-status.running { color: #d97706; }
-  .tool-card .tool-status.done { color: #16a34a; }
-
-  /* Error */
-  .error-banner {
-    background: var(--error-bg);
-    color: var(--error-text);
-    padding: 10px 14px;
+  .assistant-workflow input {
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
     border-radius: 8px;
-    font-size: 13px;
-    margin: 4px 0;
   }
 
-  .notice-banner {
-    background: #ecfdf5;
-    color: #047857;
-    padding: 10px 14px;
+  .assistant-actions {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+
+  .assistant-actions .btn {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .chat-input {
+    padding: 12px;
+    border-top: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+  }
+
+  .chat-input input {
+    min-width: 0;
+    height: 38px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
     border-radius: 8px;
-    font-size: 13px;
-    margin: 4px 0;
   }
 
-  /* ---- Input ---- */
-  .input-area {
-    padding: 12px 20px 16px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    gap: 10px;
-    flex-shrink: 0;
+  .modal-body textarea {
+    width: 100%;
+    min-height: 92px;
+    resize: vertical;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font: inherit;
+    line-height: 1.45;
+    color: var(--text);
+    background: var(--surface);
   }
 
-  .input-area input {
-    flex: 1;
-    padding: 10px 14px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    font-size: 14px;
-    outline: none;
-    transition: border-color 0.15s;
-    font-family: inherit;
-  }
-
-  .input-area input:focus {
-    border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-  }
-
-  .input-area button {
-    padding: 10px 20px;
-    background: var(--primary);
-    color: #fff;
-    border: none;
-    border-radius: 10px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.15s;
-    white-space: nowrap;
-  }
-
-  .input-area button:hover { background: var(--primary-hover); }
-  .input-area button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  /* Loading dots */
-  .typing-indicator {
-    display: flex;
-    gap: 4px;
-    padding: 4px 0;
-  }
-
-  .typing-indicator span {
-    width: 6px;
-    height: 6px;
-    background: var(--text-secondary);
-    border-radius: 50%;
-    animation: bounce 1.2s infinite;
-  }
-
-  .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
-  .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
-
-  @keyframes bounce {
-    0%, 60%, 100% { transform: translateY(0); }
-    30% { transform: translateY(-6px); }
-  }
-
-  /* Scrollbar */
-  .messages::-webkit-scrollbar { width: 5px; }
-  .messages::-webkit-scrollbar-track { background: transparent; }
-  .messages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-
-  .empty-hint {
-    color: var(--text-secondary);
+  .empty {
+    padding: 24px;
+    color: var(--muted);
     text-align: center;
-    margin-top: 60px;
-    font-size: 14px;
-    line-height: 1.8;
+    font-size: 13px;
   }
 
-  .empty-hint .big-icon { font-size: 48px; display: block; margin-bottom: 12px; }
+  @media (max-width: 1080px) {
+    .content-grid { grid-template-columns: 1fr; }
+    .dashboard-stack {
+      height: auto;
+      min-height: 0;
+    }
+    .resource-module .panel { height: auto; }
+    .table-wrap { max-height: 360px; }
+  }
+
+  @media (max-width: 760px) {
+    .topbar {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .top-actions { justify-content: flex-start; }
+    .project-input { width: 100%; }
+    .layout { padding: 12px; padding-bottom: 84px; }
+    .assistant {
+      right: 12px;
+      bottom: 82px;
+      width: calc(100vw - 24px);
+      height: min(620px, calc(100vh - 108px));
+    }
+    .assistant-toggle {
+      right: 14px;
+      bottom: 14px;
+    }
+    .upload-choice,
+    .assistant-actions { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-
-<div class="app">
-  <!-- Header -->
-  <div class="header">
-    <h1><span class="icon">🤖</span> 算力平台智能助手</h1>
-    <div class="header-actions">
-      <button class="btn" onclick="refreshKey()" title="扫描 VS Code SSH 端口并更新 SLURM_JWT">🔑 刷新 Key</button>
-      <button class="btn" onclick="resetChat()" title="重置对话">🔄 新对话</button>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-title">107 算力控制台</div>
+      <div class="brand-subtitle">Slurm 资源监视、项目文件上传、智能助手</div>
     </div>
-  </div>
-
-  <!-- Messages -->
-  <div class="messages" id="messages">
-    <div class="empty-hint">
-      <span class="big-icon">💬</span>
-      你好！我是算力平台智能助手。<br>
-      可以帮你查询作业、提交任务、生成脚本、诊断报错。<br>
-      试试问：<b>"帮我看看有哪些作业"</b> 或 <b>"帮我生成一个 PyTorch 训练脚本"</b>
+    <div class="top-actions">
+      <button class="btn primary" onclick="openNewJobFlow()">+ 新作业</button>
+      <button id="themeToggle" class="btn theme-toggle" onclick="toggleTheme()" title="切换暗夜模式">☾</button>
     </div>
-  </div>
+  </header>
 
-  <!-- Input -->
-  <div class="input-area">
-    <input
-      type="text"
-      id="userInput"
-      placeholder="输入你的问题，按回车发送..."
-      autofocus
-      onkeydown="if(event.key==='Enter') sendMessage()"
-    />
-    <button id="sendBtn" onclick="sendMessage()">发送</button>
-  </div>
+  <main class="layout">
+    <section class="main">
+      <section class="dashboard-stack">
+        <section class="content-grid">
+          <div class="resource-module">
+            <div class="panel">
+              <div class="panel-head">
+                <div class="panel-heading">
+                  <h2 class="panel-title">节点情况</h2>
+                  <div id="nodeUsageSummary" class="panel-stat">正在加载节点数据</div>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>显卡类型</th>
+                      <th>节点</th>
+                      <th>状态</th>
+                      <th>CPU</th>
+                      <th>GPU</th>
+                  </tr>
+                </thead>
+                <tbody id="nodesTable">
+                  <tr><td colspan="5" class="empty">正在加载节点数据</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="resource-module">
+            <div class="panel">
+              <div class="panel-head">
+                <div class="panel-heading">
+                  <h2 class="panel-title">作业情况</h2>
+                  <div id="jobsSummary" class="panel-stat">正在加载作业数据</div>
+                  <div id="myJobsDetail" class="panel-stat secondary">我的作业状态等待数据</div>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>用户</th>
+                      <th>ID</th>
+                      <th>名称</th>
+                      <th>状态</th>
+                      <th>分区</th>
+                    </tr>
+                  </thead>
+                  <tbody id="jobsTable">
+                    <tr><td colspan="5" class="empty">正在加载作业数据</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+        <div class="dashboard-footer">
+          <button id="dashboardUpdatedAt" class="refresh-stamp" data-label="每 15 秒自动更新" data-hover="手动更新" onclick="handleUpdateStampClick()" title="手动更新"></button>
+        </div>
+      </section>
+    </section>
+  </main>
 </div>
 
+<button id="assistantToggle" class="assistant-toggle" onclick="toggleAssistant()" title="智能助手">AI</button>
+<aside id="assistantPanel" class="assistant">
+  <section class="panel">
+    <div class="panel-head">
+      <h2 class="panel-title">智能助手</h2>
+      <div class="top-actions">
+        <button class="btn" onclick="resetChat()">新对话</button>
+        <button class="btn" onclick="toggleAssistant(false)">关闭</button>
+      </div>
+    </div>
+    <div id="messages" class="messages">
+      <div class="message ai">可以问我查询作业、解释节点状态、生成 sbatch 脚本，或根据上传后的项目目录准备提交命令。</div>
+    </div>
+    <div class="assistant-workflow">
+      <input id="assistantProjectNameInput" type="text" placeholder="作业目录名称，例如 my-training" title="作业目录为 ~/projects/作业目录名称">
+      <div class="assistant-actions">
+        <button class="btn" onclick="chooseUploadFiles()">文件</button>
+        <button class="btn" onclick="chooseUploadFolder()">文件夹</button>
+        <button class="btn" onclick="generateProjectReport()">建议报告</button>
+        <button id="confirmRunBtn" class="btn primary" onclick="confirmRunPlan()" disabled>确认执行</button>
+      </div>
+    </div>
+    <div class="chat-input">
+      <input id="userInput" type="text" placeholder="输入问题，按回车发送" onkeydown="if(event.key==='Enter') sendMessage()">
+      <button id="sendBtn" class="btn primary" onclick="sendMessage()">发送</button>
+    </div>
+  </section>
+</aside>
+
+<div id="notices" class="toast-stack"></div>
+<div id="jobModal" class="modal-backdrop" onclick="closeJobModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">新作业</div>
+    <div class="modal-body">
+      <label for="projectNameInput">作业目录名称</label>
+      <input id="projectNameInput" type="text" placeholder="例如 my-training" title="作业目录为 ~/projects/作业目录名称">
+      <label for="envRequirementsInput">环境依赖要求</label>
+      <textarea id="envRequirementsInput" placeholder="例如：需要 gromacs 2026.0 nompi_cuda、Python 包、CUDA 或其它软件版本。"></textarea>
+      <label for="computeRequirementsInput">算力特别需求</label>
+      <textarea id="computeRequirementsInput" placeholder="例如：需要 GPU 型号/数量、CPU 核数、内存、预计运行时间、是否必须独占节点。"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeJobModal()">取消</button>
+      <button class="btn primary" onclick="createProject()">创建作业目录</button>
+    </div>
+  </div>
+</div>
+<input id="fileUploadInput" type="file" multiple hidden onchange="uploadSelectedFiles(this)">
+<input id="folderUploadInput" type="file" multiple webkitdirectory hidden onchange="uploadSelectedFiles(this)">
+
 <script>
+const projectNameInput = document.getElementById('projectNameInput');
+const assistantProjectNameInput = document.getElementById('assistantProjectNameInput');
+const envRequirementsInput = document.getElementById('envRequirementsInput');
+const computeRequirementsInput = document.getElementById('computeRequirementsInput');
+const fileUploadInput = document.getElementById('fileUploadInput');
+const folderUploadInput = document.getElementById('folderUploadInput');
+const jobModal = document.getElementById('jobModal');
+const noticesEl = document.getElementById('notices');
 const messagesEl = document.getElementById('messages');
 const userInput = document.getElementById('userInput');
 const sendBtn = document.getElementById('sendBtn');
+const assistantPanel = document.getElementById('assistantPanel');
+const themeToggle = document.getElementById('themeToggle');
+const confirmRunBtn = document.getElementById('confirmRunBtn');
 let isProcessing = false;
-let currentAiBubble = null;    // 当前正在流式输出的 AI 气泡
-let currentAiMarkdown = '';    // 当前流式输出的 AI 原始 markdown 文本
-let currentToolCard = null;    // 当前工具调用卡片
+let isUploading = false;
+let refreshTimer = null;
+let currentAiMessage = null;
+let currentAiText = '';
+let dashboardRefreshing = false;
+let hasShownNewJobPrompt = false;
+let lastProjectReport = '';
+let lastProjectDir = '';
+const expandedNodeGroups = new Set();
+const expandedJobGroups = new Set();
+let initializedCurrentUserGroup = false;
 
-// ---- Helpers ----
-
-function scrollToBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+function applyTheme(theme) {
+  const nextTheme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = nextTheme;
+  themeToggle.textContent = nextTheme === 'dark' ? '☀' : '☾';
+  themeToggle.title = nextTheme === 'dark' ? '切换到日间模式' : '切换暗夜模式';
+  localStorage.setItem('slurmAgentTheme', nextTheme);
 }
 
-function clearEmptyHint() {
-  const hint = messagesEl.querySelector('.empty-hint');
-  if (hint) hint.remove();
+function toggleTheme() {
+  applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 }
 
-// ---- Message Bubbles ----
+applyTheme(localStorage.getItem('slurmAgentTheme') || 'light');
 
-function addUserMessage(text) {
-  clearEmptyHint();
+function syncProjectName(value) {
+  const name = (value || '').trim();
+  projectNameInput.value = name;
+  assistantProjectNameInput.value = name;
+  localStorage.setItem('slurmAgentProjectName', name);
+}
+
+syncProjectName(localStorage.getItem('slurmAgentProjectName') || '');
+projectNameInput.addEventListener('input', () => syncProjectName(projectNameInput.value));
+assistantProjectNameInput.addEventListener('input', () => syncProjectName(assistantProjectNameInput.value));
+
+function escapeHtml(value) {
   const div = document.createElement('div');
-  div.className = 'message user';
-  div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
-  messagesEl.appendChild(div);
-  scrollToBottom();
-}
-
-function createAiBubble() {
-  clearEmptyHint();
-  const div = document.createElement('div');
-  div.className = 'message ai';
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  div.appendChild(bubble);
-  messagesEl.appendChild(div);
-  return bubble;
-}
-
-function addTypingIndicator() {
-  const div = document.createElement('div');
-  div.className = 'message ai';
-  div.innerHTML = '<div class="bubble"><div class="typing-indicator"><span></span><span></span><span></span></div></div>';
-  div.id = 'typing-indicator';
-  messagesEl.appendChild(div);
-  scrollToBottom();
-}
-
-function removeTypingIndicator() {
-  const el = document.getElementById('typing-indicator');
-  if (el) el.remove();
-}
-
-function addErrorBanner(text) {
-  const div = document.createElement('div');
-  div.className = 'error-banner';
-  div.textContent = '⚠ ' + text;
-  messagesEl.appendChild(div);
-  scrollToBottom();
-}
-
-function addNoticeBanner(text) {
-  clearEmptyHint();
-  const div = document.createElement('div');
-  div.className = 'notice-banner';
-  div.textContent = text;
-  messagesEl.appendChild(div);
-  scrollToBottom();
-}
-
-// ---- Tool Card ----
-
-function createToolCard(toolName) {
-  const card = document.createElement('div');
-  card.className = 'tool-card';
-  card.innerHTML = `
-    <div class="tool-header" onclick="this.parentElement.classList.toggle('open')">
-      <span class="arrow">▶</span>
-      <span>🔧 ${escapeHtml(toolName)}</span>
-      <span class="tool-status running">执行中...</span>
-    </div>
-    <div class="tool-body"></div>
-  `;
-  messagesEl.appendChild(card);
-  scrollToBottom();
-  return card;
-}
-
-function finishToolCard(card, resultPreview) {
-  card.querySelector('.tool-status').textContent = '✓ 完成';
-  card.querySelector('.tool-status').className = 'tool-status done';
-  card.querySelector('.tool-body').textContent = resultPreview;
-}
-
-// ---- Escape ----
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
+  div.textContent = value == null ? '' : String(value);
   return div.innerHTML;
 }
 
-// ---- Markdown Rendering ----
-// 一个轻量、自包含、无外部依赖的 markdown 渲染器。
-// 支持：代码块、行内代码、标题、加粗、斜体、链接、表格、无序/有序列表、分隔线、引用、段落。
-
-
-// 行内渲染：顺序很重要 —— 先转义特殊字符，再生成标签，最后还原行内代码占位。
-function renderInline(text) {
-  const codeSpans = [];
-  // 1. 保护行内代码（占位符），避免后续转义影响代码内容
-  text = text.replace(/`([^`]+)`/g, (m, c) => {
-    codeSpans.push(c);
-    return '\u0000' + (codeSpans.length - 1) + '\u0000';
-  });
-  // 2. 先转义剩余原文中的 HTML 特殊字符（此时还没有生成任何标签）
-  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  // 3. 再生成加粗 / 斜体 / 链接标签（对不包含特殊符号的内容安全）
-  text = text
+function renderInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[\s(])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  // 4. 还原行内代码占位
-  text = text.replace(/\u0000(\d+)\u0000/g, (m, i) => '<code>' + escapeHtml(codeSpans[+i]) + '</code>');
-  return text;
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
 }
 
-function renderTable(lines, i) {
-  // lines[i] 是表头行，lines[i+1] 是分隔行
-  const header = lines[i].trim().replace(/^\||\|$/g, '').split('|').map(s => s.trim());
-  const rows = [];
-  let j = i + 2;
-  while (j < lines.length && lines[j].trim().includes('|')) {
-    const cells = lines[j].trim().replace(/^\||\|$/g, '').split('|').map(s => s.trim());
-    rows.push(cells);
-    j++;
-  }
-  let html = '<table><thead><tr>';
-  for (const h of header) html += '<th>' + renderInline(h) + '</th>';
-  html += '</tr></thead><tbody>';
-  for (const row of rows) {
-    html += '<tr>';
-    for (const cell of row) html += '<td>' + renderInline(cell) + '</td>';
-    html += '</tr>';
-  }
-  html += '</tbody></table>';
-  return { html, nextIndex: j };
-}
-
-function isTableSeparator(line) {
-  // 类似 | --- | --- |
-  const t = line.trim();
-  if (!t.includes('|')) return false;
-  const parts = t.replace(/^\||\|$/g, '').split('|');
-  return parts.every(p => /^:?-+:?$/.test(p.trim()));
-}
-
-function renderMarkdown(md) {
-  if (!md) return '';
-  const lines = md.split('\n');
+function renderMarkdown(markdown) {
+  const text = String(markdown || '');
+  const lines = text.split('\n');
   let html = '';
-  let i = 0;
-  let inCodeBlock = false;
-  let codeBuf = [];
+  let paragraph = [];
   let listItems = [];
+  let listType = '';
+  let inCode = false;
+  let codeLines = [];
+  let blockquote = [];
 
-  const closeLists = () => {
-    if (listItems.length) {
-      const isOl = listItems[0].ordered;
-      const tag = isOl ? 'ol' : 'ul';
-      html += '<' + tag + '>';
-      for (const item of listItems) html += '<li>' + renderInline(item.text) + '</li>';
-      html += '</' + tag + '>';
-      listItems = [];
+  function flushParagraph() {
+    if (!paragraph.length) return;
+    html += `<p>${renderInlineMarkdown(paragraph.join(' '))}</p>`;
+    paragraph = [];
+  }
+
+  function flushList() {
+    if (!listItems.length) return;
+    html += `<${listType}>${listItems.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join('')}</${listType}>`;
+    listItems = [];
+    listType = '';
+  }
+
+  function flushBlockquote() {
+    if (!blockquote.length) return;
+    html += `<blockquote>${renderMarkdown(blockquote.join('\n'))}</blockquote>`;
+    blockquote = [];
+  }
+
+  function isTableSeparator(value) {
+    const trimmed = value.trim();
+    if (!trimmed.includes('|')) return false;
+    const cells = trimmed.replace(/^\||\|$/g, '').split('|');
+    return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell.trim()));
+  }
+
+  function renderTable(startIndex) {
+    const header = lines[startIndex].trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim());
+    let index = startIndex + 2;
+    const rows = [];
+    while (index < lines.length) {
+      const rowLine = lines[index].trim();
+      if (!rowLine.includes('|') || !rowLine) break;
+      rows.push(rowLine.replace(/^\||\|$/g, '').split('|').map(cell => cell.trim()));
+      index++;
     }
-  };
 
-  while (i < lines.length) {
-    const raw = lines[i];
-    const line = raw.trim();
-
-    // 代码块
-    if (/^```/.test(line)) {
-      if (!inCodeBlock) {
-        inCodeBlock = true;
-        codeBuf = [];
-      } else {
-        inCodeBlock = false;
-        html += '<pre><code>' + escapeHtml(codeBuf.join('\n')) + '</code></pre>';
+    let tableHtml = '<table><thead><tr>';
+    for (const cell of header) tableHtml += `<th>${renderInlineMarkdown(cell)}</th>`;
+    tableHtml += '</tr></thead><tbody>';
+    for (const row of rows) {
+      tableHtml += '<tr>';
+      for (let i = 0; i < header.length; i++) {
+        tableHtml += `<td>${renderInlineMarkdown(row[i] || '')}</td>`;
       }
-      i++;
-      continue;
+      tableHtml += '</tr>';
     }
-    if (inCodeBlock) {
-      codeBuf.push(raw);
-      i++;
+    tableHtml += '</tbody></table>';
+    return { html: tableHtml, nextIndex: index };
+  }
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const rawLine = lines[lineIndex];
+    const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('```')) {
+      flushParagraph();
+      flushList();
+      flushBlockquote();
+      if (inCode) {
+        html += `<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
+        codeLines = [];
+        inCode = false;
+      } else {
+        inCode = true;
+      }
       continue;
     }
 
-    // 空行：关闭列表
-    if (line === '') {
-      closeLists();
-      i++;
+    if (inCode) {
+      codeLines.push(rawLine);
       continue;
     }
 
-    // 表格
-    if (line.includes('|') && isTableSeparator(lines[i + 1] || '')) {
-      closeLists();
-      const res = renderTable(lines, i);
-      html += res.html;
-      i = res.nextIndex;
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      flushBlockquote();
       continue;
     }
 
-    // 标题
-    const hm = line.match(/^(#{1,6})\s+(.*)/);
-    if (hm) {
-      closeLists();
-      const lvl = hm[1].length;
-      html += `<h${lvl}>${renderInline(hm[2])}</h${lvl}>`;
-      i++;
-      continue;
-    }
-
-    // 分隔线
-    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) {
-      closeLists();
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      flushParagraph();
+      flushList();
+      flushBlockquote();
       html += '<hr>';
-      i++;
       continue;
     }
 
-    // 引用
-    if (line.startsWith('>')) {
-      closeLists();
-      html += '<blockquote>' + renderInline(line.replace(/^>\s?/, '')) + '</blockquote>';
-      i++;
+    if (lineIndex + 1 < lines.length && trimmed.includes('|') && isTableSeparator(lines[lineIndex + 1])) {
+      flushParagraph();
+      flushList();
+      flushBlockquote();
+      const table = renderTable(lineIndex);
+      html += table.html;
+      lineIndex = table.nextIndex - 1;
       continue;
     }
 
-    // 无序列表
-    const ulm = line.match(/^[-*+]\s+(.*)/);
-    if (ulm) {
-      listItems.push({ ordered: false, text: ulm[1] });
-      i++;
+    const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      flushBlockquote();
+      const level = heading[1].length;
+      html += `<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`;
       continue;
     }
 
-    // 有序列表（只有当序号行后面有实际内容时才识别为列表，
-    // 纯数字行如 "2026" 不做列表处理，走普通段落）
-    const olm = line.match(/^(\d+)[.)]\s+(.*)/);
-    if (olm && olm[2].trim() !== '') {
-      listItems.push({ ordered: true, text: olm[2] });
-      i++;
+    const quote = trimmed.match(/^>\s?(.*)$/);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      blockquote.push(quote[1]);
       continue;
     }
 
-    // 普通段落
-    closeLists();
-    html += '<p>' + renderInline(line) + '</p>';
-    i++;
+    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (bullet || ordered) {
+      flushParagraph();
+      flushBlockquote();
+      const nextType = ordered ? 'ol' : 'ul';
+      if (listType && listType !== nextType) flushList();
+      listType = nextType;
+      listItems.push((bullet || ordered)[1]);
+      continue;
+    }
+
+    paragraph.push(trimmed);
   }
 
-  // 处理结尾未闭合代码块（不丢内容）
-  if (inCodeBlock) {
-    html += '<pre><code>' + escapeHtml(codeBuf.join('\n')) + '</code></pre>';
+  if (inCode) {
+    html += `<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
   }
-  closeLists();
-
-  return html;
+  flushParagraph();
+  flushList();
+  flushBlockquote();
+  return html || escapeHtml(text);
 }
 
-// ---- SSE Chat ----
+function setMessageContent(element, text, role = 'ai') {
+  element.classList.toggle('markdown', role === 'ai');
+  element.innerHTML = role === 'ai' ? renderMarkdown(text) : escapeHtml(text);
+}
 
-async function sendMessage() {
-  const text = userInput.value.trim();
+function addNotice(text, kind = 'notice') {
+  const div = document.createElement('div');
+  div.className = `toast ${kind === 'error' ? 'error' : 'notice'}`;
+  const span = document.createElement('span');
+  span.textContent = text;
+  const close = document.createElement('button');
+  close.className = 'toast-close';
+  close.type = 'button';
+  close.textContent = '×';
+  close.title = '关闭';
+  close.onclick = () => div.remove();
+  div.appendChild(span);
+  div.appendChild(close);
+  noticesEl.prepend(div);
+  while (noticesEl.children.length > 3) noticesEl.lastElementChild.remove();
+  window.setTimeout(() => {
+    if (div.isConnected) div.remove();
+  }, kind === 'error' ? 6000 : 3000);
+}
+
+function openJobModal() {
+  jobModal.classList.add('open');
+  syncProjectName(localStorage.getItem('slurmAgentProjectName') || projectNameInput.value);
+  window.setTimeout(() => projectNameInput.focus(), 0);
+}
+
+function openNewJobFlow() {
+  toggleAssistant(true);
+  if (!hasShownNewJobPrompt) {
+    addChatMessage('请先创建本次作业目录，并补充环境依赖要求、算力特别需求。创建完成后我会先准备 conda 小房间；上传文件后，可以点“建议报告”让我整理依赖安装和 Slurm 提交配置草案。', 'ai');
+    hasShownNewJobPrompt = true;
+  }
+  openJobModal();
+}
+
+function closeJobModal(event) {
+  if (event && event.target !== jobModal) return;
+  jobModal.classList.remove('open');
+}
+
+function currentProjectName() {
+  return (
+    assistantProjectNameInput.value ||
+    projectNameInput.value ||
+    localStorage.getItem('slurmAgentProjectName') ||
+    ''
+  ).trim();
+}
+
+function setUpdateStamps(label, hover = '手动更新', title = '手动更新') {
+  const el = document.getElementById('dashboardUpdatedAt');
+  el.dataset.label = label;
+  el.dataset.hover = hover;
+  el.title = title;
+}
+
+function markSlurmJwtInvalid() {
+  setUpdateStamps('SLURM_JWT失效', '刷新SLURM_JWT', '刷新 SLURM_JWT');
+}
+
+async function handleUpdateStampClick() {
+  const label = document.getElementById('dashboardUpdatedAt').dataset.label || '';
+  if (label.includes('SLURM_JWT')) {
+    const ok = await refreshSlurmApi(true);
+    if (ok) await refreshDashboard(true);
+    return;
+  }
+  refreshDashboard(true);
+}
+
+function toggleAssistant(force) {
+  const shouldOpen = typeof force === 'boolean' ? force : !assistantPanel.classList.contains('open');
+  assistantPanel.classList.toggle('open', shouldOpen);
+  if (shouldOpen) {
+    window.setTimeout(() => userInput.focus(), 0);
+  }
+}
+
+function stateClass(state) {
+  const text = String(state || '').toUpperCase();
+  if (text.includes('IDLE') || text.includes('COMPLETED')) return 'green';
+  if (text.includes('ALLOC') || text.includes('RUNNING') || text === 'R') return 'blue';
+  if (text.includes('PEND') || text.includes('MIX')) return 'amber';
+  if (text.includes('DOWN') || text.includes('FAIL') || text.includes('CANCEL')) return 'red';
+  return '';
+}
+
+function percent(used, total) {
+  if (!total) return '-';
+  return Math.round((used / total) * 100) + '%';
+}
+
+function formatUsage(used, total) {
+  if (!total) return '-';
+  return `${used}/${total}（${percent(used, total)}）`;
+}
+
+function summarizeStates(states) {
+  const entries = Object.entries(states || {}).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return '无状态数据';
+  return entries.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(' / ');
+}
+
+function summarizeMyJobs(jobs, states) {
+  if (!jobs.length) return '我的作业：暂无正在排队或运行的记录';
+  const stateText = summarizeStates(states);
+  const examples = jobs.slice(0, 3).map(job => `#${job.id} ${shortJobName(job.name)} ${job.state}`).join('；');
+  const extra = jobs.length > 3 ? `；另有 ${jobs.length - 3} 个` : '';
+  return `我的作业：${stateText} · ${examples}${extra}`;
+}
+
+function formatUpdateTime(value) {
+  if (!value) return '每 15 秒自动更新';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return `更新于 ${value}`;
+  const pad = n => String(n).padStart(2, '0');
+  return `更新于 ${pad(date.getMonth() + 1)}-${pad(date.getDate())}  ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function gpuType(node) {
+  const text = String(node.gres || '').trim();
+  const match = text.match(/gpu:([^:,]+)(?::(\d+))?/i);
+  if (match) return match[1];
+  return text.replace(/^gpu:/i, '') || 'CPU/其他';
+}
+
+function gpuCount(node) {
+  if (Number.isFinite(Number(node.gpus))) return Number(node.gpus);
+  const text = String(node.gres || '').trim();
+  const match = text.match(/gpu:[^:,]+:(\d+)/i);
+  return match ? Number(match[1]) : 0;
+}
+
+function gpuUsage(node) {
+  const total = gpuCount(node);
+  if (!total) return { used: 0, total: 0, partial: false };
+  if (Number.isFinite(Number(node.alloc_gpus))) {
+    return { used: Number(node.alloc_gpus), total, partial: false };
+  }
+  const state = String(node.state || '').toUpperCase();
+  if (state.includes('IDLE')) return { used: 0, total, partial: false };
+  if (state.includes('ALLOCATED') || state.includes('ALLOC')) return { used: total, total, partial: false };
+  if (state.includes('MIXED')) return { used: 0, total, partial: true };
+  return { used: 0, total, partial: false };
+}
+
+function summarizeGpuUsage(nodes) {
+  const summary = { used: 0, total: 0, partial: false };
+  for (const node of nodes || []) {
+    const usage = gpuUsage(node);
+    summary.used += usage.used;
+    summary.total += usage.total;
+    summary.partial = summary.partial || usage.partial;
+  }
+  return summary;
+}
+
+function formatGpuUsage(usage) {
+  if (!usage.total) return '-';
+  const prefix = usage.partial ? '部分使用 ' : '';
+  return `${prefix}${formatUsage(usage.used, usage.total)}`;
+}
+
+function groupBy(items, getter) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = getter(item) || 'UNKNOWN';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return Array.from(groups.entries()).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+}
+
+function renderNodeGroups(nodes) {
+  if (!nodes.length) return '<tr><td colspan="5" class="empty">暂无节点数据</td></tr>';
+  return groupBy(nodes, gpuType).map(([type, group], index) => {
+    const states = {};
+    let cpus = 0;
+    let allocCpus = 0;
+    for (const node of group) {
+      const state = String(node.state || 'UNKNOWN').split(',', 1)[0].toUpperCase();
+      states[state] = (states[state] || 0) + 1;
+      cpus += Number(node.cpus || 0);
+      allocCpus += Number(node.alloc_cpus || 0);
+    }
+    const gpuUsageText = formatGpuUsage(summarizeGpuUsage(group));
+    const key = `node-${index}`;
+    const expanded = expandedNodeGroups.has(key);
+    const summaryRow = `
+      <tr class="group-row" onclick="toggleNodeGroup('${key}')">
+        <td class="group-title"><span class="group-caret">${expanded ? '▼' : '▶'}</span>${escapeHtml(type)}</td>
+        <td>${group.length} 台节点</td>
+        <td>${escapeHtml(summarizeStates(states))}</td>
+        <td>${escapeHtml(formatUsage(allocCpus, cpus))}</td>
+        <td>${escapeHtml(gpuUsageText)}</td>
+      </tr>
+    `;
+    const detailRows = expanded ? group.map(node => `
+      <tr>
+        <td>${escapeHtml(type)}</td>
+        <td>${escapeHtml(node.name)}</td>
+        <td><span class="pill ${stateClass(node.state)}">${escapeHtml(node.state)}</span></td>
+        <td>${escapeHtml(formatUsage(Number(node.alloc_cpus || 0), Number(node.cpus || 0)))}</td>
+        <td>${escapeHtml(formatGpuUsage(gpuUsage(node)))}</td>
+      </tr>
+    `).join('') : '';
+    return summaryRow + detailRows;
+  }).join('');
+}
+
+function renderJobGroups(jobs) {
+  if (!jobs.length) return '<tr><td colspan="5" class="empty">暂无作业数据</td></tr>';
+  const currentUser = (window.lastDashboardData?.summary?.current_user || '').toString();
+  const groups = groupBy(jobs, job => job.user).sort((a, b) => {
+    if (String(a[0]) === currentUser) return -1;
+    if (String(b[0]) === currentUser) return 1;
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+  return groups.map(([user, group], index) => {
+    const states = {};
+    for (const job of group) {
+      const state = String(job.state || 'UNKNOWN').split(',', 1)[0].toUpperCase();
+      states[state] = (states[state] || 0) + 1;
+    }
+    const key = `job-${index}`;
+    if (!initializedCurrentUserGroup && currentUser && String(user) === currentUser) {
+      expandedJobGroups.add(key);
+    }
+    const expanded = expandedJobGroups.has(key);
+    const userLabel = String(user) === currentUser ? `${user}（我）` : user;
+    const summaryRow = `
+      <tr class="group-row" onclick="toggleJobGroup('${key}')">
+        <td class="group-title"><span class="group-caret">${expanded ? '▼' : '▶'}</span>${escapeHtml(userLabel)}</td>
+        <td colspan="2">${group.length} 个作业</td>
+        <td colspan="2">${escapeHtml(summarizeStates(states))}</td>
+      </tr>
+    `;
+    const detailRows = expanded ? group.map(job => `
+      <tr>
+        <td>${escapeHtml(userLabel)}</td>
+        <td>${escapeHtml(job.id)}</td>
+        <td><div class="truncate" title="${escapeHtml(job.name)}" onclick="event.stopPropagation(); this.classList.toggle('expanded'); this.textContent = this.classList.contains('expanded') ? this.title : shortJobName(this.title)">${escapeHtml(shortJobName(job.name))}</div></td>
+        <td><span class="pill ${stateClass(job.state)}">${escapeHtml(job.state)}</span></td>
+        <td>${escapeHtml(job.partition)}</td>
+      </tr>
+    `).join('') : '';
+    return summaryRow + detailRows;
+  }).join('');
+}
+
+function shortJobName(name) {
+  const text = String(name || '-');
+  const vscodeAt = text.toLowerCase().indexOf('vscode');
+  if (vscodeAt >= 0) return text.slice(0, vscodeAt + 'vscode'.length);
+  return text.length > 18 ? text.slice(0, 18) + '...' : text;
+}
+
+function toggleNodeGroup(key) {
+  if (expandedNodeGroups.has(key)) expandedNodeGroups.delete(key);
+  else expandedNodeGroups.add(key);
+  renderDashboard(window.lastDashboardData || {});
+}
+
+function toggleJobGroup(key) {
+  if (expandedJobGroups.has(key)) expandedJobGroups.delete(key);
+  else expandedJobGroups.add(key);
+  renderDashboard(window.lastDashboardData || {});
+}
+
+function renderDashboard(data) {
+  window.lastDashboardData = data;
+  const summary = data.summary || {};
+  const updatedText = formatUpdateTime(data.updated_at);
+  const nodes = data.nodes || [];
+  const gpuUsageText = formatGpuUsage(summarizeGpuUsage(nodes));
+  document.getElementById('nodeUsageSummary').textContent =
+    `${summary.node_count || 0} 台节点 · CPU ${formatUsage(summary.alloc_cpus || 0, summary.total_cpus || 0)} · GPU ${gpuUsageText}`;
+  document.getElementById('jobsSummary').textContent =
+    `全部 ${summary.job_count || 0} 个作业 · 我的 ${summary.my_job_count || 0} 个`;
+  document.getElementById('myJobsDetail').textContent =
+    summarizeMyJobs(data.my_jobs || [], summary.my_job_states || {});
+  setUpdateStamps(updatedText, '手动更新', '手动更新');
+
+  document.getElementById('nodesTable').innerHTML = renderNodeGroups(nodes);
+
+  const jobs = data.jobs || [];
+  document.getElementById('jobsTable').innerHTML = renderJobGroups(jobs);
+  initializedCurrentUserGroup = true;
+
+  if (data.errors && data.errors.length) {
+    addNotice(data.errors.join('；'), 'error');
+  }
+}
+
+async function refreshDashboard(manual = false, retryCount = 0) {
+  if (dashboardRefreshing && !manual) return;
+  dashboardRefreshing = true;
+  try {
+    const resp = await fetch('/api/dashboard');
+    const data = await resp.json();
+    if (!resp.ok || data.status !== 'ok') {
+      if (retryCount < 3) {
+        await refreshSlurmApi(false);
+        dashboardRefreshing = false;
+        return refreshDashboard(manual, retryCount + 1);
+      }
+      markSlurmJwtInvalid();
+      if (manual) addNotice(data.error || (data.errors || []).join('；') || 'Dashboard 更新失败', 'error');
+      return;
+    }
+    renderDashboard(data);
+  } catch (e) {
+    if (retryCount < 3) {
+      await refreshSlurmApi(false);
+      dashboardRefreshing = false;
+      return refreshDashboard(manual, retryCount + 1);
+    }
+    markSlurmJwtInvalid();
+    if (manual) addNotice('Dashboard 更新失败: ' + e.message, 'error');
+  } finally {
+    dashboardRefreshing = false;
+  }
+}
+
+async function createProject() {
+  const name = projectNameInput.value.trim();
+  if (!name) {
+    addNotice('请先输入作业目录名称', 'error');
+    projectNameInput.focus();
+    return;
+  }
+  const createButton = document.querySelector('#jobModal .btn.primary');
+  const originalText = createButton ? createButton.textContent : '';
+  if (createButton) {
+    createButton.disabled = true;
+    createButton.textContent = '创建并初始化中...';
+  }
+  addNotice('正在创建作业目录并初始化 miniconda 小房间...');
+  try {
+    const resp = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        environment_requirements: envRequirementsInput.value.trim(),
+        compute_requirements: computeRequirementsInput.value.trim(),
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      addNotice(data.error || '创建作业目录失败', 'error');
+      return;
+    }
+    syncProjectName(data.project_name);
+    closeJobModal();
+    addNotice(`作业目录已创建：${data.project_dir}；conda 小房间${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
+    toggleAssistant(true);
+    addChatMessage(`### 作业目录已准备好
+
+- 项目目录：\`${data.project_dir}\`
+- miniconda 小房间：\`${data.conda_env_dir}\`
+- 需求记录：\`${data.notes_path}\`
+- 环境状态：${data.conda_created ? '已完成初始化' : '已存在，继续复用'}
+
+下一步请在聊天框上方选择 **文件** 或 **文件夹** 上传项目内容。上传完成后点击 **建议报告**，我会整理依赖安装和 Slurm 算力配置草案。`, 'ai');
+  } catch (e) {
+    addNotice('创建作业目录失败: ' + e.message, 'error');
+  } finally {
+    if (createButton) {
+      createButton.disabled = false;
+      createButton.textContent = originalText;
+    }
+  }
+}
+
+async function refreshSlurmApi(notify = true) {
+  if (notify) addNotice('正在刷新 Slurm API 认证...');
+  try {
+    const resp = await fetch('/api/slurm/refresh', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      if (notify) addNotice(data.error || '刷新 Slurm 失败', 'error');
+      return false;
+    }
+    if (notify) {
+      addNotice(`Slurm 已刷新：${data.token_preview}`);
+    }
+    return true;
+  } catch (e) {
+    if (notify) addNotice('刷新 Slurm 失败: ' + e.message, 'error');
+    return false;
+  }
+}
+
+function chooseUploadFiles() {
+  if (isUploading) return;
+  if (!currentProjectName()) {
+    addNotice('请先输入作业目录名称', 'error');
+    toggleAssistant(true);
+    assistantProjectNameInput.focus();
+    return;
+  }
+  fileUploadInput.value = '';
+  fileUploadInput.click();
+}
+
+function chooseUploadFolder() {
+  if (isUploading) return;
+  if (!currentProjectName()) {
+    addNotice('请先输入作业目录名称', 'error');
+    toggleAssistant(true);
+    assistantProjectNameInput.focus();
+    return;
+  }
+  folderUploadInput.value = '';
+  folderUploadInput.click();
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return '未知大小';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+async function uploadSelectedFiles(input) {
+  const selected = Array.from(input.files || []);
+  if (!selected.length || isUploading) return;
+  const projectName = currentProjectName();
+  if (!projectName) {
+    addNotice('请先输入作业目录名称', 'error');
+    input.value = '';
+    openNewJobFlow();
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('project_name', projectName);
+  for (const file of selected) {
+    formData.append('files', file, file.webkitRelativePath || file.name);
+  }
+
+  isUploading = true;
+  addNotice(`正在上传 ${selected.length} 个文件...`);
+  try {
+    const resp = await fetch('/api/files/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) {
+      addNotice(data.error || '文件上传失败', 'error');
+      return;
+    }
+    syncProjectName(data.project_name);
+    addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.archive_size)}，目录 ${data.remote_project_dir}；conda 小房间${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
+    toggleAssistant(true);
+    addChatMessage(`### 文件上传完成
+
+- 文件数：${data.file_count}
+- 压缩包大小：${formatBytes(data.archive_size)}
+- 项目目录：\`${data.remote_project_dir}\`
+- SHA256：\`${data.local_sha256}\`
+
+现在建议点击上方 **建议报告**。如果你还有修改意见，也可以先写在下面输入框里，再点击 **建议报告**，我会把追加内容一起记录进项目说明。`, 'ai');
+  } catch (e) {
+    addNotice('文件上传失败: ' + e.message, 'error');
+  } finally {
+    isUploading = false;
+    input.value = '';
+  }
+}
+
+async function generateProjectReport() {
+  const projectName = currentProjectName();
+  if (!projectName) {
+    addNotice('请先输入作业目录名称', 'error');
+    toggleAssistant(true);
+    assistantProjectNameInput.focus();
+    return;
+  }
+  if (isProcessing) return;
+
+  const extraNotes = userInput.value.trim();
+  if (extraNotes) {
+    addChatMessage(extraNotes, 'user');
+    userInput.value = '';
+  }
+
+  isProcessing = true;
+  sendBtn.disabled = true;
+  confirmRunBtn.disabled = true;
+  addNotice('正在生成建议报告...');
+  const pending = addChatMessage('正在读取项目说明、目录和脚本，生成提交前建议报告...', 'ai');
+  try {
+    const resp = await fetch('/api/projects/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: projectName, extra_notes: extraNotes }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      setMessageContent(pending, data.error || '生成建议报告失败', 'ai');
+      addNotice(data.error || '生成建议报告失败', 'error');
+      return;
+    }
+    syncProjectName(data.project_name);
+    lastProjectReport = data.report || '';
+    lastProjectDir = data.project_dir || '';
+    setMessageContent(pending, data.report, 'ai');
+    confirmRunBtn.disabled = false;
+    addNotice(`建议报告已生成，需求记录：${data.notes_path}`);
+    addChatMessage(`请检查上面的建议报告。
+
+- 如果需要修改：把修改意见写在下面输入框里，再点 **建议报告**，我会把意见追加到需求记录并重新生成。
+- 如果确认无误：点击 **确认执行**，我会把已确认的方案交给智能体继续生成/提交作业命令。`, 'ai');
+  } catch (e) {
+    setMessageContent(pending, '生成建议报告失败: ' + e.message, 'ai');
+    addNotice('生成建议报告失败: ' + e.message, 'error');
+  } finally {
+    isProcessing = false;
+    sendBtn.disabled = false;
+  }
+}
+
+async function confirmRunPlan() {
+  const projectName = currentProjectName();
+  if (!projectName || !lastProjectReport) {
+    addNotice('请先生成建议报告，再确认执行', 'error');
+    return;
+  }
+  if (isProcessing) return;
+
+  const message = `我确认执行当前建议报告。请基于下面的信息继续推进：如果信息仍不足，先只问最关键的缺失项；如果已经足够，请生成规范的 sbatch 脚本，并调用 submit_job 提交作业。
+
+约束：
+- 项目目录：${lastProjectDir || projectName}
+- 输出目录必须规范化到项目目录下 runs/<作业名>-%j/
+- Slurm 标准输出/错误使用 runs/<作业名>-%j.out 和 runs/<作业名>-%j.err
+- 提交前不要使用交互式命令
+- 如需要安装依赖，请优先使用项目目录里的 .slurm-agent/conda-env
+
+已确认建议报告：
+${lastProjectReport.slice(0, 12000)}`;
+
+  await sendMessage(
+    message,
+    '已确认执行。请根据建议报告准备提交；如果还缺必要信息，请先问我。'
+  );
+}
+
+function addChatMessage(text, role) {
+  const div = document.createElement('div');
+  div.className = `message ${role}`;
+  setMessageContent(div, text, role);
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function addToolCard(name, result = '') {
+  const div = document.createElement('div');
+  div.className = 'tool-card';
+  div.textContent = result ? `工具 ${name} 完成：${result}` : `正在执行工具 ${name}...`;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+async function sendMessage(forcedText = null, displayText = null) {
+  const text = (forcedText == null ? userInput.value : forcedText).trim();
   if (!text || isProcessing) return;
 
   isProcessing = true;
   sendBtn.disabled = true;
   userInput.value = '';
-  userInput.focus();
-
-  addUserMessage(text);
-  addTypingIndicator();
-
-  currentAiBubble = null;
-  currentAiMarkdown = '';
-  currentToolCard = null;
+  addChatMessage(displayText || text, 'user');
+  currentAiMessage = null;
+  currentAiText = '';
 
   try {
     const resp = await fetch('/chat', {
@@ -713,151 +1788,60 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
     });
-
     if (!resp.ok) {
       const err = await resp.json();
-      removeTypingIndicator();
-      addErrorBanner(err.error || '请求失败');
+      addChatMessage(err.error || '请求失败', 'ai');
       return;
     }
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
-      buffer = lines.pop() || '';  // 保留不完整的行
-
+      buffer = lines.pop() || '';
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
-        const jsonStr = line.slice(6);
-        try {
-          const event = JSON.parse(jsonStr);
-          handleSSEEvent(event);
-        } catch (e) {
-          // 忽略解析错误
+        const event = JSON.parse(line.slice(6));
+        if (event.type === 'text') {
+          if (!currentAiMessage) currentAiMessage = addChatMessage('', 'ai');
+          currentAiText += event.content || '';
+          setMessageContent(currentAiMessage, currentAiText, 'ai');
+        } else if (event.type === 'tool_start') {
+          addToolCard(event.tool);
+        } else if (event.type === 'tool_end') {
+          addToolCard(event.tool, event.result || '');
+        } else if (event.type === 'error') {
+          addChatMessage(event.content || '服务异常', 'ai');
         }
       }
     }
-
   } catch (e) {
-    removeTypingIndicator();
-    addErrorBanner('网络错误: ' + e.message);
+    addChatMessage('网络错误: ' + e.message, 'ai');
   } finally {
-    removeTypingIndicator();
     isProcessing = false;
     sendBtn.disabled = false;
     userInput.focus();
   }
 }
 
-function handleSSEEvent(event) {
-  switch (event.type) {
-    case 'tool_start':
-      // 移除 typing indicator，创建工具卡片
-      removeTypingIndicator();
-      currentToolCard = createToolCard(event.tool);
-      break;
-
-    case 'tool_end':
-      if (currentToolCard) {
-        finishToolCard(currentToolCard, event.result || '');
-        currentToolCard = null;
-      }
-      // 工具执行完后可能还有 LLM 回复，重新显示 typing
-      addTypingIndicator();
-      break;
-
-    case 'text':
-      removeTypingIndicator();
-      if (!currentAiBubble) {
-        currentAiBubble = createAiBubble();
-      }
-      currentAiMarkdown += event.content;
-      // 流式渲染 markdown，边收边渲染（最终格式完整）
-      currentAiBubble.innerHTML = renderMarkdown(currentAiMarkdown);
-      scrollToBottom();
-      break;
-
-    case 'done':
-      currentAiBubble = null;
-      break;
-
-    case 'error':
-      removeTypingIndicator();
-      addErrorBanner(event.content);
-      break;
-  }
-}
-
-// ---- Reset ----
-
 async function resetChat() {
-  if (isProcessing) return;
-
   try {
     await fetch('/reset', { method: 'POST' });
-    messagesEl.innerHTML = `
-      <div class="empty-hint">
-        <span class="big-icon">💬</span>
-        对话已重置。<br>
-        试试问：<b>"帮我看看有哪些作业"</b> 或 <b>"帮我生成一个 PyTorch 训练脚本"</b>
-      </div>
-    `;
-    currentAiBubble = null;
-    currentAiMarkdown = '';
-    currentToolCard = null;
+    messagesEl.innerHTML = '<div class="message ai">对话已重置。可以继续查询资源、生成脚本或准备提交命令。</div>';
+    lastProjectReport = '';
+    lastProjectDir = '';
+    confirmRunBtn.disabled = true;
   } catch (e) {
-    addErrorBanner('重置失败: ' + e.message);
+    addNotice('重置失败: ' + e.message, 'error');
   }
 }
 
-// ---- Token Refresh ----
-
-function formatTokenRemaining(seconds) {
-  if (seconds === null || seconds === undefined) return '未知';
-  if (seconds <= 0) return '已过期';
-  const hours = seconds / 3600;
-  if (hours >= 1) return hours.toFixed(1) + ' 小时';
-  return Math.ceil(seconds / 60) + ' 分钟';
-}
-
-async function refreshKey() {
-  if (isProcessing) return;
-
-  try {
-    const proxyResp = await fetch('/api/proxy/refresh', { method: 'POST' });
-    const proxyData = await proxyResp.json();
-    if (!proxyResp.ok) {
-      addErrorBanner(proxyData.error || '未找到可用的 SSH SOCKS 端口');
-      return;
-    }
-
-    addNoticeBanner(`已扫描代理：${proxyData.proxy}，正在通过 SSH 生成新 Key...`);
-
-    const refreshResp = await fetch('/api/token/refresh', { method: 'POST' });
-    const refreshData = await refreshResp.json();
-    if (!refreshResp.ok) {
-      addErrorBanner(
-        (refreshData.error || 'Key 刷新失败') +
-        '。请确认本机 ssh 可以非交互执行：ssh 107.ustc.edu.cn "scontrol token lifespan=86400"'
-      );
-      return;
-    }
-
-    addNoticeBanner(
-      `Key 已更新：${refreshData.preview}，剩余 ${formatTokenRemaining(refreshData.seconds_remaining)}。`
-    );
-  } catch (e) {
-    addErrorBanner('刷新 Key 失败: ' + e.message);
-  }
-}
+refreshDashboard(false);
+refreshTimer = setInterval(() => refreshDashboard(false), 15000);
 </script>
-
 </body>
 </html>
