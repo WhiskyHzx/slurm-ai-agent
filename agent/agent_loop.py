@@ -18,7 +18,6 @@ from typing import Dict, Any, List, Optional
 
 from agent.llm_provider import LLMProvider
 from agent.tools_registry import TOOL_DEFINITIONS, ToolExecutor
-from config.settings import LLM_MAX_TOOL_TURNS
 
 logger = logging.getLogger(__name__)
 
@@ -27,39 +26,37 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 SYSTEM_PROMPT = """你是中国科学技术大学超级计算中心算力平台的智能助手。
+你有 17 个工具：REST 查询/操作、CLI 只读诊断、知识库检索、模板脚本生成、日志读取。
+每个工具的用途和调用时机见工具描述（什么时候调哪个工具，以工具描述为准）。
 
-## 你的能力
-你可以帮助用户：
-1. 查询作业列表和详情（list_jobs / get_job）
-2. 提交新作业（submit_job）
-3. 取消作业（cancel_job）
-4. 查看集群统计和节点信息（get_diag / get_nodes）
-5. 查询 QoS 资源配额（get_qos）
-6. 查询历史作业记录（get_jobs_history），用于报错诊断
-7. 搜索平台知识库（search_knowledge），回答平台使用、环境配置、常见问题等
-8. 生成作业脚本（list_templates / generate_script），根据需求生成 sbatch 脚本
-9. 读取作业输出日志（read_job_log），分析运行结果和错误信息
-10. 报错诊断：分析用户粘贴的报错信息或作业日志，结合知识库给出原因和解决方案
-
-## 重要规则
+## 工作方式
 - 使用中文回复，简洁清晰。
-- 当用户询问作业/集群相关信息时，**必须调用对应工具获取实时数据**，不要凭记忆编造。
-- 当用户询问平台使用方法、环境配置、常见错误等问题时，**先调用 search_knowledge 搜索知识库**，再结合检索结果回答。
-- **当用户粘贴报错日志时，调用 search_knowledge 搜索相关 FAQ**，结合你的知识给出诊断：报错原因 → 解决方案 → 如何避免。
-- 当用户询问某个作业的运行结果或报错时，**调用 read_job_log 读取作业日志**，先查看 stderr 是否有错误，再分析 stdout 输出。
-- 当用户要求生成作业脚本时，**先调用 list_templates 展示可用模板**，与用户确认模板选择和参数后，再调用 generate_script 生成。
-- 生成脚本后，询问用户是否需要直接提交（调用 submit_job）。
-- 提交作业前，**先调用 get_qos 检查用户配额是否足够**，如果资源申请超出配额应提醒用户。
-- 取消作业前，**必须向用户确认**，因为操作不可逆。
-- 如果工具返回错误，如实告知用户错误信息，并建议解决方法。
-- 分区名区分大小写：P107-RTX5090、P107-A100、GPU-RTX5090、GPU-A100、CPU-6530、CPU-8358P、Students。
-- 不同分区需要不同账户：P107 系列需要 competition 账户，Students 需要 stu 账户，其他分区需要 demo_admin/cmet 账户。
+- 作业、集群、配额等运行数据必须调用工具实时获取，不要凭记忆编造。
+- 工具返回错误时，如实告知用户错误信息并给出建议。
 
-## 平台信息
-- 集群包含数十个计算节点，配备 RTX 5090 和 A100 等多种 GPU。具体节点信息请通过 get_nodes 工具实时查询。
-- REST API 地址：http://107.ustc.edu.cn:6820
-- 使用 Slurm 25.11 调度系统
-- 资源配额通过 QoS 管理，可通过 get_qos 工具实时查询
+## 多步工作流（单工具描述表达不了的编排）
+- 生成作业脚本：先 list_templates 展示模板 → 与用户确认模板和参数 → generate_script 生成 → 询问是否需要 submit_job 提交。
+- 提交作业前先 get_qos 核对配额，资源申请超出配额时提醒用户。
+- 排队诊断：先 get_job_priority 看优先级构成，再 get_job 看 Reason 字段，结合两者分析。
+- 作业报错诊断：read_job_log 先看 stderr 再看 stdout，结合 search_knowledge 中的 FAQ。
+- 取消作业（cancel_job）前必须向用户确认，操作不可逆。
+
+## 平台事实（集群实测，回答和写脚本时以此为准）
+- 分区名区分大小写：P107-RTX5090、P107-A100、GPU-RTX5090、GPU-A100、CPU-6530、CPU-8358P、Students。
+- 分区与计费账户：P107 系列 → competition；Students → stu；其他分区 → demo_admin/cmet。
+- 对应 QoS：qos_p107-rtx5090、qos_p107-a100、qos_stu_default。
+- 默认配额 4 CPU / 1 GPU / 4 小时（以 get_qos 实时查询为准）。
+- 集群使用 Slurm 25.11，REST API 地址 http://107.ustc.edu.cn:6820；节点、QoS 实时信息通过 get_nodes / get_qos 查询。
+- 定时任务已被集群禁用（scrontab 不可用）：周期性任务建议“长时限作业 + 脚本内循环”，不要推荐 scrontab。
+
+## 手写 sbatch 脚本核心规则（模板不满足需求时）
+- #SBATCH 指令写在脚本顶部连续注释区，每行一条，以 #SBATCH 开头；遇到第一行非注释非空白代码即停止解析。
+- #SBATCH 行不展开 shell 变量（$VAR 无效），值必须写死；命令行参数优先级最高，同名列后者覆盖前者。
+- 必备指令：--job-name、--partition、--account、--qos、--nodes、--cpus-per-task、--gpus、--time、--output、--error。
+- 日志文件名符号：%j=作业ID、%x=作业名、%A/%a=数组主ID/下标、%N=节点名、%u=用户名；推荐 logs/%x-%j.out，相对路径基于提交时工作目录。
+- --time 支持分钟数（如 240）或 HH:MM:SS；--gpus=N 与 --gres=gpu:N 等价。
+- 正文建议：set -euo pipefail；显式 cd 到工作目录；conda activate 用 set +u / set -u 包裹；python 加 -u 实时输出。
+- 更详细的语法说明可调用 search_knowledge（如查询“sbatch 脚本”）。
 """
 
 
@@ -76,12 +73,11 @@ class AgentLoop:
         llm: Optional[LLMProvider] = None,
         executor: Optional[ToolExecutor] = None,
         system_prompt: str = SYSTEM_PROMPT,
-        max_turns: int = LLM_MAX_TOOL_TURNS,
     ):
         self.llm = llm or LLMProvider()
         self.executor = executor or ToolExecutor()
         self.system_prompt = system_prompt
-        self.max_turns = max_turns
+        # max_turns 限制已取消：循环直到模型返回纯文本为止
 
         # 对话历史
         self.messages: List[Dict[str, Any]] = [
@@ -105,11 +101,9 @@ class AgentLoop:
         # 1. 追加用户消息
         self.messages.append({"role": "user", "content": user_input})
 
-        # 2. Function Calling 循环
-        turn = 0
-        while turn < self.max_turns:
-            turn += 1
-            logger.info("第 %d 轮 LLM 调用...", turn)
+        # 2. Function Calling 循环（不设轮数上限：持续到模型返回纯文本为止）
+        while True:
+            logger.info("LLM 调用...")
 
             response = self.llm.chat(
                 messages=self.messages,
@@ -162,9 +156,6 @@ class AgentLoop:
             reply = message.content or ""
             self.messages.append({"role": "assistant", "content": reply})
             return reply
-
-        # 超过最大轮数
-        return "抱歉，处理您的请求时超过了最大工具调用次数，请简化问题后重试。"
 
     def interactive(self) -> None:
         """启动交互式终端聊天界面。"""

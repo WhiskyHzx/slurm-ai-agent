@@ -1,8 +1,0 @@
-.venv
-docs-agent/
-tmp/
-output/playwright/
-.playwright-cli/
-legacy/
-/site/
-.cache

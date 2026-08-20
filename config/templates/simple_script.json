@@ -16,6 +16,18 @@
       "default": "P107-RTX5090",
       "description": "计算分区"
     },
+    "account": {
+      "type": "string",
+      "label": "计费账户",
+      "default": "competition",
+      "description": "与分区匹配：P107 系列用 competition，Students 用 stu"
+    },
+    "qos": {
+      "type": "string",
+      "label": "QoS",
+      "default": "qos_p107-rtx5090",
+      "description": "与分区匹配：qos_p107-rtx5090 / qos_p107-a100 / qos_stu_default"
+    },
     "gpu_count": {
       "type": "int",
       "label": "GPU 数量",
@@ -59,5 +71,5 @@
       "description": "命令执行时的工作目录"
     }
   },
-  "script_template": "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --partition={{ partition }}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n{% if gpu_count > 0 %}#SBATCH --gpus={{ gpu_count }}\n{% endif %}#SBATCH --cpus-per-task={{ cpu_count }}\n#SBATCH --time={{ time_hours }}:00:00\n#SBATCH --output=logs/{{ job_name }}_%j.out\n#SBATCH --error=logs/{{ job_name }}_%j.err\n\ncd {{ work_dir }} || { echo \"目录 {{ work_dir }} 不存在\"; exit 1; }\nmkdir -p logs\n\nsource $(conda info --base)/etc/profile.d/conda.sh\nconda activate {{ conda_env }}\n\necho \"作业 {{ job_name }} 开始于 $(date)，节点: $(hostname)\"\n\n{{ command }}\n\necho \"作业 {{ job_name }} 结束于 $(date)\"\n"
+  "script_template": "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --partition={{ partition }}\n#SBATCH --account={{ account }}\n#SBATCH --qos={{ qos }}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n{% if gpu_count > 0 %}#SBATCH --gpus={{ gpu_count }}\n{% endif %}#SBATCH --cpus-per-task={{ cpu_count }}\n#SBATCH --time={{ time_hours }}:00:00\n#SBATCH --output=logs/{{ job_name }}_%j.out\n#SBATCH --error=logs/{{ job_name }}_%j.err\n\ncd {{ work_dir }} || { echo \"目录 {{ work_dir }} 不存在\"; exit 1; }\nmkdir -p logs\n\nsource $(conda info --base)/etc/profile.d/conda.sh\nconda activate {{ conda_env }}\n\necho \"作业 {{ job_name }} 开始于 $(date)，节点: $(hostname)\"\n\n{{ command }}\n\necho \"作业 {{ job_name }} 结束于 $(date)\"\n"
 }

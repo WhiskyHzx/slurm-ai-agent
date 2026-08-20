@@ -94,12 +94,12 @@ http://127.0.0.1:8080
 
 ## 上传本地文件
 
-页面右上角先填写本次项目名称，再选择上传入口：
+页面右上角点击 `上传`，在弹窗中填写作业目录名称，再选择上传入口：
 
 ```text
-项目名
-文件
-文件夹
+作业目录名称
+上传文件
+上传文件夹
 ```
 
 选择后，应用会自动做：
@@ -107,10 +107,10 @@ http://127.0.0.1:8080
 1. 接收你在浏览器里选中的文件。
 2. 在服务器临时目录打包成 `.tar.gz`。
 3. 计算压缩包 SHA256。
-4. 在服务器上创建 `~/projects/项目名`。
-5. 保存压缩包到 `~/projects/项目名/.slurm-agent/uploads/`。
+4. 在服务器上创建 `~/projects/作业目录名称`。
+5. 保存压缩包到 `~/projects/作业目录名称/.slurm-agent/uploads/`。
 6. 校验保存后的压缩包 SHA256。
-7. 解压到 `~/projects/项目名`。
+7. 解压到 `~/projects/作业目录名称`。
 
 上传成功后页面会显示项目目录，例如：
 
@@ -125,14 +125,14 @@ http://127.0.0.1:8080
 当前页面上传适合第一次提交或偶尔整体更新。频繁改代码时，更合适的后续功能是“同步并重启作业”：
 
 ```bash
-rsync -az --delete --exclude .git --exclude __pycache__ 本地项目/ 107.ustc.edu.cn:~/projects/项目名/
+rsync -az --delete --exclude .git --exclude __pycache__ 本地项目/ 107.ustc.edu.cn:~/projects/作业目录名称/
 ```
 
 然后按项目记录上一次提交的 Slurm job id。点击重启时自动执行：
 
 ```bash
 scancel 上一次jobid
-cd ~/projects/项目名 && sbatch 作业脚本.sh
+cd ~/projects/作业目录名称 && sbatch 作业脚本.sh
 ```
 
 更稳妥的版本应该加两个保护：

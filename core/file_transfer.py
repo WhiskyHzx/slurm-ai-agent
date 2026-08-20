@@ -25,6 +25,7 @@ DEFAULT_REMOTE_PROJECTS_BASE = "~/projects"
 DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_CONDA_PYTHON_VERSION = "3.10"
 DEFAULT_CONDA_CREATE_TIMEOUT = 900
+DEFAULT_CONDA_CHANNELS = "conda-forge"
 CHUNK_SIZE = 1024 * 1024
 MAX_PROJECT_NAME_LENGTH = 80
 
@@ -78,6 +79,11 @@ def get_conda_create_timeout() -> int:
         return DEFAULT_CONDA_CREATE_TIMEOUT
 
 
+def get_conda_channels() -> list[str]:
+    raw = os.environ.get("SLURM_CONDA_CHANNELS", DEFAULT_CONDA_CHANNELS)
+    return [channel.strip() for channel in raw.split(",") if channel.strip()]
+
+
 def find_conda_executable() -> str:
     configured = os.environ.get("SLURM_CONDA_EXE", "").strip()
     candidates = [
@@ -99,16 +105,16 @@ def find_conda_executable() -> str:
 def normalize_project_name(raw_name: str) -> str:
     name = raw_name.strip()
     if not name:
-        raise FileTransferError("请先输入本次项目名称")
+        raise FileTransferError("请先输入作业目录名称")
 
     name = re.sub(r"\s+", "-", name)
     name = "".join(ch for ch in name if ch.isalnum() or ch in "._-")
     name = name.strip("._-")
 
     if not name:
-        raise FileTransferError("项目名称只能包含文字、数字、点、下划线或短横线")
+        raise FileTransferError("作业目录名称只能包含文字、数字、点、下划线或短横线")
     if len(name) > MAX_PROJECT_NAME_LENGTH:
-        raise FileTransferError(f"项目名称过长，最多 {MAX_PROJECT_NAME_LENGTH} 个字符")
+        raise FileTransferError(f"作业目录名称过长，最多 {MAX_PROJECT_NAME_LENGTH} 个字符")
     return name
 
 
@@ -181,11 +187,16 @@ def ensure_conda_room(conda_env_dir: Path) -> bool:
     conda_env_dir.parent.mkdir(parents=True, exist_ok=True)
     conda_exe = find_conda_executable()
     python_version = get_conda_python_version()
+    channels = get_conda_channels()
+    channel_args = ["--override-channels"]
+    for channel in channels:
+        channel_args.extend(["-c", channel])
     result = subprocess.run(
         [
             conda_exe,
             "create",
             "-y",
+            *channel_args,
             "-p",
             str(conda_env_dir),
             f"python={python_version}",
@@ -196,7 +207,15 @@ def ensure_conda_room(conda_env_dir: Path) -> bool:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "conda create failed").strip()
-        raise FileTransferError(f"创建 conda 小房间失败: {detail[-1000:]}")
+        if "Terms of Service have not been accepted" in detail or "CondaToSNonInteractiveError" in detail:
+            raise FileTransferError(
+                "创建项目 Conda 环境失败：当前 Conda 默认源需要先接受 Anaconda 服务条款。"
+                "本项目已默认使用 conda-forge 并覆盖默认源；如果你仍看到这个错误，"
+                "请检查 SLURM_CONDA_CHANNELS 是否包含 repo.anaconda.com，或在终端执行："
+                "\nconda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main"
+                "\nconda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r"
+            )
+        raise FileTransferError(f"创建项目 Conda 环境失败: {detail[-1000:]}")
     return True
 
 
@@ -220,6 +239,7 @@ def extract_archive_to_project(
 
     with tarfile.open(stored_archive, "r:gz") as archive:
         archive.extractall(project_dir)
+    stored_archive.unlink(missing_ok=True)
 
     return UploadResult(
         upload_id=upload_id,

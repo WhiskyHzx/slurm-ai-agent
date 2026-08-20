@@ -16,6 +16,18 @@
       "default": "CPU-6530",
       "description": "CPU 计算分区"
     },
+    "account": {
+      "type": "string",
+      "label": "计费账户",
+      "default": "competition",
+      "description": "与分区匹配：P107 系列用 competition，Students 用 stu；CPU-6530/CPU-8358P 一般需 demo_admin/cmet 账户"
+    },
+    "qos": {
+      "type": "string",
+      "label": "QoS",
+      "default": "qos_p107-rtx5090",
+      "description": "与分区匹配：qos_p107-rtx5090 / qos_p107-a100 / qos_stu_default"
+    },
     "cpu_count": {
       "type": "int",
       "label": "CPU 核数",
@@ -51,5 +63,5 @@
       "description": "代码和数据所在目录"
     }
   },
-  "script_template": "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --partition={{ partition }}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task={{ cpu_count }}\n#SBATCH --time={{ time_hours }}:00:00\n#SBATCH --output=logs/{{ job_name }}_%j.out\n#SBATCH --error=logs/{{ job_name }}_%j.err\n\n# 进入工作目录\ncd {{ work_dir }} || { echo \"目录 {{ work_dir }} 不存在\"; exit 1; }\n\n# 创建日志目录\nmkdir -p logs\n\n# 激活 conda 环境\nsource $(conda info --base)/etc/profile.d/conda.sh\nconda activate {{ conda_env }}\n\n# 记录环境信息\necho \"==========================================\"\necho \"作业 ID: $SLURM_JOB_ID\"\necho \"节点: $(hostname)\"\necho \"CPU 核数: {{ cpu_count }}\"\necho \"开始时间: $(date)\"\necho \"==========================================\"\n\n# 执行用户命令\n{{ command }}\n\necho \"==========================================\"\necho \"结束时间: $(date)\"\necho \"==========================================\"\n"
+  "script_template": "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --partition={{ partition }}\n#SBATCH --account={{ account }}\n#SBATCH --qos={{ qos }}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task={{ cpu_count }}\n#SBATCH --time={{ time_hours }}:00:00\n#SBATCH --output=logs/{{ job_name }}_%j.out\n#SBATCH --error=logs/{{ job_name }}_%j.err\n\n# 进入工作目录\ncd {{ work_dir }} || { echo \"目录 {{ work_dir }} 不存在\"; exit 1; }\n\n# 创建日志目录\nmkdir -p logs\n\n# 激活 conda 环境\nsource $(conda info --base)/etc/profile.d/conda.sh\nconda activate {{ conda_env }}\n\n# 记录环境信息\necho \"==========================================\"\necho \"作业 ID: $SLURM_JOB_ID\"\necho \"节点: $(hostname)\"\necho \"CPU 核数: {{ cpu_count }}\"\necho \"开始时间: $(date)\"\necho \"==========================================\"\n\n# 执行用户命令\n{{ command }}\n\necho \"==========================================\"\necho \"结束时间: $(date)\"\necho \"==========================================\"\n"
 }

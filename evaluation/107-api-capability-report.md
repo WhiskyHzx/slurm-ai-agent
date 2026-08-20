@@ -1,300 +1,176 @@
-# 107 Slurm REST API 能力确认报告
+# 107 算力平台 Slurm 命令行能力实测报告
 
-日期：2026-08-19  
-本地项目：`/Users/mac/work/slurm-ai-agent`  
-访问方式：Mac 本地运行后端，通过 VS Code Remote-SSH 的 SOCKS 隧道访问 107 API  
-SOCKS 代理：`socks5h://127.0.0.1:50697`
+日期：2026-08-21  
+测试方式：Mac 本地通过 SSH（`ssh 107.ustc.edu.cn`，ControlMaster 复用连接）在登录节点远程执行  
+本地项目：`/Users/mac/work/slurm-ai-agent`（与远程 `/home/scc/pb25111697/slurm-ai-agent` 绑定）
 
-## 1. 当前结论
+## 1. 测试环境
 
-本地运行方案已经跑通：
-
-- `.env` 已包含 `SLURM_JWT`
-- `.env` 已包含 `LLM_API_KEY`
-- `.env` 已增加 `SLURM_API_PROXY=socks5h://127.0.0.1:50697`
-- 本地 Python 虚拟环境 `.venv` 已安装依赖
-- 本地 FastAPI 服务已启动在 `http://127.0.0.1:8080`
-- 聊天接口实测成功调用 `get_diag`，能通过 LLM 自动查询集群实时状态
-
-注意：`50697` 是 VS Code Remote-SSH 当前生成的 SOCKS 端口。如果重连 SSH，这个端口可能变化，需要重新检查 VS Code Remote-SSH 的 `socksPort` 并更新 `.env`。
-
-## 2. 认证方式
-
-107 的 slurmrestd 实测支持单独使用以下两种认证 header：
-
-```http
-X-SLURM-USER-TOKEN: <SLURM_JWT>
-```
-
-或：
-
-```http
-Authorization: Bearer <SLURM_JWT>
-```
-
-但实测发现：**两个 header 同时发送会返回 401**。
-
-因此当前项目已改为只发送：
-
-```http
-X-SLURM-USER-TOKEN: <SLURM_JWT>
-```
-
-## 3. OpenAPI 描述
-
-107 slurmrestd 暴露了 OpenAPI 描述：
-
-```text
-GET /openapi.json
-GET /openapi/v3
-```
-
-实测：
-
-- OpenAPI 版本：`3.0.3`
-- API 标题：`Slurm REST API`
-- Slurm 版本：`Slurm-25.11.2`
-- 路径数量：`157`
-- 方法统计：
-  - `GET`: 136
-  - `POST`: 69
-  - `DELETE`: 44
-- 标签统计：
-  - `slurm`: 98
-  - `slurmdb`: 149
-  - `util`: 2
-
-OpenAPI 文件已下载到：
-
-```text
-competition-evaluation/107-openapi.json
-```
-
-## 4. 实测可用的只读能力（详细说明 + 分类）
-
-以下 endpoint 已用当前 `SLURM_JWT` + SOCKS 隧道实测。每个指令的具体作用、适合面向的视角，以及和用户个人/集群整体的关系，都做了说明。
-
-> **视角说明——看「总体情况」还是「个人情况」：**
-> - **总体情况**：反映整个集群的实时状态（所有节点、所有用户、整个分区的负载）。适合做 Dashboard / 资源监控、集群概况问答。
-> - **个人情况**：只反映当前 token 对应的用户（自己）的作业/使用，不牵涉他人数据。适合做「我的作业」「我的配额」等个人中心功能。
-> - 有些 endpoint 两者都涉及，会在说明中分别指出。
-
----
-
-### 4.1 集群总体情况（Dashboard / 资源监控）
-
-这一类 endpoint 反映**全局/集群尺度**的信息，适合用作主界面的资源监控 Dashboard、集群概况问答，以及判断「当前是否拥挤、该往哪个分区提交作业」。
-
-#### `/slurm/v0.0.41/ping/`
-- **作用**：探测 slurmctld 控制守护进程是否在线。
-- **返回**：`pings=1`（数字表示探测成功的次数）。
-- **实际价值**：作为**前提判断**——任何其他 Slurm 查询如果失败，都先用它确认控制节点是否活着。适合放在「刷新 Slurm」成功后的自检步骤里。
-
-#### `/slurm/v0.0.41/diag/`
-- **作用**：返回 slurmctld 的**调度统计与集群整体运行指标**，例如当前正在运行/排队/完成的作业数量、每秒调度次数、后台线程数量、以及每个线程/各时间段的统计（statistics 数据）。
-- **返回**：`statistics=yes`，即完整统计信息。
-- **视角**：**总体情况**。它能直接回答「现在集群里有多少作业、排了多长队、调度忙不忙」——非常适合做集群状态问答和 Dashboard 顶部统计卡片。
-
-#### `/slurm/v0.0.41/jobs/`
-- **作用**：列出**当前**（尚未结束的）作业，包含每个作业的 ID、名称、所属用户、分区、状态、申请/占用的节点与 CPU、内存、提交时间、运行时长限制等详细信息。
-- **返回**：`jobs=28`（28 个当前作业）。
-- **视角**：**总体与个人兼具**。不传参数时返回全集群所有用户的作业（总体）；但可以认为**当前任务集中在集群层面**。若只想看自己，需要在代码里按 `user_id` / `user_name` 过滤，或配合 `/jobs/state/` 使用。
-
-#### `/slurm/v0.0.41/jobs/state/`
-- **作用**：一个**更轻量的作业状态列表**——只返回每个作业的 ID、状态等少量字段，比 `/jobs/` 返回更快、数据量更小，适合高频轮询。
-- **返回**：作业状态列表（实测有返回，数量与 `/jobs/` 口径可能有差异）。
-- **视角**：**总体与个人兼具**，适合 Dashboard 上「作业情况」表格快速轮询（15 秒自动刷新场景下优先用它，负载更小）。
-
-#### `/slurm/v0.0.41/nodes/`
-- **作用**：返回每个**计算节点**的实时状态：节点名、所属分区、状态（idle/alloc/down/drain 等）、CPU 总数与已分配数、内存总量与已分配量、GPU/TRES 资源。
-- **返回**：`nodes=28`（28 个节点）。
-- **视角**：**总体情况**。天然用于「节点情况」表格和「分区资源利用率」进度条（按节点汇总出每个分区的 CPU/内存利用率）。
-
-#### `/slurm/v0.0.41/partitions/`
-- **作用**：列出所有**分区（队列）**的名称、节点数、配额上限、默认时间限制、可用性状态（up/down/inactive）等。
-- **返回**：`partitions=7`（7 个分区）。
-- **视角**：**总体情况**。用于「分区情况」表格——说明有哪些队列可选、每个队列能开多少资源，帮助用户在提交作业时选择合适分区。
-
-#### `/slurm/v0.0.41/licenses/`
-- **作用**：查询集群中登记的**许可证（license）**及其剩余数量。
-- **返回**：`licenses=0`，即当前集群配置了 0 个许可证。
-- **视角**：**总体情况**，目前价值有限（因为集群没有许可证）。
-
-#### `/slurm/v0.0.41/reservations/`
-- **作用**：查询**资源预约**信息——管理员或高级用户预先为某段时间预留的一批节点。
-- **返回**：空（`reservations=0`），当前没有预约。普通展示意义不大，但可作为一种「近期是否有人预定大量资源」的提示。
-
-#### `/slurmdb/v0.0.41/diag/`
-- **作用**：SlurmDB（记账数据库）的诊断/统计端点。
-- **返回**：`500`（服务端错误）。
-- **实测结论**：当前**不稳定，不建议依赖**。
-
-#### `/slurmdb/v0.0.41/clusters/`
-- **作用**：列出 SlurmDB 中登记的**集群**信息（集群名、关联的节点/记账配置等）。
-- **返回**：`clusters=1`（1 个集群）。
-- **视角**：**总体情况**，属于基础元信息，展示价值较低。
-
----
-
-### 4.2 个人情况（我的作业 / 我的配额）
-
-这一类 endpoint 主要反映**当前 token 对应用户（自己）**的信息，适合做个人中心、通知、限额提醒等。
-
-#### `/slurmdb/v0.0.41/users/`
-- **作用**：返回**当前 token 对应用户**的信息（用户名、所属账号、默认分区、QoS、配额等）。
-- **返回**：`users=1`（1 个用户，即你自己）。
-- **视角**：**个人情况**。用于把「当前是谁在操作」「这个人属于哪个账号/哪个 QoS」展示给用户。
-
-#### `/slurmdb/v0.0.41/jobs/`
-- **作用**：查询**历史作业**（包括已完成、失败、被取消的作业），通过 slurmdbd 记账库查询。
-- **返回**：`jobs=0`（当前默认查询为空——需要加查询参数，如 `job_id=`、`submit_time=`、`user=`，才返回有意义的历史记录）。
-- **视角**：**个人情况**（但也能按用户/账号维度查询他人，默认查自己最常用）。用于「历史作业」「我的作业」「报错诊断——看看之前失败的作业日志」。
-- **注意**：默认空结果是因为没带参数。要真正可用，需要在查询 URL 上带 `?user=<自己>` 或 `?job_id=<具体ID>` 等参数。
-
-#### `/slurmdb/v0.0.41/qos/`
-- **作用**：列出集群配置的**QoS（服务质量）**——每种 QoS 对应的 CPU/GPU 内存配额上限、优先级、时间限制等。
-- **返回**：`qos=23`（23 种 QoS）。
-- **视角**：**总体与个人兼具**。QoS 列表本身是全局配置（总体）；但结合 `/slurmdb/users/`（当前用户所属 QoS）可算出「我这个 QoS 还剩多少配额」（个人）。
-
-#### `/slurmdb/v0.0.41/tres/`
-- **作用**：列出**TRES（Trackable RESources，可跟踪资源）**的清单及计量单位——CPU、内存、GPU、GRES 等，是 slurm 做计费与统计的基本单位。
-- **返回**：TRES 数据（CPU、GPU、内存等类型定义）。
-- **视角**：**总体情况（元数据）**。主要用于理解 API 用法和资源字段口径，而不是直接展示给普通用户。
-
----
-
-### 4.3 稳定 / 不稳定能力速查表
-
-| endpoint | 状态 | 一句话作用 | 视角 |
-|---|---:|---|---|
-| `/slurm/v0.0.41/ping/` | 200 | 探测 slurmctld 是否在线 | 总体 |
-| `/slurm/v0.0.41/diag/` | 200 | 集群整体调度统计 | 总体 |
-| `/slurm/v0.0.41/jobs/` | 200 | 当前作业明细列表 | 总体/个人 |
-| `/slurm/v0.0.41/jobs/state/` | 200 | 精简作业状态列表 | 总体/个人 |
-| `/slurm/v0.0.41/nodes/` | 200 | 节点状态/资源 | 总体 |
-| `/slurm/v0.0.41/partitions/` | 200 | 分区/队列信息 | 总体 |
-| `/slurm/v0.0.41/licenses/` | 200 | 许可证剩余量 | 总体（少） |
-| `/slurm/v0.0.41/reservations/` | 200 | 资源预约（当前无） | 总体 |
-| `/slurmdb/v0.0.41/diag/` | 500 | SlurmDB 统计 | 不稳定 |
-| `/slurmdb/v0.0.41/accounts/` | 500 | 账号列表 | 不稳定 |
-| `/slurmdb/v0.0.41/config` | 500 | SlurmDB 配置 | 不稳定 |
-| `/slurmdb/v0.0.41/clusters/` | 200 | 集群信息 | 总体 |
-| `/slurmdb/v0.0.41/users/` | 200 | 当前用户信息 | 个人 |
-| `/slurmdb/v0.0.41/jobs/` | 200 | 历史作业（需参数） | 个人/总体 |
-| `/slurmdb/v0.0.41/qos/` | 200 | QoS 配额列表 | 总体/个人 |
-| `/slurmdb/v0.0.41/tres/` | 200 | 可计费资源类型 | 总体（元数据） |
-
-## 5. 实测不稳定或不建议依赖的只读能力
-
-| endpoint | 状态 | 说明 |
-|---|---:|---|
-| `/slurm/v0.0.41/shares` | timeout | 12 秒无响应，不适合演示依赖 |
-| `/slurmdb/v0.0.41/diag/` | 500 | SlurmDB diag 返回服务端错误 |
-| `/slurmdb/v0.0.41/accounts/` | 500 | 账号列表返回服务端错误 |
-| `/slurmdb/v0.0.41/config` | 500 | SlurmDB 配置返回服务端错误 |
-
-## 6. OpenAPI 中存在但要谨慎使用的写操作
-
-OpenAPI 显示 slurmrestd 支持大量 `POST` 和 `DELETE` 操作。它们可能需要更高权限，也可能会真实修改集群状态。
-
-当前作品可以考虑使用，但必须加确认机制：
-
-| endpoint | 方法 | 能力 | 风险 |
-|---|---|---|---|
-| `/slurm/v0.0.41/job/submit` | POST | 提交作业 | 会真实提交作业 |
-| `/slurm/v0.0.41/job/{job_id}` | DELETE | 取消作业 | 会真实取消作业 |
-| `/slurm/v0.0.41/job/{job_id}` | POST | 更新作业 | 可能修改作业属性 |
-
-以下能力不建议学生作品默认开放：
-
-| endpoint 类别 | 原因 |
+| 项目 | 值 |
 |---|---|
-| `/slurm/v0.0.41/node/{node_name}` POST/DELETE | 可能修改节点状态 |
-| `/slurm/v0.0.41/reservation*` POST/DELETE | 可能创建/删除预约 |
-| `/slurmdb/v0.0.41/accounts*` POST/DELETE | 账号管理风险高 |
-| `/slurmdb/v0.0.41/users*` POST/DELETE | 用户管理风险高 |
-| `/slurmdb/v0.0.41/qos*` POST/DELETE | QoS 修改风险高 |
-| `/slurmdb/v0.0.41/clusters*` POST/DELETE | 集群管理风险高 |
+| 登录节点 | `tradmin-02` |
+| 测试用户 | `pb25111697` |
+| 测试时间 | 2026-08-21 02:45 CST |
+| Slurm 版本 | `slurm 25.11.2`（smd 发行版） |
+| 已安装包 | `slurm-smd` `slurm-smd-client` `slurm-smd-slurmctld` `slurm-smd-slurmd` `slurm-smd-slurmdbd` `slurm-smd-slurmrestd` |
+| 集群名（记账库） | `training` |
 
-## 7. 对当前项目的功能意义
+## 2. 测试方法
 
-当前项目已封装的 107 API 能力和实测结果基本匹配：
+- **只读命令**（sinfo、squeue、scontrol show、sacctmgr show、sprio、sshare、sreport、sdiag、sacct、strigger --get、scrontab -l）：直接实测执行，每条命令 `timeout 25` 秒。
+- **有副作用的命令**（salloc、sbatch、srun、scancel、sbcast、sattach、scrun、sstat）：仅做 `--help` / `--version` 级验证，**不真正申请资源或提交作业**。
+- 判定标准：`command -v` 存在 + 实测退出码 + 输出内容。
 
-| 项目工具 | endpoint | 实测情况 | 说明 |
+## 3. 总览：20 个客户端命令实测状态
+
+| 命令 | 路径 | 状态 | 实测结论 |
 |---|---|---|---|
-| `get_diag` | `/slurm/v0.0.41/diag/` | OK | 可用于集群状态问答和 Dashboard 统计 |
-| `list_jobs` | `/slurm/v0.0.41/jobs/` | OK | 可查当前作业 |
-| `get_job` | `/slurm/v0.0.41/job/{job_id}` | 未单独测 | OpenAPI 存在，可用性应较高 |
-| `get_nodes` | `/slurm/v0.0.41/nodes/` | OK | 可查节点状态 |
-| `get_qos` | `/slurmdb/v0.0.41/qos/` | OK | 可查配额 |
-| `get_jobs_history` | `/slurmdb/v0.0.41/jobs/` | OK 但默认为空 | 需要加查询参数才更有用 |
-| `submit_job` | `/slurm/v0.0.41/job/submit` | 未测 | 写操作，演示前必须 dry-run 或确认 |
-| `cancel_job` | `/slurm/v0.0.41/job/{job_id}` DELETE | 未测 | 写操作，必须二次确认 |
+| `sacct` | `/usr/bin/sacct` | ⚠️ 可执行但查询为空 | rc=0，但所有查询（按用户/按时间段/按 jobid/`--allusers`）均返回空，见 §4.2 |
+| `sacctmgr` | `/usr/bin/sacctmgr` | ✅ 可用 | `show assoc` 正常返回账号/QoS 授权数据 |
+| `salloc` | `/usr/bin/salloc` | ✅ 存在 | help 验证通过（未实际申请资源） |
+| `sattach` | `/usr/bin/sattach` | ✅ 存在 | help 验证通过 |
+| `sbatch` | `/usr/bin/sbatch` | ✅ 可用 | help 验证通过（实际提交走 REST 已验证） |
+| `sbcast` | `/usr/bin/sbcast` | ✅ 存在 | help 验证通过 |
+| `scancel` | `/usr/bin/scancel` | ✅ 可用 | help 验证通过（实际取消走 REST 已验证） |
+| `scontrol` | `/usr/bin/scontrol` | ✅ 可用 | `show partition` 返回真实分区配置 |
+| `scrontab` | `/usr/bin/scrontab` | ❌ **集群已禁用** | `scrontab: fatal: scrontab is disabled on this cluster` |
+| `scrun` | `/usr/bin/scrun` | ✅ 存在 | help 验证通过（OCI 运行时代理，冷门） |
+| `sdiag` | `/usr/bin/sdiag` | ✅ 可用 | 返回真实调度统计 |
+| `sh5util` | `/usr/bin/sh5util` | ⚠️ 存在 | help 退出码 255，依赖 HDF5 性能采集配置，当前无使用场景 |
+| `sinfo` | `/usr/bin/sinfo` | ✅ 可用 | 返回 7 个分区的真实节点状态 |
+| `sprio` | `/usr/bin/sprio` | ✅ 可用 | 全局查询返回真实作业优先级 |
+| `squeue` | `/usr/bin/squeue` | ✅ 可用 | 返回全集群真实作业列表 |
+| `sreport` | `/usr/bin/sreport` | ✅ 可用 | `cluster Utilization` 返回 30 天真实用量数据 |
+| `srun` | `/usr/bin/srun` | ✅ 存在 | `--version` 验证通过（未实际运行作业） |
+| `sshare` | `/usr/bin/sshare` | ✅ 可用 | 返回真实 fairshare 数据 |
+| `sstat` | `/usr/bin/sstat` | ✅ 存在 | help 验证通过（需运行中作业才能实际使用） |
+| `strigger` | `/usr/bin/strigger` | ✅ 可用 | `--get` rc=0，当前无触发器 |
 
-## 8. 本地运行注意事项
+**统计：** 20 个命令全部存在于 `/usr/bin`；17 个完全可用；1 个被集群禁用（`scrontab`）；2 个特殊（`sacct` 查询受限、`sh5util` 无使用场景）。
 
-Mac 本地直连 `http://107.ustc.edu.cn:6820` 返回 `502`，因此需要代理。
+## 4. 关键发现
 
-当前可用方案是复用 VS Code Remote-SSH 自动创建的 SOCKS 隧道：
-
-```env
-SLURM_API_PROXY=socks5h://127.0.0.1:50697
-```
-
-如果 VS Code 远程连接重启，SOCKS 端口可能变化。可以用下面命令查当前端口：
-
-```bash
-python3 - <<'PY'
-import json, pathlib
-base=pathlib.Path('/Users/mac/Library/Application Support/Code/User/globalStorage/ms-vscode-remote.remote-ssh')
-for p in base.rglob('data.json'):
-    d=json.loads(p.read_text())
-    print(d.get('socksPort'))
-PY
-```
-
-然后更新 `.env` 里的 `SLURM_API_PROXY`。
-
-## 9. 已完成的本地服务验证
-
-健康检查：
+### 4.1 `scrontab` 被集群禁用（重要）
 
 ```text
-GET http://127.0.0.1:8080/health
+$ scrontab -l
+scrontab: fatal: scrontab is disabled on this cluster
 ```
 
-返回：
+**影响：** 定时作业（cron 式周期任务）在本集群不可用。智能体不应把 `scrontab` 作为可推荐方案；用户有周期任务需求时应建议"脚本内 sleep 循环 + 长时限作业"或平台侧方案。
 
-```json
-{"status":"ok","agent_ready":false}
-```
+### 4.2 `sacct` 可执行但记账查询返回空（重要）
 
-聊天请求：
+命令本身存在且 rc=0，但以下所有变体均返回空：
 
 ```text
-POST http://127.0.0.1:8080/chat
-message = "请查询一下集群整体状态，简短回答"
+sacct -X -u $USER -S <2天前/30天前>          # 空
+sacct -M training -X -u $USER -S <3天前>     # 空
+sacct -j 24639                                # 空
+sacct --allusers -X -S <昨天>                 # 空
 ```
 
-实际行为：
+而同一时间窗口内：
 
-- LLM 自动选择工具：`get_diag`
-- 本地后端经 SOCKS 隧道访问 107 Slurm API
-- 成功返回集群统计
-- LLM 基于实时数据回复运行中/排队作业数量等信息
+- `squeue` 能看到大量真实作业（RUNNING/PENDING）
+- `sreport cluster Utilization` 能查到真实用量（说明 slurmdbd 里有数据）
+- REST 端点 `/slurmdb/v0.0.41/jobs/` 之前实测返回 200（带参数可查）
 
-## 10. 下一步建议
+**结论：** `sacct` CLI 对普通用户的记账可见性受限（疑似 slurmdbd 权限/配置原因）。**历史作业查询应以 REST `/slurmdb/jobs/` 为主**，`sacct` 仅作为备用。B 路线（SSH 白名单直执行）若包含 `sacct`，需注意它可能查不到数据。
 
-1. 保留本地运行方案：Mac 后端 + VS Code Remote-SSH SOCKS 隧道。
-2. 给项目增加自动发现 VS Code SOCKS 端口的能力，减少手动改 `.env`。
-3. 增加 Dashboard API：
-   - `/api/jobs`
-   - `/api/nodes`
-   - `/api/partitions`
-   - `/api/qos`
-   - `/api/cluster-summary`
-4. 对写操作加硬性确认：
-   - 提交作业前预览脚本和资源。
-   - 取消作业前要求用户明确确认 job id。
-5. 日志读取目前仍是本地文件读取；本地运行时读不到远端日志。需要改成通过 SSH/SFTP 或远端 helper 读取日志。
+### 4.3 `sacctmgr` 是当前查"我的账号/QoS 授权"的唯一可靠途径
 
+```text
+$ sacctmgr -n -p show assoc user=pb25111697 format=User,Account,QOS
+pb25111697|competition|qos_p107-a100,qos_p107-rtx5090,qos_stu_default
+pb25111697|stu|qos_p107-a100,qos_p107-rtx5090,qos_stu_default
+pb25111697|stu|qos_p107-a100,qos_p107-rtx5090,qos_stu_default
+```
+
+当前用户有两个账号（`competition`、`stu`），集群为 `training`，可用 QoS 为 `qos_p107-a100`、`qos_p107-rtx5090`、`qos_stu_default`。REST 的 `/slurmdb/users/` 也能查到本人信息，但 `sacctmgr show assoc` 输出更直观。
+
+### 4.4 `sreport` 用法要点
+
+- ✅ `sreport cluster Utilization start=... end=now -t hours`：可用，返回真实数据：
+
+```text
+Cluster Utilization 2026-07-22T00:00:00 - 2026-08-21T02:59:59 (CPU Hours)
+  Cluster Allocated     Down PLND Dow       Idle  Planned   Reported
+ training     75459    24988        0    1092092    22548    1215088
+```
+
+- ❌ `sreport user Utilization` 不是合法报表名，按用户查询应使用 `sreport user Top`。
+
+### 4.5 `sprio` / `sshare` 均正常可用（B 路线核心候选）
+
+```text
+$ sprio | head -3
+          JOBID PARTITION   PRIORITY       SITE
+          24639 P107-RTX5          1          0
+          40866 Students           1          0
+```
+
+当前作业优先级均为 1（优先级因子基本扁平），`SITE` 列为站点自定义因子。`sshare` 返回完整 fairshare 表（root 账号 RawUsage 150196793）。
+
+**注意：** REST 的 `/slurm/v0.0.41/shares` 之前实测超时，因此 `sshare` 只能走 CLI。这与 B 路线（SSH 白名单）的价值判断一致：`sprio`、`sshare`、`sstat`、`sreport` 是 REST 覆盖不到、只能靠 CLI 的核心缺口。
+
+## 5. 对 AI Agent 工具覆盖的对照结论
+
+当前 agent 的 8 个 Slurm 工具（REST 封装）与 CLI 实测能力的对照：
+
+| Agent 工具 | 对应命令 | CLI 实测状态 | 备注 |
+|---|---|---|---|
+| `list_jobs` | `squeue` | ✅ | REST `/slurm/jobs/` 稳定 |
+| `get_job` | `scontrol show job` | ✅ | 命令可用 |
+| `submit_job` | `sbatch` | ✅ | 写操作，走确认流 |
+| `cancel_job` | `scancel` | ✅ | 写操作，走确认流 |
+| `get_diag` | `sdiag` | ✅ | REST `/slurm/diag/` 稳定 |
+| `get_nodes` | `sinfo` | ✅ | 节点明细；分区汇总可补 REST `/slurm/partitions/` |
+| `get_qos` | `sacctmgr show qos` | ✅ | QoS 全量可用；**个人授权查询**可用 `sacctmgr show assoc`（CLI）或 REST `/slurmdb/users/` |
+| `get_jobs_history` | `sacct` | ⚠️ | **REST 优先**：CLI `sacct` 查询为空，REST `/slurmdb/jobs/` 带参数可用 |
+
+**CLI 独有、REST 无法覆盖的能力（B 路线候选白名单）：**
+
+| 命令 | 价值 | 建议 |
+|---|---|---|
+| `sprio` | 排队优先级诊断（"为什么排不上"） | 高，建议纳入白名单 |
+| `sshare` | fairshare 份额（REST shares 端点超时） | 高，建议纳入白名单 |
+| `sstat` | 运行中作业实时资源 | 中，需运行中作业 |
+| `sreport` | 用量报表（集群维度可用） | 中，建议纳入白名单 |
+| `sacctmgr show assoc` | 个人账号/QoS 授权（比 REST users 端点直观） | 中，只读子命令 |
+| `scontrol show` | 分区/节点/QoS 详情兜底 | 中，只读子命令 |
+| `scrontab` | ❌ 已禁用 | 不纳入 |
+| `sacct` | ⚠️ 查询为空 | 不纳入（用 REST 替代） |
+
+## 6. 附录：Slurm REST API 实测速查（2026-08-19 实测，保留备查）
+
+认证：`X-SLURM-USER-TOKEN: <SLURM_JWT>`（与 `Authorization: Bearer` 同时发送会 401，只发前者）。
+
+| endpoint | 状态 | 一句话作用 |
+|---|---:|---|
+| `/slurm/v0.0.41/ping/` | 200 | 探测 slurmctld 是否在线 |
+| `/slurm/v0.0.41/diag/` | 200 | 集群整体调度统计 |
+| `/slurm/v0.0.41/jobs/` | 200 | 当前作业明细列表 |
+| `/slurm/v0.0.41/jobs/state/` | 200 | 精简作业状态列表 |
+| `/slurm/v0.0.41/nodes/` | 200 | 节点状态/资源 |
+| `/slurm/v0.0.41/partitions/` | 200 | 分区/队列信息 |
+| `/slurm/v0.0.41/licenses/` | 200 | 许可证剩余量（当前 0） |
+| `/slurm/v0.0.41/reservations/` | 200 | 资源预约（当前无） |
+| `/slurmdb/v0.0.41/clusters/` | 200 | 集群信息 |
+| `/slurmdb/v0.0.41/users/` | 200 | 当前用户信息 |
+| `/slurmdb/v0.0.41/jobs/` | 200 | 历史作业（需带 `user=` / `job_id=` 等参数） |
+| `/slurmdb/v0.0.41/qos/` | 200 | QoS 配额列表 |
+| `/slurmdb/v0.0.41/tres/` | 200 | 可计费资源类型 |
+| `/slurm/v0.0.41/shares` | timeout | 12 秒无响应，不可依赖 |
+| `/slurmdb/v0.0.41/diag/` | 500 | 不稳定 |
+| `/slurmdb/v0.0.41/accounts/` | 500 | 不稳定 |
+| `/slurmdb/v0.0.41/config` | 500 | 不稳定 |
+
+写操作（`POST /job/submit`、`DELETE /job/{job_id}` 等）存在但必须配确认机制，管理类端点（accounts/users/qos/clusters 的 POST/DELETE）不建议开放。
+
+## 7. 数据采集方式说明
+
+- 命令可用性：`command -v` + 逐命令实测（只读直接执行，有副作用仅 help 验证），单命令超时 25 秒。
+- 环境信息：`hostname`、`whoami`、`sinfo --version`、`dpkg -l | grep slurm-smd`。
+- REST 附录数据：沿用 2026-08-19 的实测结论（见本报告 git 历史）。
+- 本报告由本地 Mac 通过 `ssh 107.ustc.edu.cn` 远程采集，采集脚本为一次性执行，未在服务器留存。

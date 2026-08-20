@@ -203,16 +203,144 @@
   }
 
   .layout {
-    display: block;
-    padding: 18px;
-    padding-bottom: 88px;
-    max-width: 1680px;
+    display: grid;
+    grid-template-columns: 270px minmax(420px, 1fr) 430px;
+    gap: 0;
+    height: calc(100vh - 65px);
+    max-width: none;
     width: 100%;
-    margin: 0 auto;
+    margin: 0;
+    overflow: hidden;
+    border-top: 1px solid var(--line);
   }
 
-  .main {
+  .layout.left-collapsed {
+    grid-template-columns: 46px minmax(420px, 1fr) 430px;
+  }
+
+  .layout.right-collapsed {
+    grid-template-columns: 270px minmax(420px, 1fr) 46px;
+  }
+
+  .layout.left-collapsed.right-collapsed {
+    grid-template-columns: 46px minmax(420px, 1fr) 46px;
+  }
+
+  .main, .left-sidebar, .right-sidebar {
     min-width: 0;
+    min-height: 0;
+  }
+
+  .left-sidebar, .right-sidebar {
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .left-sidebar {
+    border-right: 1px solid var(--line);
+  }
+
+  .right-sidebar {
+    border-left: 1px solid var(--line);
+  }
+
+  .sidebar-panel {
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: 0;
+  }
+
+  .sidebar-head {
+    min-height: 52px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .sidebar-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .sidebar-title {
+    font-size: 14px;
+    font-weight: 750;
+    white-space: nowrap;
+  }
+
+  .collapse-btn {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+  }
+
+  .project-list {
+    overflow-y: auto;
+    padding: 8px;
+    display: grid;
+    align-content: start;
+    gap: 4px;
+  }
+
+  .project-item {
+    min-height: 38px;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink);
+    display: grid;
+    gap: 2px;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .project-item:hover {
+    background: var(--surface-soft);
+  }
+
+  .project-item.active {
+    border-color: var(--line);
+    background: var(--surface-soft);
+  }
+
+  .project-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .project-meta {
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .collapsed-rail {
+    height: 100%;
+    display: none;
+    padding: 8px 6px;
+    place-items: start center;
+  }
+
+  .layout.left-collapsed .left-sidebar .sidebar-panel,
+  .layout.right-collapsed .right-sidebar .right-content {
+    display: none;
+  }
+
+  .layout.left-collapsed .left-sidebar .collapsed-rail,
+  .layout.right-collapsed .right-sidebar .collapsed-rail {
+    display: grid;
   }
 
   .panel {
@@ -224,10 +352,20 @@
 
   .dashboard-stack {
     display: grid;
-    grid-template-rows: minmax(0, 1fr) auto;
-    gap: 6px;
-    height: calc(100vh - 172px);
-    min-height: 460px;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .rightbar-top {
+    min-height: 52px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
 
   .resource-module {
@@ -279,10 +417,10 @@
   }
 
   .dashboard-footer {
-    min-height: 34px;
-    padding: 0 2px;
+    min-width: 0;
+    padding: 0;
     display: flex;
-    justify-content: flex-end;
+    justify-content: flex-start;
     align-items: center;
   }
 
@@ -362,6 +500,13 @@
     box-shadow: var(--modal-shadow);
   }
 
+  .modal.wide {
+    width: min(860px, 100%);
+    max-height: min(760px, calc(100vh - 36px));
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
   .modal-head, .modal-body, .modal-actions {
     padding: 14px 16px;
   }
@@ -386,6 +531,9 @@
     padding: 0 12px;
     border: 1px solid var(--line);
     border-radius: 8px;
+    color: var(--ink);
+    background: var(--surface);
+    font: inherit;
   }
 
   .upload-choice {
@@ -402,10 +550,155 @@
     gap: 8px;
   }
 
+  .dependency-review {
+    display: grid;
+    gap: 10px;
+    min-height: 0;
+  }
+
+  .dependency-summary {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .dependency-table-wrap {
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  .dependency-table {
+    font-size: 12px;
+  }
+
+  .dependency-table th,
+  .dependency-table td {
+    padding: 8px 9px;
+  }
+
+  .dependency-table.installing th:nth-child(n+5),
+  .dependency-table.installing td:nth-child(n+5) {
+    display: none;
+  }
+
+  .dependency-check {
+    width: 22px;
+    height: 22px;
+    appearance: none;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    cursor: pointer;
+    display: inline-grid;
+    place-items: center;
+  }
+
+  .dependency-check:checked {
+    border-color: var(--blue);
+    background: var(--blue);
+  }
+
+  .dependency-check:checked::after {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--primary-ink);
+  }
+
+  .dependency-name {
+    font-weight: 700;
+  }
+
+  .dependency-version,
+  .dependency-source,
+  .dependency-reason {
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dependency-reason {
+    max-width: 220px;
+    color: var(--muted);
+  }
+
+  .status-ok { color: var(--green); }
+  .status-missing { color: var(--red); }
+  .status-unknown { color: var(--muted); }
+
+  .dependency-progress-cell {
+    min-width: 230px;
+  }
+
+  .dependency-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .progress-track {
+    position: relative;
+    height: 7px;
+    flex: 1;
+    min-width: 120px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface-soft);
+    border: 1px solid var(--line);
+  }
+
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: var(--blue);
+    transition: width 0.25s ease;
+  }
+
+  .progress-fill.running {
+    width: 45%;
+    animation: progressPulse 1.1s ease-in-out infinite;
+  }
+
+  .progress-fill.done {
+    width: 100%;
+    background: var(--green);
+  }
+
+  .progress-fill.failed {
+    width: 100%;
+    background: var(--red);
+  }
+
+  .dependency-status-mark {
+    width: 54px;
+    color: var(--muted);
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .dependency-status-mark.done {
+    color: var(--green);
+  }
+
+  .dependency-status-mark.failed {
+    color: var(--red);
+  }
+
+  @keyframes progressPulse {
+    0% { transform: translateX(-100%); }
+    55% { transform: translateX(90%); }
+    100% { transform: translateX(230%); }
+  }
+
   .content-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 18px;
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px;
     min-height: 0;
   }
 
@@ -512,13 +805,14 @@
 
   .toast-stack {
     position: fixed;
-    top: 76px;
-    right: 18px;
-    width: min(380px, calc(100vw - 36px));
+    top: 14px;
+    left: 50%;
+    width: min(680px, calc(100vw - 28px));
     display: grid;
     gap: 10px;
-    z-index: 50;
+    z-index: 200;
     pointer-events: none;
+    transform: translateX(-50%);
   }
 
   .toast {
@@ -530,6 +824,9 @@
     animation: toastIn 0.18s ease-out;
     position: relative;
     pointer-events: auto;
+    max-height: 45vh;
+    overflow: auto;
+    white-space: pre-wrap;
   }
 
   .toast.notice {
@@ -568,51 +865,29 @@
   }
 
   @keyframes toastIn {
-    from { opacity: 0; transform: translateY(-8px); }
+    from { opacity: 0; transform: translateY(-18px); }
     to { opacity: 1; transform: translateY(0); }
   }
 
   .assistant-toggle {
-    position: fixed;
-    right: 22px;
-    bottom: 22px;
-    width: 58px;
-    height: 58px;
-    border-radius: 50%;
-    border: 1px solid var(--line);
-    background: var(--blue);
-    color: var(--primary-ink);
-    box-shadow: var(--assistant-shadow);
-    cursor: pointer;
-    font-size: 24px;
-    font-weight: 750;
-    z-index: 40;
-  }
-
-  .assistant-toggle:hover {
-    background: var(--assistant-hover);
-  }
-
-  .assistant {
-    position: fixed;
-    right: 22px;
-    bottom: 92px;
-    width: min(430px, calc(100vw - 32px));
-    height: min(680px, calc(100vh - 120px));
-    z-index: 45;
     display: none;
   }
 
-  .assistant.open {
-    display: block;
+  .assistant {
+    min-width: 0;
+    min-height: 0;
+    background: var(--bg);
   }
 
   .assistant .panel {
     height: 100%;
     min-height: 0;
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: 1fr auto;
     overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
   }
 
   .messages {
@@ -746,8 +1021,55 @@
     background: var(--tool-bg);
     color: var(--tool-ink);
     border-radius: 8px;
-    padding: 9px 10px;
     font-size: 12px;
+    overflow: hidden;
+    max-width: 96%;
+    align-self: flex-start;
+  }
+
+  .tool-card-header {
+    width: 100%;
+    min-height: 34px;
+    padding: 0 10px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .tool-card-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 650;
+  }
+
+  .tool-card-caret {
+    color: var(--muted);
+    flex: 0 0 auto;
+  }
+
+  .tool-card-body {
+    max-height: 180px;
+    overflow: auto;
+    padding: 0 10px 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-top: 1px solid var(--tool-line);
+  }
+
+  .tool-card.collapsed .tool-card-body {
+    display: none;
+  }
+
+  .tool-card.collapsed .tool-card-caret {
+    transform: rotate(-90deg);
   }
 
   .assistant-workflow {
@@ -766,8 +1088,9 @@
   }
 
   .assistant-actions {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 8px;
   }
 
@@ -777,19 +1100,171 @@
   }
 
   .chat-input {
-    padding: 12px;
-    border-top: 1px solid var(--line);
+    width: min(760px, calc(100% - 24px));
+    margin: 12px auto;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: var(--surface);
     display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 8px;
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 
-  .chat-input input {
+  .chat-input textarea {
     min-width: 0;
-    height: 38px;
-    padding: 0 12px;
+    min-height: 72px;
+    max-height: 220px;
+    resize: none;
+    padding: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--ink);
+    line-height: 1.5;
+    font: inherit;
+  }
+
+  .attachment-strip {
+    display: none;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .attachment-strip.has-files {
+    display: flex;
+  }
+
+  .file-chip {
+    max-width: 180px;
+    min-height: 24px;
+    padding: 2px 7px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--surface-soft);
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  .file-chip span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .file-chip button {
+    width: 18px;
+    height: 18px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .file-chip button:hover {
+    background: var(--code-bg);
+  }
+
+  .composer-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .model-menu {
+    position: relative;
+  }
+
+  .composer-left,
+  .composer-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .composer-add {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 20px;
+    line-height: 1;
+  }
+
+  .composer-add:hover {
+    color: var(--ink);
+    background: var(--surface-soft);
+  }
+
+  .composer-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--line);
+  }
+
+  .model-pill {
+    min-width: 0;
+    height: 32px;
+    padding: 0 2px;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+  }
+
+  .model-pill:hover {
+    color: var(--ink);
+  }
+
+  .model-options {
+    position: absolute;
+    left: 0;
+    bottom: 38px;
+    width: 240px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 6px;
     border: 1px solid var(--line);
     border-radius: 8px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    display: none;
+    z-index: 40;
+  }
+
+  .model-menu.open .model-options {
+    display: grid;
+    gap: 3px;
+  }
+
+  .model-option {
+    width: 100%;
+    min-height: 30px;
+    padding: 5px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    text-align: left;
+    font-size: 12px;
+  }
+
+  .model-option:hover,
+  .model-option.active {
+    background: var(--surface-soft);
   }
 
   .modal-body textarea {
@@ -805,6 +1280,102 @@
     background: var(--surface);
   }
 
+  .submit-layout {
+    display: grid;
+    grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .submit-options {
+    display: grid;
+    gap: 10px;
+    align-content: start;
+  }
+
+  .submit-script-col {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 6px;
+    min-height: 380px;
+  }
+
+  .submit-field {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .submit-field label {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .submit-field .req { color: #d64545; margin-left: 2px; }
+
+  .submit-field input,
+  .submit-field select {
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    background: var(--surface);
+    font: inherit;
+    font-size: 13px;
+  }
+
+  .submit-field input.invalid,
+  .submit-field select.invalid {
+    border-color: #d64545;
+  }
+
+  /* 去掉原生控件箭头：select 不显示下拉箭头、number 不显示上下调节钮 */
+  .submit-field select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 10px;
+    cursor: pointer;
+  }
+
+  .submit-field input[type=number] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  .submit-field input[type=number]::-webkit-outer-spin-button,
+  .submit-field input[type=number]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  .submit-script-label {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+
+  #submitScriptInput {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    min-height: 300px;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 4;
+  }
+
+  .submit-hint {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .deps-warn-text {
+    font-size: 13.5px;
+    line-height: 1.6;
+  }
+
+  .deps-warn-text strong { color: #d64545; }
+
   .empty {
     padding: 24px;
     color: var(--muted);
@@ -813,13 +1384,22 @@
   }
 
   @media (max-width: 1080px) {
-    .content-grid { grid-template-columns: 1fr; }
-    .dashboard-stack {
-      height: auto;
-      min-height: 0;
+    .layout,
+    .layout.left-collapsed,
+    .layout.right-collapsed,
+    .layout.left-collapsed.right-collapsed {
+      grid-template-columns: 46px minmax(0, 1fr) 46px;
     }
-    .resource-module .panel { height: auto; }
+    .layout:not(.left-open) .left-sidebar .sidebar-panel,
+    .layout:not(.right-open) .right-sidebar .right-content {
+      display: none;
+    }
+    .layout:not(.left-open) .left-sidebar .collapsed-rail,
+    .layout:not(.right-open) .right-sidebar .collapsed-rail {
+      display: grid;
+    }
     .table-wrap { max-height: 360px; }
+    .submit-layout { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 760px) {
@@ -829,17 +1409,7 @@
     }
     .top-actions { justify-content: flex-start; }
     .project-input { width: 100%; }
-    .layout { padding: 12px; padding-bottom: 84px; }
-    .assistant {
-      right: 12px;
-      bottom: 82px;
-      width: calc(100vw - 24px);
-      height: min(620px, calc(100vh - 108px));
-    }
-    .assistant-toggle {
-      right: 14px;
-      bottom: 14px;
-    }
+    .layout { height: calc(100vh - 113px); }
     .upload-choice,
     .assistant-actions { grid-template-columns: 1fr; }
   }
@@ -853,14 +1423,67 @@
       <div class="brand-subtitle">Slurm 资源监视、项目文件上传、智能助手</div>
     </div>
     <div class="top-actions">
-      <button class="btn primary" onclick="openNewJobFlow()">+ 新作业</button>
       <button id="themeToggle" class="btn theme-toggle" onclick="toggleTheme()" title="切换暗夜模式">☾</button>
     </div>
   </header>
 
   <main class="layout">
-    <section class="main">
-      <section class="dashboard-stack">
+    <aside class="left-sidebar">
+      <div class="collapsed-rail">
+        <button class="btn collapse-btn" onclick="toggleLeftSidebar(false)" title="展开项目列表">›</button>
+      </div>
+      <section class="sidebar-panel">
+        <div class="sidebar-head">
+          <div class="sidebar-title">projects</div>
+          <div class="sidebar-actions">
+            <button class="btn collapse-btn primary" onclick="openNewJobFlow()" title="新作业">＋</button>
+            <button class="btn collapse-btn" onclick="chooseUploadFiles()" title="上传文件">↑</button>
+          </div>
+          <button class="btn collapse-btn" onclick="toggleLeftSidebar(true)" title="收起项目列表">‹</button>
+        </div>
+        <div id="projectsList" class="project-list">
+          <div class="empty">正在读取作业目录</div>
+        </div>
+      </section>
+    </aside>
+
+    <section id="assistantPanel" class="assistant open">
+      <section class="panel">
+        <div id="messages" class="messages">
+          <div class="message ai">选择左侧作业目录，或点击左侧新建按钮创建新的作业目录。可以问我查询资源、生成脚本、准备提交命令。</div>
+        </div>
+        <div class="chat-input">
+          <div id="dependencyFileChips" class="attachment-strip"></div>
+          <textarea id="userInput" placeholder="添加依赖清单或算力要求" oninput="autoResizeComposer()" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); sendMessage()}"></textarea>
+          <div class="composer-footer">
+            <div class="composer-left">
+              <div id="modelMenu" class="model-menu">
+                <button id="modelPill" class="model-pill" onclick="toggleModelMenu(event)" title="选择模型">model</button>
+                <div id="modelOptions" class="model-options"></div>
+              </div>
+            </div>
+            <div class="composer-right assistant-actions">
+              <button class="btn composer-add" onclick="chooseDependencyFiles()" title="添加依赖清单文件">+</button>
+              <span class="composer-divider"></span>
+              <button id="checkDepsBtn" class="btn" onclick="generateProjectReport()">检查依赖</button>
+              <button id="confirmRunBtn" class="btn primary" onclick="confirmRunPlan()">布置作业</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <aside class="right-sidebar">
+      <div class="collapsed-rail">
+        <button class="btn collapse-btn" onclick="toggleRightSidebar(false)" title="展开资源栏">‹</button>
+      </div>
+      <section class="right-content dashboard-stack">
+        <div class="rightbar-top">
+          <div class="dashboard-footer">
+            <button id="dashboardUpdatedAt" class="refresh-stamp" data-label="每 15 秒自动更新" data-hover="手动更新" onclick="handleUpdateStampClick()" title="手动更新"></button>
+          </div>
+          <button class="btn collapse-btn" onclick="toggleRightSidebar(true)" title="收起资源栏">›</button>
+        </div>
         <section class="content-grid">
           <div class="resource-module">
             <div class="panel">
@@ -879,10 +1502,10 @@
                       <th>状态</th>
                       <th>CPU</th>
                       <th>GPU</th>
-                  </tr>
-                </thead>
-                <tbody id="nodesTable">
-                  <tr><td colspan="5" class="empty">正在加载节点数据</td></tr>
+                    </tr>
+                  </thead>
+                  <tbody id="nodesTable">
+                    <tr><td colspan="5" class="empty">正在加载节点数据</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -917,42 +1540,10 @@
             </div>
           </div>
         </section>
-        <div class="dashboard-footer">
-          <button id="dashboardUpdatedAt" class="refresh-stamp" data-label="每 15 秒自动更新" data-hover="手动更新" onclick="handleUpdateStampClick()" title="手动更新"></button>
-        </div>
       </section>
-    </section>
+    </aside>
   </main>
 </div>
-
-<button id="assistantToggle" class="assistant-toggle" onclick="toggleAssistant()" title="智能助手">AI</button>
-<aside id="assistantPanel" class="assistant">
-  <section class="panel">
-    <div class="panel-head">
-      <h2 class="panel-title">智能助手</h2>
-      <div class="top-actions">
-        <button class="btn" onclick="resetChat()">新对话</button>
-        <button class="btn" onclick="toggleAssistant(false)">关闭</button>
-      </div>
-    </div>
-    <div id="messages" class="messages">
-      <div class="message ai">可以问我查询作业、解释节点状态、生成 sbatch 脚本，或根据上传后的项目目录准备提交命令。</div>
-    </div>
-    <div class="assistant-workflow">
-      <input id="assistantProjectNameInput" type="text" placeholder="作业目录名称，例如 my-training" title="作业目录为 ~/projects/作业目录名称">
-      <div class="assistant-actions">
-        <button class="btn" onclick="chooseUploadFiles()">文件</button>
-        <button class="btn" onclick="chooseUploadFolder()">文件夹</button>
-        <button class="btn" onclick="generateProjectReport()">建议报告</button>
-        <button id="confirmRunBtn" class="btn primary" onclick="confirmRunPlan()" disabled>确认执行</button>
-      </div>
-    </div>
-    <div class="chat-input">
-      <input id="userInput" type="text" placeholder="输入问题，按回车发送" onkeydown="if(event.key==='Enter') sendMessage()">
-      <button id="sendBtn" class="btn primary" onclick="sendMessage()">发送</button>
-    </div>
-  </section>
-</aside>
 
 <div id="notices" class="toast-stack"></div>
 <div id="jobModal" class="modal-backdrop" onclick="closeJobModal(event)">
@@ -961,10 +1552,6 @@
     <div class="modal-body">
       <label for="projectNameInput">作业目录名称</label>
       <input id="projectNameInput" type="text" placeholder="例如 my-training" title="作业目录为 ~/projects/作业目录名称">
-      <label for="envRequirementsInput">环境依赖要求</label>
-      <textarea id="envRequirementsInput" placeholder="例如：需要 gromacs 2026.0 nompi_cuda、Python 包、CUDA 或其它软件版本。"></textarea>
-      <label for="computeRequirementsInput">算力特别需求</label>
-      <textarea id="computeRequirementsInput" placeholder="例如：需要 GPU 型号/数量、CPU 核数、内存、预计运行时间、是否必须独占节点。"></textarea>
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeJobModal()">取消</button>
@@ -972,24 +1559,142 @@
     </div>
   </div>
 </div>
+<div id="dependencyModal" class="modal-backdrop" onclick="closeDependencyModal(event)">
+  <div class="modal wide" onclick="event.stopPropagation()">
+    <div class="modal-head">确认依赖安装清单</div>
+    <div class="modal-body dependency-review">
+      <div id="dependencySummary" class="dependency-summary">正在准备依赖清单</div>
+      <div class="dependency-table-wrap">
+        <table id="dependencyReviewTable" class="dependency-table">
+          <thead id="dependencyReviewHead">
+            <tr>
+              <th>选择</th>
+              <th>依赖</th>
+              <th>版本</th>
+              <th>安装器</th>
+              <th>来源</th>
+              <th>置信度</th>
+              <th>预检</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody id="dependencyReviewBody">
+            <tr><td colspan="8" class="empty">暂无依赖项</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="dependencyCancelBtn" class="btn" onclick="closeDependencyModal()">稍后处理</button>
+      <button id="dependencyConfirmBtn" class="btn primary" onclick="confirmDependencySelection()">确认清单</button>
+    </div>
+  </div>
+</div>
 <input id="fileUploadInput" type="file" multiple hidden onchange="uploadSelectedFiles(this)">
 <input id="folderUploadInput" type="file" multiple webkitdirectory hidden onchange="uploadSelectedFiles(this)">
+<input id="dependencyFileInput" type="file" multiple hidden onchange="handleDependencyFiles(this)">
+
+<div id="depsWarningModal" class="modal-backdrop" onclick="closeDepsWarningModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">依赖环境尚未就绪</div>
+    <div class="modal-body">
+      <div id="depsWarningText" class="deps-warn-text"></div>
+      <div class="submit-hint">未安装依赖就提交作业，作业可能因为找不到依赖库而立刻失败；确认无碍后再继续。</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" onclick="closeDepsWarningModal()">返回处理依赖</button>
+      <button class="btn" onclick="proceedToSubmitAnyway()">仍要布置作业</button>
+    </div>
+  </div>
+</div>
+
+<div id="jobSubmitModal" class="modal-backdrop" onclick="closeJobSubmitModal(event)">
+  <div class="modal wide" onclick="event.stopPropagation()">
+    <div class="modal-head">布置作业（确认 sbatch 脚本）</div>
+    <div class="modal-body dependency-review">
+      <div class="submit-layout">
+        <div class="submit-options">
+          <div class="submit-field">
+            <label for="submitJobName">作业名<span class="req">*</span></label>
+            <input id="submitJobName" type="text" placeholder="如 my-train" oninput="onSubmitFieldChange()">
+          </div>
+          <div class="submit-field">
+            <label for="submitAccount">计费账户<span class="req">*</span></label>
+            <select id="submitAccount" onchange="onSubmitAccountChange()">
+              <option value="">加载中...</option>
+            </select>
+          </div>
+          <div class="submit-field">
+            <label for="submitPartition">分区<span class="req">*</span></label>
+            <select id="submitPartition" onchange="onSubmitPartitionChange()">
+              <option value="">加载中...</option>
+            </select>
+          </div>
+          <div class="submit-field">
+            <label for="submitQos">QoS<span class="req">*</span></label>
+            <select id="submitQos" onchange="onSubmitQosChange()">
+              <option value="">加载中...</option>
+            </select>
+          </div>
+          <div class="submit-field">
+            <label for="submitNodes">节点数</label>
+            <input id="submitNodes" type="number" min="1" max="15" value="1" oninput="onSubmitFieldChange()">
+          </div>
+          <div class="submit-field">
+            <label for="submitGpus">GPU 数</label>
+            <input id="submitGpus" type="number" min="0" max="4" value="1" oninput="onSubmitFieldChange()">
+          </div>
+          <div class="submit-field">
+            <label for="submitCpus">每任务 CPU 核数</label>
+            <input id="submitCpus" type="number" min="1" max="48" value="4" oninput="onSubmitFieldChange()">
+          </div>
+          <div class="submit-field">
+            <label for="submitHours">时限（小时）</label>
+            <input id="submitHours" type="number" min="0.25" max="96" step="0.25" value="4" oninput="onSubmitFieldChange()">
+          </div>
+          <div id="qosLimitHint" class="submit-hint"></div>
+        </div>
+        <div class="submit-script-col">
+          <div class="submit-script-label">作业脚本：顶部 #SBATCH 头随左侧选项自动更新，下方正文可自由编辑（必填项不能为空）。</div>
+          <textarea id="submitScriptInput" spellcheck="false"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeJobSubmitModal()">取消</button>
+      <button id="submitJobBtn" class="btn primary" onclick="submitJobFromModal()">提交作业</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const projectNameInput = document.getElementById('projectNameInput');
-const assistantProjectNameInput = document.getElementById('assistantProjectNameInput');
-const envRequirementsInput = document.getElementById('envRequirementsInput');
-const computeRequirementsInput = document.getElementById('computeRequirementsInput');
 const fileUploadInput = document.getElementById('fileUploadInput');
 const folderUploadInput = document.getElementById('folderUploadInput');
+const dependencyFileInput = document.getElementById('dependencyFileInput');
+const dependencyFileChips = document.getElementById('dependencyFileChips');
 const jobModal = document.getElementById('jobModal');
+const dependencyModal = document.getElementById('dependencyModal');
+const dependencyReviewTable = document.getElementById('dependencyReviewTable');
+const dependencyReviewHead = document.getElementById('dependencyReviewHead');
+const dependencyReviewBody = document.getElementById('dependencyReviewBody');
+const dependencySummary = document.getElementById('dependencySummary');
+const dependencyCancelBtn = document.getElementById('dependencyCancelBtn');
+const dependencyConfirmBtn = document.getElementById('dependencyConfirmBtn');
 const noticesEl = document.getElementById('notices');
 const messagesEl = document.getElementById('messages');
 const userInput = document.getElementById('userInput');
 const sendBtn = document.getElementById('sendBtn');
+const checkDepsBtn = document.getElementById('checkDepsBtn');
 const assistantPanel = document.getElementById('assistantPanel');
 const themeToggle = document.getElementById('themeToggle');
 const confirmRunBtn = document.getElementById('confirmRunBtn');
+const workspace = document.querySelector('.layout');
+const projectsList = document.getElementById('projectsList');
+const sessionSubtitle = document.getElementById('sessionSubtitle');
+const modelMenu = document.getElementById('modelMenu');
+const modelPill = document.getElementById('modelPill');
+const modelOptions = document.getElementById('modelOptions');
 let isProcessing = false;
 let isUploading = false;
 let refreshTimer = null;
@@ -999,6 +1704,26 @@ let dashboardRefreshing = false;
 let hasShownNewJobPrompt = false;
 let lastProjectReport = '';
 let lastProjectDir = '';
+let selectedProjectName = '';
+let projectsCache = [];
+let currentModel = '';
+let availableModels = [];
+let pendingDependencyFiles = [];
+let dependencyItems = [];
+let selectedDependencyItems = [];
+let dependencyReviewMode = 'review';
+let dependencyPlanReady = false;
+let depsState = 'unknown'; // unknown=未检查 checked=清单已确认未安装 installed=已安装 failed=安装失败
+let lastCondaEnvDir = '';
+const depsWarningModal = document.getElementById('depsWarningModal');
+const jobSubmitModal = document.getElementById('jobSubmitModal');
+const submitScriptInput = document.getElementById('submitScriptInput');
+const submitJobBtn = document.getElementById('submitJobBtn');
+// /api/slurm/submit-options 结果：账户→分区→QoS 三级联动菜单 + 每个 QoS 的资源上限
+// （后端由 sacctmgr / scontrol show part / REST get_qos 实时采集，前端不允许随意填写）
+let submitOptionsData = null;
+const activeToolCards = new Map();
+const TOOL_AUTO_COLLAPSE_MS = 1500;
 const expandedNodeGroups = new Set();
 const expandedJobGroups = new Set();
 let initializedCurrentUserGroup = false;
@@ -1017,16 +1742,22 @@ function toggleTheme() {
 
 applyTheme(localStorage.getItem('slurmAgentTheme') || 'light');
 
+function autoResizeComposer() {
+  userInput.style.height = 'auto';
+  userInput.style.height = `${Math.min(userInput.scrollHeight, 220)}px`;
+}
+
 function syncProjectName(value) {
   const name = (value || '').trim();
-  projectNameInput.value = name;
-  assistantProjectNameInput.value = name;
+  selectedProjectName = name;
   localStorage.setItem('slurmAgentProjectName', name);
+  if (sessionSubtitle) {
+    sessionSubtitle.textContent = name ? `当前会话：${name}` : '选择左侧作业目录开始会话';
+  }
+  renderProjects(projectsCache);
 }
 
 syncProjectName(localStorage.getItem('slurmAgentProjectName') || '');
-projectNameInput.addEventListener('input', () => syncProjectName(projectNameInput.value));
-assistantProjectNameInput.addEventListener('input', () => syncProjectName(assistantProjectNameInput.value));
 
 function escapeHtml(value) {
   const div = document.createElement('div');
@@ -1220,16 +1951,192 @@ function addNotice(text, kind = 'notice') {
   }, kind === 'error' ? 6000 : 3000);
 }
 
+function applySidebarState() {
+  const leftCollapsed = localStorage.getItem('slurmLeftCollapsed') === 'true';
+  const rightCollapsed = localStorage.getItem('slurmRightCollapsed') === 'true';
+  workspace.classList.toggle('left-collapsed', leftCollapsed);
+  workspace.classList.toggle('right-collapsed', rightCollapsed);
+  workspace.classList.toggle('left-open', !leftCollapsed);
+  workspace.classList.toggle('right-open', !rightCollapsed);
+}
+
+function toggleLeftSidebar(collapsed) {
+  localStorage.setItem('slurmLeftCollapsed', String(collapsed));
+  workspace.classList.toggle('left-collapsed', collapsed);
+  workspace.classList.toggle('left-open', !collapsed);
+}
+
+function toggleRightSidebar(collapsed) {
+  localStorage.setItem('slurmRightCollapsed', String(collapsed));
+  workspace.classList.toggle('right-collapsed', collapsed);
+  workspace.classList.toggle('right-open', !collapsed);
+}
+
+function renderProjects(projects) {
+  if (!projectsList) return;
+  if (!projects || !projects.length) {
+    projectsList.innerHTML = '<div class="empty">暂无作业目录</div>';
+    return;
+  }
+  projectsList.innerHTML = projects.map(project => {
+    const active = project.name === selectedProjectName ? ' active' : '';
+    const meta = project.has_chat ? '有会话记录' : (project.has_notes ? '有需求记录' : '未开始会话');
+    return `<button class="project-item${active}" onclick="selectProject('${escapeHtml(project.name)}')" title="${escapeHtml(project.path)}">
+      <span class="project-name">${escapeHtml(project.name)}</span>
+      <span class="project-meta">${escapeHtml(meta)}</span>
+    </button>`;
+  }).join('');
+}
+
+async function loadProjects(selectStored = true) {
+  try {
+    const resp = await fetch('/api/projects');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '读取作业目录失败');
+    projectsCache = data.projects || [];
+    renderProjects(projectsCache);
+    const stored = localStorage.getItem('slurmAgentProjectName') || '';
+    if (selectStored && stored && projectsCache.some(project => project.name === stored)) {
+      await selectProject(stored);
+    }
+  } catch (e) {
+    projectsList.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function selectProject(name) {
+  syncProjectName(name);
+  lastProjectReport = '';
+  lastProjectDir = '';
+  dependencyItems = [];
+  selectedDependencyItems = [];
+  dependencyPlanReady = false;
+  checkDepsBtn.textContent = '检查依赖';
+  userInput.placeholder = '添加依赖清单或算力要求';
+  depsState = 'unknown';
+  lastCondaEnvDir = '';
+  activeToolCards.clear();
+  try {
+    const resp = await fetch(`/api/projects/chat?project_name=${encodeURIComponent(name)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '读取会话失败');
+    messagesEl.innerHTML = '';
+    const history = data.messages || [];
+    if (!history.length) {
+      addChatMessage(`已打开作业目录：${name}\n可以继续上传文件、检查依赖，或直接询问我这个作业的提交方式。`, 'ai');
+    } else {
+      for (const item of history) {
+        addChatMessage(item.content, item.role === 'user' ? 'user' : 'ai');
+      }
+    }
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  } catch (e) {
+    addNotice('读取会话失败: ' + e.message, 'error');
+  }
+}
+
+async function persistDisplayMessage(role, content) {
+  const projectName = currentProjectName();
+  if (!projectName || !content.trim()) return;
+  try {
+    await fetch('/api/projects/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_name: projectName, role, content }),
+    });
+  } catch (e) {
+    console.warn('保存会话消息失败', e);
+  }
+}
+
+function shortModelName(model) {
+  const text = String(model || '');
+  return text
+    .replace(/^deepseek[-_]?/i, '')
+    .replace(/^glm[-_]?/i, 'glm ')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\bchat\b/i, '')
+    .trim() || text || 'model';
+}
+
+function renderModelOptions(config) {
+  const families = config.families || {};
+  const models = [...(families.deepseek || []), ...(families.glm || [])];
+  availableModels = models;
+  currentModel = config.selected_model || models[0] || '';
+  if (!models.length) {
+    modelPill.textContent = '无模型';
+    modelOptions.innerHTML = '<div class="empty">无 DeepSeek/GLM 模型</div>';
+    return;
+  }
+  modelPill.textContent = shortModelName(currentModel);
+  modelOptions.innerHTML = models.map(model => {
+    const active = model === currentModel ? ' active' : '';
+    return `<button class="model-option${active}" onclick="selectModel('${escapeHtml(model)}')" title="${escapeHtml(model)}">${escapeHtml(shortModelName(model))}</button>`;
+  }).join('');
+}
+
+async function loadModels(refresh = false) {
+  try {
+    modelPill.disabled = true;
+    const url = refresh ? '/api/models/refresh' : '/api/models';
+    const resp = await fetch(url, { method: refresh ? 'POST' : 'GET' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '读取模型列表失败');
+    renderModelOptions(data);
+  } catch (e) {
+    modelPill.textContent = '模型错误';
+    modelOptions.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+    addNotice(e.message, 'error');
+  } finally {
+    modelPill.disabled = false;
+  }
+}
+
+async function refreshModels() {
+  await loadModels(true);
+}
+
+function toggleModelMenu(event) {
+  event.stopPropagation();
+  modelMenu.classList.toggle('open');
+}
+
+document.addEventListener('click', () => {
+  if (modelMenu) modelMenu.classList.remove('open');
+});
+
+async function selectModel(model) {
+  if (!model || model === currentModel) return;
+  try {
+    modelPill.disabled = true;
+    const resp = await fetch('/api/models/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '切换模型失败');
+    renderModelOptions(data);
+    modelMenu.classList.remove('open');
+    addNotice(`模型已切换：${data.selected_model}`);
+  } catch (e) {
+    addNotice(e.message, 'error');
+    await loadModels(false);
+  } finally {
+    modelPill.disabled = false;
+  }
+}
+
 function openJobModal() {
+  projectNameInput.value = '';
   jobModal.classList.add('open');
-  syncProjectName(localStorage.getItem('slurmAgentProjectName') || projectNameInput.value);
   window.setTimeout(() => projectNameInput.focus(), 0);
 }
 
 function openNewJobFlow() {
-  toggleAssistant(true);
   if (!hasShownNewJobPrompt) {
-    addChatMessage('请先创建本次作业目录，并补充环境依赖要求、算力特别需求。创建完成后我会先准备 conda 小房间；上传文件后，可以点“建议报告”让我整理依赖安装和 Slurm 提交配置草案。', 'ai');
+    addChatMessage('请先创建本次作业目录。创建完成后可以上传项目文件，也可以在输入框里添加依赖清单或算力要求，再点击检查依赖。', 'ai');
     hasShownNewJobPrompt = true;
   }
   openJobModal();
@@ -1242,8 +2149,7 @@ function closeJobModal(event) {
 
 function currentProjectName() {
   return (
-    assistantProjectNameInput.value ||
-    projectNameInput.value ||
+    selectedProjectName ||
     localStorage.getItem('slurmAgentProjectName') ||
     ''
   ).trim();
@@ -1271,11 +2177,7 @@ async function handleUpdateStampClick() {
 }
 
 function toggleAssistant(force) {
-  const shouldOpen = typeof force === 'boolean' ? force : !assistantPanel.classList.contains('open');
-  assistantPanel.classList.toggle('open', shouldOpen);
-  if (shouldOpen) {
-    window.setTimeout(() => userInput.focus(), 0);
-  }
+  window.setTimeout(() => userInput.focus(), 0);
 }
 
 function stateClass(state) {
@@ -1537,15 +2439,15 @@ async function createProject() {
     createButton.disabled = true;
     createButton.textContent = '创建并初始化中...';
   }
-  addNotice('正在创建作业目录并初始化 miniconda 小房间...');
+  addNotice('正在创建作业目录并初始化项目 Conda 环境...');
   try {
     const resp = await fetch('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name,
-        environment_requirements: envRequirementsInput.value.trim(),
-        compute_requirements: computeRequirementsInput.value.trim(),
+        environment_requirements: '',
+        compute_requirements: '',
       }),
     });
     const data = await resp.json();
@@ -1555,16 +2457,28 @@ async function createProject() {
     }
     syncProjectName(data.project_name);
     closeJobModal();
-    addNotice(`作业目录已创建：${data.project_dir}；conda 小房间${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
-    toggleAssistant(true);
+    await loadProjects(false);
+    renderProjects(projectsCache);
+    messagesEl.innerHTML = '';
+    activeToolCards.clear();
+    lastProjectReport = '';
+    lastProjectDir = '';
+    dependencyItems = [];
+    selectedDependencyItems = [];
+    dependencyPlanReady = false;
+    checkDepsBtn.textContent = '检查依赖';
+    userInput.placeholder = '添加依赖清单或算力要求';
+    depsState = 'unknown';
+    lastCondaEnvDir = data.conda_env_dir || '';
+    addNotice(`作业目录已创建：${data.project_dir}；项目 Conda 环境${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
     addChatMessage(`### 作业目录已准备好
 
 - 项目目录：\`${data.project_dir}\`
-- miniconda 小房间：\`${data.conda_env_dir}\`
+- 项目 Conda 环境：\`${data.conda_env_dir}\`
 - 需求记录：\`${data.notes_path}\`
 - 环境状态：${data.conda_created ? '已完成初始化' : '已存在，继续复用'}
 
-下一步请在聊天框上方选择 **文件** 或 **文件夹** 上传项目内容。上传完成后点击 **建议报告**，我会整理依赖安装和 Slurm 算力配置草案。`, 'ai');
+下一步可以点击左侧顶部的上传按钮选择项目文件，也可以在输入框里添加依赖清单或算力要求，再点击 **检查依赖**。`, 'ai', true);
   } catch (e) {
     addNotice('创建作业目录失败: ' + e.message, 'error');
   } finally {
@@ -1598,8 +2512,7 @@ function chooseUploadFiles() {
   if (isUploading) return;
   if (!currentProjectName()) {
     addNotice('请先输入作业目录名称', 'error');
-    toggleAssistant(true);
-    assistantProjectNameInput.focus();
+    openNewJobFlow();
     return;
   }
   fileUploadInput.value = '';
@@ -1610,8 +2523,7 @@ function chooseUploadFolder() {
   if (isUploading) return;
   if (!currentProjectName()) {
     addNotice('请先输入作业目录名称', 'error');
-    toggleAssistant(true);
-    assistantProjectNameInput.focus();
+    openNewJobFlow();
     return;
   }
   folderUploadInput.value = '';
@@ -1628,6 +2540,202 @@ function formatBytes(bytes) {
     unit++;
   }
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function renderDependencyFileChips() {
+  if (!dependencyFileChips) return;
+  dependencyFileChips.classList.toggle('has-files', pendingDependencyFiles.length > 0);
+  dependencyFileChips.innerHTML = pendingDependencyFiles.map((file, index) => `
+    <div class="file-chip" title="${escapeHtml(file.name)}">
+      <span>${escapeHtml(file.name)}</span>
+      <button type="button" onclick="removeDependencyFile(${index})" title="移除">×</button>
+    </div>
+  `).join('');
+}
+
+function chooseDependencyFiles() {
+  if (isProcessing || isUploading) return;
+  dependencyFileInput.value = '';
+  dependencyFileInput.click();
+}
+
+function handleDependencyFiles(input) {
+  const selected = Array.from(input.files || []);
+  if (!selected.length) return;
+  const seen = new Set(pendingDependencyFiles.map(file => `${file.name}:${file.size}:${file.lastModified}`));
+  for (const file of selected) {
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (!seen.has(key)) {
+      pendingDependencyFiles.push(file);
+      seen.add(key);
+    }
+  }
+  renderDependencyFileChips();
+  input.value = '';
+}
+
+function removeDependencyFile(index) {
+  pendingDependencyFiles.splice(index, 1);
+  renderDependencyFileChips();
+}
+
+function confidenceText(value) {
+  if (value === 'high') return '高';
+  if (value === 'medium') return '中';
+  return '低';
+}
+
+function precheckText(value) {
+  if (value === 'ok') return '可找到';
+  if (value === 'missing') return '未确认';
+  return '需确认';
+}
+
+function renderDependencyReviewHead() {
+  if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed') {
+    dependencyReviewHead.innerHTML = `<tr>
+      <th>选择</th>
+      <th>依赖</th>
+      <th>版本</th>
+      <th>安装与验证</th>
+    </tr>`;
+    dependencyReviewTable.classList.add('installing');
+    return;
+  }
+  dependencyReviewHead.innerHTML = `<tr>
+    <th>选择</th>
+    <th>依赖</th>
+    <th>版本</th>
+    <th>安装器</th>
+    <th>来源</th>
+    <th>置信度</th>
+    <th>预检</th>
+    <th>说明</th>
+  </tr>`;
+  dependencyReviewTable.classList.remove('installing');
+}
+
+function dependencyProgressMarkup(item) {
+  const state = item.install_status || (item.selected ? 'pending' : 'skipped');
+  const labelMap = {
+    pending: '等待',
+    installing: '安装中',
+    validating: '查验中',
+    done: '完成✅',
+    failed: '失败',
+    skipped: '未选择',
+  };
+  const fillClass = state === 'done' ? 'done' : (state === 'failed' ? 'failed' : (state === 'installing' || state === 'validating' ? 'running' : ''));
+  const width = state === 'pending' || state === 'skipped' ? '0%' : (state === 'done' || state === 'failed' ? '100%' : '');
+  const markClass = state === 'done' ? 'done' : (state === 'failed' ? 'failed' : '');
+  return `<div class="dependency-progress" title="${escapeHtml(item.install_detail || '')}">
+    <div class="progress-track"><div class="progress-fill ${fillClass}" style="${width ? `width:${width}` : ''}"></div></div>
+    <span class="dependency-status-mark ${markClass}">${labelMap[state] || '等待'}</span>
+  </div>`;
+}
+
+function renderDependencyReview() {
+  if (!dependencyReviewBody) return;
+  renderDependencyReviewHead();
+  if (!dependencyItems.length) {
+    dependencyReviewBody.innerHTML = '<tr><td colspan="8" class="empty">没有识别到依赖项，请补充依赖清单或算力要求后重试。</td></tr>';
+    dependencySummary.textContent = '未识别到可安装依赖';
+    return;
+  }
+  const selectedCount = dependencyItems.filter(item => item.selected).length;
+  const trustedCount = dependencyItems.filter(item => item.source_kind === 'trusted').length;
+  if (dependencyReviewMode === 'installing') {
+    dependencySummary.textContent = `正在安装并查验 ${selectedDependencyItems.length} 个已选择依赖，请保持窗口打开。`;
+  } else if (dependencyReviewMode === 'installed') {
+    const doneCount = dependencyItems.filter(item => item.install_status === 'done').length;
+    const failedCount = dependencyItems.filter(item => item.install_status === 'failed').length;
+    dependencySummary.textContent = `安装与查验完成：${doneCount} 个完成，${failedCount} 个需要处理。`;
+  } else {
+    dependencySummary.textContent = `${dependencyItems.length} 个依赖项，${selectedCount} 个已勾选；来自可信依赖文件或脚本的 ${trustedCount} 项已默认勾选，推断项需手动确认。`;
+  }
+  dependencyReviewBody.innerHTML = dependencyItems.map((item, index) => {
+    const statusClass = item.precheck_status === 'ok' ? 'status-ok' : (item.precheck_status === 'missing' ? 'status-missing' : 'status-unknown');
+    const version = item.version || '需确认';
+    if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed') {
+      return `<tr>
+        <td><input class="dependency-check" type="checkbox" ${item.selected ? 'checked' : ''} disabled title="${item.selected ? '已选择' : '未选择'}"></td>
+        <td class="dependency-name">${escapeHtml(item.name)}</td>
+        <td class="dependency-version" title="${escapeHtml(version)}">${escapeHtml(version)}</td>
+        <td class="dependency-progress-cell">${dependencyProgressMarkup(item)}</td>
+      </tr>`;
+    }
+    return `<tr>
+      <td><input class="dependency-check" type="checkbox" ${item.selected ? 'checked' : ''} onchange="toggleDependencyItem(${index}, this.checked)" title="选择 ${escapeHtml(item.name)}"></td>
+      <td class="dependency-name">${escapeHtml(item.name)}</td>
+      <td class="dependency-version" title="${escapeHtml(version)}">${escapeHtml(version)}</td>
+      <td>${escapeHtml(item.manager || 'conda')}</td>
+      <td class="dependency-source" title="${escapeHtml(item.source || '')}">${escapeHtml(item.source || '-')}</td>
+      <td>${confidenceText(item.confidence)}</td>
+      <td class="${statusClass}" title="${escapeHtml(item.precheck_detail || '')}">${precheckText(item.precheck_status)}</td>
+      <td class="dependency-reason" title="${escapeHtml(item.reason || '')}">${escapeHtml(item.reason || '-')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function openDependencyModal() {
+  dependencyReviewMode = 'review';
+  if (dependencyCancelBtn) {
+    dependencyCancelBtn.disabled = false;
+    dependencyCancelBtn.textContent = '稍后处理';
+  }
+  if (dependencyConfirmBtn) {
+    dependencyConfirmBtn.disabled = false;
+    dependencyConfirmBtn.textContent = '确认清单';
+  }
+  renderDependencyReview();
+  dependencyModal.classList.add('open');
+}
+
+function closeDependencyModal(event) {
+  if (event && event.target !== dependencyModal) return;
+  if (dependencyReviewMode === 'installing') return;
+  dependencyModal.classList.remove('open');
+}
+
+function toggleDependencyItem(index, selected) {
+  if (!dependencyItems[index]) return;
+  dependencyItems[index].selected = selected;
+  renderDependencyReview();
+}
+
+function selectedDependenciesFromReview() {
+  return dependencyItems.filter(item => item.selected);
+}
+
+async function confirmDependencySelection() {
+  selectedDependencyItems = selectedDependenciesFromReview();
+  if (!selectedDependencyItems.length) {
+    addNotice('请至少勾选一个依赖，或补充需求后重新检查', 'error');
+    return;
+  }
+  dependencyPlanReady = true;
+  checkDepsBtn.textContent = '安装依赖';
+  userInput.placeholder = '还需更改';
+  depsState = 'checked';
+  await installProjectDependencies({ keepModalOpen: true });
+}
+
+async function uploadDependencyFiles(projectName) {
+  if (!pendingDependencyFiles.length) return null;
+  const formData = new FormData();
+  formData.append('project_name', projectName);
+  for (const file of pendingDependencyFiles) {
+    formData.append('files', file, file.name);
+  }
+  const count = pendingDependencyFiles.length;
+  const resp = await fetch('/api/files/upload', { method: 'POST', body: formData });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || '依赖文件上传失败');
+  pendingDependencyFiles = [];
+  renderDependencyFileChips();
+  syncProjectName(data.project_name);
+  await loadProjects(false);
+  return { ...data, count };
 }
 
 async function uploadSelectedFiles(input) {
@@ -1657,8 +2765,9 @@ async function uploadSelectedFiles(input) {
       return;
     }
     syncProjectName(data.project_name);
-    addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.archive_size)}，目录 ${data.remote_project_dir}；conda 小房间${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
-    toggleAssistant(true);
+    await loadProjects(false);
+    renderProjects(projectsCache);
+    addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.archive_size)}，目录 ${data.remote_project_dir}；项目 Conda 环境${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
     addChatMessage(`### 文件上传完成
 
 - 文件数：${data.file_count}
@@ -1666,7 +2775,7 @@ async function uploadSelectedFiles(input) {
 - 项目目录：\`${data.remote_project_dir}\`
 - SHA256：\`${data.local_sha256}\`
 
-现在建议点击上方 **建议报告**。如果你还有修改意见，也可以先写在下面输入框里，再点击 **建议报告**，我会把追加内容一起记录进项目说明。`, 'ai');
+现在建议在输入框里补充依赖清单或算力要求，再点击 **检查依赖**。`, 'ai', true);
   } catch (e) {
     addNotice('文件上传失败: ' + e.message, 'error');
   } finally {
@@ -1676,27 +2785,37 @@ async function uploadSelectedFiles(input) {
 }
 
 async function generateProjectReport() {
+  if (dependencyPlanReady) {
+    dependencyModal.classList.add('open');
+    await installProjectDependencies({ keepModalOpen: true });
+    return;
+  }
   const projectName = currentProjectName();
   if (!projectName) {
     addNotice('请先输入作业目录名称', 'error');
-    toggleAssistant(true);
-    assistantProjectNameInput.focus();
+    openNewJobFlow();
     return;
   }
   if (isProcessing) return;
 
   const extraNotes = userInput.value.trim();
   if (extraNotes) {
-    addChatMessage(extraNotes, 'user');
+    addChatMessage(extraNotes, 'user', true);
     userInput.value = '';
+    autoResizeComposer();
   }
 
   isProcessing = true;
-  sendBtn.disabled = true;
+  userInput.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
+  if (checkDepsBtn) checkDepsBtn.disabled = true;
   confirmRunBtn.disabled = true;
-  addNotice('正在生成建议报告...');
-  const pending = addChatMessage('正在读取项目说明、目录和脚本，生成提交前建议报告...', 'ai');
+  const pending = addChatMessage('正在读取项目目录、已上传文件、依赖清单和算力要求，生成将要安装的程序环境列表...', 'ai');
   try {
+    const uploadData = await uploadDependencyFiles(projectName);
+    if (uploadData) {
+      addChatMessage(`已读取 ${uploadData.count} 个依赖/需求文件。`, 'user', true);
+    }
     const resp = await fetch('/api/projects/report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1704,71 +2823,606 @@ async function generateProjectReport() {
     });
     const data = await resp.json();
     if (!resp.ok) {
-      setMessageContent(pending, data.error || '生成建议报告失败', 'ai');
-      addNotice(data.error || '生成建议报告失败', 'error');
+      setMessageContent(pending, data.error || '检查依赖失败', 'ai');
+      addNotice(data.error || '检查依赖失败', 'error');
       return;
     }
     syncProjectName(data.project_name);
     lastProjectReport = data.report || '';
     lastProjectDir = data.project_dir || '';
+    dependencyItems = Array.isArray(data.dependency_items) ? data.dependency_items : [];
+    selectedDependencyItems = [];
     setMessageContent(pending, data.report, 'ai');
-    confirmRunBtn.disabled = false;
-    addNotice(`建议报告已生成，需求记录：${data.notes_path}`);
-    addChatMessage(`请检查上面的建议报告。
+    await persistDisplayMessage('ai', data.report);
+    dependencyPlanReady = false;
+    checkDepsBtn.textContent = '检查依赖';
+    userInput.placeholder = '还需更改';
+    openDependencyModal();
+    addChatMessage(`请检查上面的依赖安装方案。
 
-- 如果需要修改：把修改意见写在下面输入框里，再点 **建议报告**，我会把意见追加到需求记录并重新生成。
-- 如果确认无误：点击 **确认执行**，我会把已确认的方案交给智能体继续生成/提交作业命令。`, 'ai');
+- 弹窗中已列出每个依赖、版本、来源、置信度和预检状态。
+- 可信来源默认勾选；推断项需要你手动勾选。
+- 确认清单后，点击 **安装依赖** 开始安装。`, 'ai', true);
   } catch (e) {
-    setMessageContent(pending, '生成建议报告失败: ' + e.message, 'ai');
-    addNotice('生成建议报告失败: ' + e.message, 'error');
+    setMessageContent(pending, '检查依赖失败: ' + e.message, 'ai');
+    addNotice('检查依赖失败: ' + e.message, 'error');
   } finally {
     isProcessing = false;
-    sendBtn.disabled = false;
+  userInput.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+    if (checkDepsBtn) checkDepsBtn.disabled = false;
+    if (confirmRunBtn) confirmRunBtn.disabled = false;
   }
 }
 
-async function confirmRunPlan() {
+function setDependencyInstallState(state, detail = '') {
+  const selectedKeys = new Set(selectedDependencyItems.map(item => `${item.manager}:${item.name}`));
+  dependencyItems = dependencyItems.map(item => {
+    const key = `${item.manager}:${item.name}`;
+    if (!selectedKeys.has(key)) {
+      return { ...item, install_status: 'skipped', install_detail: '未选择安装' };
+    }
+    return { ...item, install_status: state, install_detail: detail };
+  });
+  renderDependencyReview();
+}
+
+function applyDependencyValidationResults(validationResults) {
+  const validationMap = new Map((validationResults || []).map(item => [
+    String(item.name || '').toLowerCase().replace(/_/g, '-'),
+    item,
+  ]));
+  dependencyItems = dependencyItems.map(item => {
+    const key = String(item.name || '').toLowerCase().replace(/_/g, '-');
+    const result = validationMap.get(key);
+    if (!item.selected) {
+      return { ...item, install_status: 'skipped', install_detail: '未选择安装' };
+    }
+    if (!result) {
+      return { ...item, install_status: 'failed', install_detail: '未返回查验结果' };
+    }
+    return {
+      ...item,
+      install_status: result.status === 'ok' ? 'done' : 'failed',
+      install_detail: result.detail || '',
+    };
+  });
+  renderDependencyReview();
+}
+
+async function installProjectDependencies(options = {}) {
   const projectName = currentProjectName();
   if (!projectName || !lastProjectReport) {
-    addNotice('请先生成建议报告，再确认执行', 'error');
+    addNotice('请先检查依赖', 'error');
+    return;
+  }
+  const extraNotes = userInput.value.trim();
+  if (extraNotes || pendingDependencyFiles.length) {
+    dependencyPlanReady = false;
+    selectedDependencyItems = [];
+    checkDepsBtn.textContent = '检查依赖';
+    await generateProjectReport();
     return;
   }
   if (isProcessing) return;
 
-  const message = `我确认执行当前建议报告。请基于下面的信息继续推进：如果信息仍不足，先只问最关键的缺失项；如果已经足够，请生成规范的 sbatch 脚本，并调用 submit_job 提交作业。
+  isProcessing = true;
+  userInput.disabled = true;
+  if (checkDepsBtn) {
+    checkDepsBtn.disabled = true;
+    checkDepsBtn.textContent = '安装中';
+  }
+  confirmRunBtn.disabled = true;
+  dependencyReviewMode = 'installing';
+  if (dependencyCancelBtn) dependencyCancelBtn.disabled = true;
+  if (dependencyConfirmBtn) {
+    dependencyConfirmBtn.disabled = true;
+    dependencyConfirmBtn.textContent = '安装中';
+  }
+  if (options.keepModalOpen) dependencyModal.classList.add('open');
+  setDependencyInstallState('installing', '正在执行安装命令');
+  const pending = addChatMessage('正在安装依赖到当前项目 Conda 环境...', 'ai');
+  try {
+    const resp = await fetch('/api/projects/install-deps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: projectName,
+        plan: lastProjectReport,
+        selected_items: selectedDependencyItems,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      depsState = 'failed';
+      const detail = data.results ? `\n\n${formatInstallResults(data.results)}` : '';
+      setMessageContent(pending, (data.error || '依赖安装失败') + detail, 'ai');
+      setDependencyInstallState('failed', data.error || '依赖安装失败');
+      dependencyReviewMode = 'installed';
+      if (dependencyConfirmBtn) {
+        dependencyConfirmBtn.disabled = false;
+        dependencyConfirmBtn.textContent = '重试安装';
+      }
+      if (dependencyCancelBtn) {
+        dependencyCancelBtn.disabled = false;
+        dependencyCancelBtn.textContent = '关闭';
+      }
+      renderDependencyReview();
+      addNotice(data.error || '依赖安装失败', 'error');
+      return;
+    }
+    setDependencyInstallState('validating', '安装完成，正在查验环境');
+    applyDependencyValidationResults(data.validation_results || []);
+    const content = `### 依赖安装完成
 
-约束：
-- 项目目录：${lastProjectDir || projectName}
-- 输出目录必须规范化到项目目录下 runs/<作业名>-%j/
-- Slurm 标准输出/错误使用 runs/<作业名>-%j.out 和 runs/<作业名>-%j.err
-- 提交前不要使用交互式命令
-- 如需要安装依赖，请优先使用项目目录里的 .slurm-agent/conda-env
+- 项目 Conda 环境：\`${data.conda_env_dir}\`
+- 执行命令数：${(data.results || []).length}
 
-已确认建议报告：
-${lastProjectReport.slice(0, 12000)}`;
+${formatInstallResults(data.results || [])}
 
-  await sendMessage(
-    message,
-    '已确认执行。请根据建议报告准备提交；如果还缺必要信息，请先问我。'
-  );
+### 安装后验证
+
+${formatValidationResults(data.validation_results || [])}
+
+现在可以点击 **布置作业**。`;
+    setMessageContent(pending, content, 'ai');
+    await persistDisplayMessage('ai', content);
+    checkDepsBtn.textContent = '检查依赖';
+    dependencyPlanReady = false;
+    userInput.placeholder = '添加依赖清单或算力要求';
+    depsState = 'installed';
+    if (data.conda_env_dir) lastCondaEnvDir = data.conda_env_dir;
+    dependencyReviewMode = 'installed';
+    if (dependencyConfirmBtn) {
+      dependencyConfirmBtn.disabled = true;
+      dependencyConfirmBtn.textContent = '安装完成';
+    }
+    if (dependencyCancelBtn) {
+      dependencyCancelBtn.disabled = false;
+      dependencyCancelBtn.textContent = '关闭';
+    }
+    renderDependencyReview();
+  } catch (e) {
+    depsState = 'failed';
+    setMessageContent(pending, '依赖安装失败: ' + e.message, 'ai');
+    setDependencyInstallState('failed', e.message);
+    dependencyReviewMode = 'installed';
+    if (dependencyConfirmBtn) {
+      dependencyConfirmBtn.disabled = false;
+      dependencyConfirmBtn.textContent = '重试安装';
+    }
+    if (dependencyCancelBtn) {
+      dependencyCancelBtn.disabled = false;
+      dependencyCancelBtn.textContent = '关闭';
+    }
+    renderDependencyReview();
+    addNotice('依赖安装失败: ' + e.message, 'error');
+  } finally {
+    isProcessing = false;
+    userInput.disabled = false;
+    if (checkDepsBtn) checkDepsBtn.disabled = false;
+    if (confirmRunBtn) confirmRunBtn.disabled = false;
+  }
 }
 
-function addChatMessage(text, role) {
+function formatInstallResults(results) {
+  if (!results || !results.length) return '';
+  return results.map(item => {
+    const status = item.returncode === 0 ? '成功' : `失败 ${item.returncode}`;
+    const output = item.output ? `\n\n\`\`\`text\n${item.output.slice(-1200)}\n\`\`\`` : '';
+    return `- \`${item.command}\`：${status}${output}`;
+  }).join('\n');
+}
+
+function formatValidationResults(results) {
+  if (!results || !results.length) return '未返回验证结果。';
+  return results.map(item => {
+    const status = item.status === 'ok' ? '通过' : (item.status === 'missing' ? '未确认' : '需确认');
+    return `- \`${item.name}\`：${status}`;
+  }).join('\n');
+}
+
+function confirmRunPlan() {
+  if (isProcessing) return;
+  const projectName = currentProjectName();
+  if (!projectName) {
+    addNotice('请先选择或创建作业目录', 'error');
+    openNewJobFlow();
+    return;
+  }
+  // 依赖未安装完成时先弹警告窗，用户确认后仍可继续
+  if (depsState !== 'installed') {
+    openDepsWarningModal();
+    return;
+  }
+  openJobSubmitModal();
+}
+
+function depsWarningText() {
+  if (depsState === 'checked') {
+    return '<strong>依赖清单已确认，但尚未安装到项目 Conda 环境。</strong><br>建议先点击「安装依赖」完成安装，再布置作业。';
+  }
+  if (depsState === 'failed') {
+    return '<strong>上次依赖安装失败。</strong><br>建议先在会话中查看失败原因并重试安装，再布置作业。';
+  }
+  return '<strong>尚未检查/安装当前项目的依赖。</strong><br>建议先上传项目文件并点击「检查依赖」，确认并安装依赖后再布置作业。';
+}
+
+function openDepsWarningModal() {
+  const el = document.getElementById('depsWarningText');
+  if (el) el.innerHTML = depsWarningText();
+  depsWarningModal.classList.add('open');
+}
+
+function closeDepsWarningModal(event) {
+  if (event && event.target !== depsWarningModal) return;
+  depsWarningModal.classList.remove('open');
+}
+
+function proceedToSubmitAnyway() {
+  closeDepsWarningModal();
+  openJobSubmitModal();
+}
+
+function currentProjectDir() {
+  if (lastProjectDir) return lastProjectDir;
+  const project = projectsCache.find(p => p.name === selectedProjectName);
+  return project ? project.path : `~/projects/${selectedProjectName}`;
+}
+
+function readSubmitForm() {
+  return {
+    jobName: (document.getElementById('submitJobName').value || '').trim(),
+    partition: document.getElementById('submitPartition').value || '',
+    account: document.getElementById('submitAccount').value || '',
+    qos: document.getElementById('submitQos').value || '',
+    nodes: Math.max(1, parseInt(document.getElementById('submitNodes').value, 10) || 1),
+    gpus: Math.max(0, parseInt(document.getElementById('submitGpus').value, 10) || 0),
+    cpus: Math.max(1, parseInt(document.getElementById('submitCpus').value, 10) || 1),
+    hours: Math.max(0.25, parseFloat(document.getElementById('submitHours').value) || 4),
+  };
+}
+
+function currentSubmitOptionEntry() {
+  // 当前选中的 账户/分区 组合对应的选项数据（含 QoS 列表与分区 MaxNodes）
+  if (!submitOptionsData) return null;
+  const entry = submitOptionsData.options.find(o => o.account === document.getElementById('submitAccount').value);
+  if (!entry) return null;
+  return entry.partitions.find(p => p.partition === document.getElementById('submitPartition').value) || null;
+}
+
+function renderSubmitAccountOptions() {
+  const el = document.getElementById('submitAccount');
+  const prev = el.value;
+  const accounts = submitOptionsData.options.map(o => o.account);
+  el.innerHTML = accounts.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  // 优先保留上次选择，其次默认学生账户 stu
+  el.value = accounts.includes(prev) ? prev : (accounts.includes('stu') ? 'stu' : accounts[0] || '');
+  renderSubmitPartitionOptions();
+}
+
+function renderSubmitPartitionOptions() {
+  const el = document.getElementById('submitPartition');
+  const prev = el.value;
+  const entry = submitOptionsData.options.find(o => o.account === document.getElementById('submitAccount').value);
+  const names = entry ? entry.partitions.map(p => p.partition) : [];
+  el.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+  if (names.includes(prev)) el.value = prev;
+  else if (names.includes('Students')) el.value = 'Students';
+  renderSubmitQosOptions();
+}
+
+function renderSubmitQosOptions() {
+  const el = document.getElementById('submitQos');
+  const prev = el.value;
+  const combo = currentSubmitOptionEntry();
+  const names = combo ? combo.qos : [];
+  el.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+  if (names.includes(prev)) el.value = prev;
+  else if (names.includes('qos_stu_default')) el.value = 'qos_stu_default';
+  else el.value = names[0] || '';
+}
+
+function onSubmitAccountChange() {
+  renderSubmitPartitionOptions(); // 级联刷新分区 → QoS
+  onSubmitFieldChange();
+}
+
+function onSubmitPartitionChange() {
+  renderSubmitQosOptions(); // 切换分区后 QoS 列表随分区变化
+  onSubmitFieldChange();
+}
+
+function onSubmitQosChange() {
+  onSubmitFieldChange();
+}
+
+function applyQosLimits() {
+  // 每个 QoS 对应一个最高资源方案：按实时上限限制节点/GPU/CPU/时限输入框，超限自动回缩
+  const nodesEl = document.getElementById('submitNodes');
+  const gpusEl = document.getElementById('submitGpus');
+  const cpusEl = document.getElementById('submitCpus');
+  const hoursEl = document.getElementById('submitHours');
+  const hintEl = document.getElementById('qosLimitHint');
+  const clamps = [];
+
+  const combo = currentSubmitOptionEntry();
+  if (combo && combo.max_nodes) {
+    nodesEl.max = combo.max_nodes;
+    if (Number(nodesEl.value) > combo.max_nodes) {
+      nodesEl.value = combo.max_nodes;
+      clamps.push(`节点数已按分区上限调整为 ${combo.max_nodes}`);
+    }
+  }
+
+  const limit = submitOptionsData && submitOptionsData.qos_limits
+    ? submitOptionsData.qos_limits[document.getElementById('submitQos').value]
+    : null;
+  if (limit) {
+    if (limit.cpu != null) {
+      cpusEl.max = limit.cpu;
+      if (Number(cpusEl.value) > limit.cpu) {
+        cpusEl.value = limit.cpu;
+        clamps.push(`CPU 已按 QoS 上限调整为 ${limit.cpu} 核`);
+      }
+    }
+    if (limit.gpu != null) {
+      gpusEl.max = limit.gpu;
+      if (limit.gpu === 0) {
+        if (Number(gpusEl.value) !== 0) {
+          gpusEl.value = 0;
+          clamps.push('当前 QoS 不含 GPU，GPU 数已置 0');
+        }
+      } else if (Number(gpusEl.value) > limit.gpu) {
+        gpusEl.value = limit.gpu;
+        clamps.push(`GPU 已按 QoS 上限调整为 ${limit.gpu} 卡`);
+      }
+    }
+    if (limit.wall_minutes != null) {
+      const hours = limit.wall_minutes / 60;
+      hoursEl.max = hours;
+      if (Number(hoursEl.value) > hours) {
+        hoursEl.value = hours;
+        clamps.push(`时限已按 QoS 上限调整为 ${hours} 小时`);
+      }
+    }
+    const memText = limit.mem_mb != null ? `${Math.round(limit.mem_mb / 1024)}G` : '不限';
+    const cpuText = limit.cpu != null ? `${limit.cpu} 核` : '不限';
+    const gpuText = limit.gpu != null ? `${limit.gpu} 卡` : '不限';
+    const wallText = limit.wall_minutes != null ? `${limit.wall_minutes / 60} 小时` : '不限';
+    hintEl.textContent = `当前 QoS 上限：CPU ${cpuText} / GPU ${gpuText} / 内存 ${memText} / 最长 ${wallText}`;
+  } else {
+    hintEl.textContent = '未获取到当前 QoS 的资源上限，请按实际方案填写。';
+  }
+
+  if (clamps.length) addNotice(clamps.join('；'));
+}
+
+function buildSbatchHeader(form) {
+  const lines = [
+    '#!/bin/bash',
+    `#SBATCH --job-name=${form.jobName || 'my-job'}`,
+    `#SBATCH --partition=${form.partition}`,
+    `#SBATCH --account=${form.account || 'ACCOUNT'}`,
+  ];
+  if (form.qos) lines.push(`#SBATCH --qos=${form.qos}`);
+  lines.push(`#SBATCH --nodes=${form.nodes}`);
+  lines.push(`#SBATCH --cpus-per-task=${form.cpus}`);
+  // 显式写出 gpu:0，与平台默认脚本一致：纯 CPU 作业明确不占用 GPU 配额
+  lines.push(`#SBATCH --gres=gpu:${form.gpus}`);
+  lines.push(
+    `#SBATCH --time=${Math.round(form.hours * 60)}`,
+    '#SBATCH --output=logs/%x-%j.out',
+    '#SBATCH --error=logs/%x-%j.err',
+  );
+  return lines.join('\n');
+}
+
+function buildSubmitScriptTemplate(form) {
+  const projectDir = currentProjectDir();
+  const condaEnv = lastCondaEnvDir || `${projectDir}/.slurm-agent/conda-env`;
+  return `${buildSbatchHeader(form)}
+
+set -euo pipefail
+cd ${projectDir}
+mkdir -p logs runs
+
+# 激活项目 Conda 环境（如不需要可删除）
+set +u
+source ${condaEnv}/bin/activate
+set -u
+
+# TODO: 在下面写你的作业命令（示例）
+srun python -u main.py
+`;
+}
+
+function syncScriptHeader() {
+  // 表单变化时只重写顶部 #SBATCH 块，保留用户编辑的正文
+  const form = readSubmitForm();
+  const header = buildSbatchHeader(form);
+  const lines = submitScriptInput.value.split('\n');
+  let start = 0;
+  if (lines[0] && lines[0].startsWith('#!')) start = 1;
+  let end = start;
+  while (end < lines.length && lines[end].startsWith('#SBATCH')) end++;
+  const body = lines.slice(end).join('\n').replace(/^\n+/, '\n');
+  submitScriptInput.value = header + (body.trim() ? body : '\n');
+}
+
+async function openJobSubmitModal() {
+  // 账户/分区/QoS 菜单由 Slurm 实时数据填充，获取失败不打开弹窗
+  if (!submitOptionsData) {
+    addNotice('正在获取集群的 账户/分区/QoS 授权...');
+    try {
+      const resp = await fetch('/api/slurm/submit-options');
+      const data = await resp.json();
+      if (!resp.ok || data.status !== 'ok') throw new Error(data.error || `HTTP ${resp.status}`);
+      submitOptionsData = data;
+    } catch (e) {
+      addNotice('获取 账户/分区/QoS 失败：' + e.message + '，请稍后重试', 'error');
+      return;
+    }
+  }
+  const jobNameEl = document.getElementById('submitJobName');
+  // 默认作业名 = 当前项目名
+  if (!jobNameEl.value.trim()) jobNameEl.value = selectedProjectName || 'my-job';
+  renderSubmitAccountOptions();
+  applyQosLimits();
+  submitScriptInput.value = buildSubmitScriptTemplate(readSubmitForm());
+  jobSubmitModal.classList.add('open');
+}
+
+function closeJobSubmitModal(event) {
+  if (event && event.target !== jobSubmitModal) return;
+  jobSubmitModal.classList.remove('open');
+}
+
+function onSubmitFieldChange() {
+  ['submitJobName', 'submitAccount', 'submitPartition', 'submitQos'].forEach(id => {
+    document.getElementById(id).classList.remove('invalid');
+  });
+  applyQosLimits();
+  syncScriptHeader();
+}
+
+async function submitJobFromModal() {
+  if (isProcessing) return;
+  const projectName = currentProjectName();
+  if (!projectName) {
+    addNotice('请先选择或创建作业目录', 'error');
+    return;
+  }
+  const form = readSubmitForm();
+  const missing = [];
+  if (!form.jobName) missing.push(['submitJobName', '作业名']);
+  if (!form.account) missing.push(['submitAccount', '计费账户']);
+  if (!form.partition) missing.push(['submitPartition', '分区']);
+  if (!form.qos) missing.push(['submitQos', 'QoS']);
+  const script = submitScriptInput.value;
+  if (missing.length) {
+    missing.forEach(([id]) => document.getElementById(id).classList.add('invalid'));
+    addNotice('必填项不能为空：' + missing.map(([, name]) => name).join('、'), 'error');
+    document.getElementById(missing[0][0]).focus();
+    return;
+  }
+  if (!script.trim()) {
+    addNotice('作业脚本不能为空', 'error');
+    submitScriptInput.focus();
+    return;
+  }
+
+  isProcessing = true;
+  submitJobBtn.disabled = true;
+  submitJobBtn.textContent = '提交中...';
+  try {
+    const resp = await fetch('/api/jobs/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_name: projectName,
+        script,
+        job_name: form.jobName,
+        partition: form.partition,
+        nodes: form.nodes,
+        time_limit: Math.round(form.hours * 60),
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      addNotice(data.error || '提交作业失败', 'error');
+      return;
+    }
+    closeJobSubmitModal();
+    const jobId = data.job_id == null ? '未知' : data.job_id;
+    addNotice(`作业已提交，作业 ID：${jobId}`);
+    const content = `### 作业已提交
+
+- 作业 ID：\`${jobId}\`
+- 作业名：\`${form.jobName}\`（分区 \`${form.partition}\`，账户 \`${form.account}\`）
+- 脚本已保存：\`${data.script_path}\`
+- 日志文件：\`${data.project_dir}/logs/${form.jobName}-${jobId}.out\` 与 \`.err\`
+
+可以在右侧「作业情况」面板跟踪状态，或直接问我“作业 ${jobId} 运行得怎么样了”。`;
+    addChatMessage(content, 'ai', true);
+  } catch (e) {
+    addNotice('提交作业失败: ' + e.message, 'error');
+  } finally {
+    isProcessing = false;
+    submitJobBtn.disabled = false;
+    submitJobBtn.textContent = '提交作业';
+  }
+}
+
+function addChatMessage(text, role, persist = false) {
   const div = document.createElement('div');
   div.className = `message ${role}`;
   setMessageContent(div, text, role);
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (persist) {
+    persistDisplayMessage(role, text);
+  }
   return div;
 }
 
-function addToolCard(name, result = '') {
+function setToolCardCollapsed(card, collapsed) {
+  card.classList.toggle('collapsed', collapsed);
+  const caret = card.querySelector('.tool-card-caret');
+  if (caret) caret.textContent = collapsed ? '▶' : '▼';
+}
+
+function createToolCard(name) {
   const div = document.createElement('div');
   div.className = 'tool-card';
-  div.textContent = result ? `工具 ${name} 完成：${result}` : `正在执行工具 ${name}...`;
+  const header = document.createElement('button');
+  header.type = 'button';
+  header.className = 'tool-card-header';
+  const title = document.createElement('span');
+  title.className = 'tool-card-title';
+  const caret = document.createElement('span');
+  caret.className = 'tool-card-caret';
+  header.appendChild(title);
+  header.appendChild(caret);
+  const body = document.createElement('div');
+  body.className = 'tool-card-body';
+  header.onclick = () => {
+    div.dataset.userToggled = 'true';
+    setToolCardCollapsed(div, !div.classList.contains('collapsed'));
+  };
+  div.appendChild(header);
+  div.appendChild(body);
   messagesEl.appendChild(div);
+  setToolCardCollapsed(div, false);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  return div;
+  return { el: div, title, body };
+}
+
+function addToolCard(name, result = '') {
+  const key = String(name || 'tool');
+  let card = activeToolCards.get(key);
+  if (!card) {
+    card = createToolCard(key);
+    activeToolCards.set(key, card);
+  }
+
+  if (result) {
+    card.title.textContent = `工具 ${key} 完成`;
+    card.body.textContent = result;
+    setToolCardCollapsed(card.el, false);
+    activeToolCards.delete(key);
+    window.setTimeout(() => {
+      if (card.el.isConnected && card.el.dataset.userToggled !== 'true') {
+        setToolCardCollapsed(card.el, true);
+      }
+    }, TOOL_AUTO_COLLAPSE_MS);
+  } else {
+    card.title.textContent = `正在执行工具 ${key}`;
+    card.body.textContent = '等待工具返回结果...';
+    setToolCardCollapsed(card.el, false);
+  }
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return card.el;
 }
 
 async function sendMessage(forcedText = null, displayText = null) {
@@ -1776,8 +3430,11 @@ async function sendMessage(forcedText = null, displayText = null) {
   if (!text || isProcessing) return;
 
   isProcessing = true;
-  sendBtn.disabled = true;
+  userInput.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
+  if (checkDepsBtn) checkDepsBtn.disabled = true;
   userInput.value = '';
+  autoResizeComposer();
   addChatMessage(displayText || text, 'user');
   currentAiMessage = null;
   currentAiText = '';
@@ -1786,7 +3443,7 @@ async function sendMessage(forcedText = null, displayText = null) {
     const resp = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, project_name: currentProjectName() }),
     });
     if (!resp.ok) {
       const err = await resp.json();
@@ -1823,23 +3480,33 @@ async function sendMessage(forcedText = null, displayText = null) {
     addChatMessage('网络错误: ' + e.message, 'ai');
   } finally {
     isProcessing = false;
-    sendBtn.disabled = false;
+    userInput.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+    if (checkDepsBtn) checkDepsBtn.disabled = false;
     userInput.focus();
   }
 }
 
 async function resetChat() {
   try {
-    await fetch('/reset', { method: 'POST' });
+    await fetch('/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_name: currentProjectName() }),
+    });
     messagesEl.innerHTML = '<div class="message ai">对话已重置。可以继续查询资源、生成脚本或准备提交命令。</div>';
     lastProjectReport = '';
     lastProjectDir = '';
-    confirmRunBtn.disabled = true;
+    depsState = 'unknown';
   } catch (e) {
     addNotice('重置失败: ' + e.message, 'error');
   }
 }
 
+applySidebarState();
+loadProjects(true);
+loadModels(false);
+autoResizeComposer();
 refreshDashboard(false);
 refreshTimer = setInterval(() => refreshDashboard(false), 15000);
 </script>

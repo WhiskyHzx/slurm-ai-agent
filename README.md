@@ -91,11 +91,11 @@ PYTHONPATH=. uvicorn server.app:app --host 0.0.0.0 --port 8080
 
 1. 点击右上角 `+ 新作业`。
 2. 填写作业目录名称、环境依赖要求、算力特别需求。
-3. 后端创建 `~/projects/<项目名>`，并初始化 `<项目目录>/.slurm-agent/conda-env`。
+3. 后端创建 `~/projects/<作业目录名称>`，并初始化 `<作业目录>/.slurm-agent/conda-env`。
 4. 在智能体输入框上方点击 `文件` 或 `文件夹` 上传项目内容。
 5. 点击 `建议报告`。
 6. 后端读取：
-   - 项目名称和项目目录
+   - 作业目录名称和作业目录
    - 用户输入记录 `PROJECT_NOTES.txt`
    - 项目目录摘要
    - 可直接阅读的文本/源码/脚本/配置文件
@@ -130,7 +130,7 @@ PYTHONPATH=. python agent/agent_loop.py -i
 - `GET /health`：健康检查
 - `GET /api/dashboard`：资源和作业概览
 - `POST /api/slurm/refresh`：在登录节点刷新 Slurm JWT
-- `POST /api/projects`：创建项目目录、初始化 conda、记录需求
+- `POST /api/projects`：创建作业目录、初始化项目 Conda 环境、记录需求
 - `POST /api/files/upload`：上传文件/文件夹并 SHA256 校验
 - `POST /api/projects/report`：生成提交前建议报告
 - `POST /chat`：智能体 SSE 聊天接口

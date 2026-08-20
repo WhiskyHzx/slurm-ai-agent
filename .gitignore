@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 *.token
+config/model_config.json
 
 # Slurm 作业输出文件（测试残留）
 *.out
@@ -33,3 +34,8 @@ Thumbs.db
 *.backup
 .tmp/
 .slurm-agent/
+
+
+#downloads
+sbatch-manual-official.html
+sbatch-manual-107-local.txt

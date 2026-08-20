@@ -194,6 +194,122 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- 以下为 CLI 只读诊断工具（core/cli_executor.py，仅登录节点可用） ----
+    {
+        "type": "function",
+        "function": {
+            "name": "get_job_priority",
+            "description": (
+                "查看排队作业的调度优先级构成（Slurm 命令 sprio）。"
+                "当用户询问'作业为什么一直排队''排队优先级''为什么还没轮到我'时调用。"
+                "默认查询当前用户的排队作业，也可指定 job_id 或 user。只读查询。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "integer",
+                        "description": "可选，只查看指定作业的优先级",
+                    },
+                    "user": {
+                        "type": "string",
+                        "description": "可选，用户名，默认当前用户",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_shares",
+            "description": (
+                "查看账户的 fairshare 公平份额和资源使用量（Slurm 命令 sshare）。"
+                "当用户询问'公平份额''fairshare''配额是不是被别人占了'时调用。"
+                "默认查询当前用户。只读查询。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user": {
+                        "type": "string",
+                        "description": "可选，用户名，默认当前用户",
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "可选，账户名，如 competition、stu",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_job_live_stats",
+            "description": (
+                "查看正在运行的作业的实时资源占用，如内存、CPU（Slurm 命令 sstat）。"
+                "当用户询问'我的作业现在用了多少内存''运行中作业的资源占用'时调用。"
+                "只能查询 RUNNING 状态的作业。只读查询。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "integer",
+                        "description": "作业 ID，必须是正在运行的作业",
+                    }
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_usage_report",
+            "description": (
+                "查看集群或用户用量统计报表（Slurm 命令 sreport）。"
+                "当用户询问'这个月用了多少资源''集群利用率''用量统计'时调用。"
+                "report_type=cluster 查集群整体利用率，user_top 查用量最多的用户排行。"
+                "只读查询。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "report_type": {
+                        "type": "string",
+                        "enum": ["cluster", "user_top"],
+                        "description": "报表类型：cluster=集群整体利用率（默认），user_top=用量最多的用户排行",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "统计最近 N 天，默认 30，范围 1-365",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_my_account",
+            "description": (
+                "查看当前用户自己的账户（Account）、所属集群和可用 QoS 授权"
+                "（Slurm 命令 sacctmgr show assoc）。"
+                "当用户询问'我有哪些账户''我能用哪些 QoS''我的账号信息'时调用。"
+                "只能查询当前用户自己。只读查询。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -260,6 +376,20 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                     "partition": {
                         "type": "string",
                         "description": "分区名，如 P107-RTX5090、CPU-6530",
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": (
+                            "计费账户，与分区匹配：P107 系列用 competition，"
+                            "Students 用 stu。不传则用模板默认值"
+                        ),
+                    },
+                    "qos": {
+                        "type": "string",
+                        "description": (
+                            "QoS 名称，与分区匹配：qos_p107-rtx5090 / "
+                            "qos_p107-a100 / qos_stu_default。不传则用模板默认值"
+                        ),
                     },
                     "gpu_count": {
                         "type": "integer",
@@ -348,6 +478,11 @@ TOOL_DESCRIPTIONS = {
     "get_nodes": "查询节点信息",
     "get_qos": "查询 QoS 资源配额",
     "get_jobs_history": "查询历史作业（含已完成/失败）",
+    "get_job_priority": "查看排队作业的调度优先级（只读）",
+    "get_shares": "查看公平份额 fairshare（只读）",
+    "get_job_live_stats": "查看运行中作业的实时资源占用（只读）",
+    "get_usage_report": "查看集群/用户用量报表（只读）",
+    "get_my_account": "查看自己的账户与 QoS 授权（只读）",
     "search_knowledge": "搜索平台知识库",
     "list_templates": "列出可用作业脚本模板",
     "generate_script": "根据模板生成 sbatch 脚本",
@@ -431,6 +566,37 @@ class ToolExecutor:
                     params["job_id"] = arguments["job_id"]
                 result = self.client.get_jobs_history(params=params if params else None)
                 return self._format_jobs_result(result)
+
+            elif tool_name == "get_job_priority":
+                from core.cli_executor import SlurmCLI
+                return SlurmCLI().priority(
+                    job_id=arguments.get("job_id"),
+                    user=arguments.get("user"),
+                )
+
+            elif tool_name == "get_shares":
+                from core.cli_executor import SlurmCLI
+                return SlurmCLI().shares(
+                    user=arguments.get("user"),
+                    account=arguments.get("account"),
+                )
+
+            elif tool_name == "get_job_live_stats":
+                from core.cli_executor import SlurmCLI
+                return SlurmCLI().job_live_stats(
+                    job_id=arguments["job_id"],
+                )
+
+            elif tool_name == "get_usage_report":
+                from core.cli_executor import SlurmCLI
+                return SlurmCLI().usage_report(
+                    report_type=arguments.get("report_type", "cluster"),
+                    days=arguments.get("days", 30),
+                )
+
+            elif tool_name == "get_my_account":
+                from core.cli_executor import SlurmCLI
+                return SlurmCLI().my_associations()
 
             elif tool_name == "search_knowledge":
                 from core.knowledge_base import search

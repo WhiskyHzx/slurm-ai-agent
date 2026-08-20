@@ -18,10 +18,10 @@ from openai import OpenAI
 
 from config.settings import (
     LLM_BASE_URL,
-    LLM_MODEL,
     LLM_TEMPERATURE,
     LLM_MAX_TOKENS,
 )
+from config.model_config import get_selected_model
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,8 @@ class LLMProvider:
             temperature: 生成温度
             max_tokens:  最大输出 token 数
         """
-        self.model = model or LLM_MODEL
+        self.dynamic_model = model is None
+        self.model = model or get_selected_model()
         self.temperature = temperature
         self.max_tokens = max_tokens
 
@@ -85,7 +86,7 @@ class LLMProvider:
             调用方从中提取 .choices[0].message.content 或 .tool_calls。
         """
         kwargs: Dict[str, Any] = {
-            "model": self.model,
+            "model": get_selected_model() if self.dynamic_model else self.model,
             "messages": messages,
             "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": max_tokens or self.max_tokens,
