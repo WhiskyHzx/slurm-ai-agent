@@ -45,6 +45,43 @@ slurm-ai-agent/
 - 可访问 Slurm REST API：`http://107.ustc.edu.cn:6820`
 - 可访问 LLM API：`https://api.llm.ustc.edu.cn/v1`
 
+## 准备 Miniconda（conda）环境
+
+本项目为每个项目创建独立 conda 环境。如果登录节点上还没有 conda/mamba，请先安装 Miniconda。
+
+### 安装 Miniconda
+
+```bash
+cd ~
+wget https://mirrors.ustc.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh -b -p "$HOME/miniconda3"
+~/miniconda3/bin/conda init bash
+source ~/.bashrc
+```
+
+> 如果 conda 提示需要接受 Anaconda 服务条款，先执行：
+>
+> ```bash
+> conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+> conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+> ```
+
+### 配置软件源（可选，加速国内下载）
+
+```bash
+cat > ~/.condarc <<'EOF'
+channels:
+  - https://mirrors.ustc.edu.cn/anaconda/cloud/conda-forge
+  - https://mirrors.ustc.edu.cn/anaconda/pkgs/main
+  - https://mirrors.ustc.edu.cn/anaconda/pkgs/r
+show_channel_urls: true
+EOF
+
+pip config set global.index-url https://mirrors.ustc.edu.cn/pypi/web/simple
+```
+
+更完整的 conda 环境配置说明见：`docs/docs-main/docs/basics/environments.md`。
+
 ## 安装
 
 ```bash
