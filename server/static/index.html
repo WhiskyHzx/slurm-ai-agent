@@ -632,6 +632,23 @@
     min-width: 230px;
   }
 
+.use-suggested-btn {
+    margin-left: 6px;
+    padding: 1px 8px;
+    font-size: 12px;
+    border: 1px solid var(--blue);
+    color: var(--blue);
+    background: transparent;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .use-suggested-btn:hover {
+    background: var(--blue);
+    color: #fff;
+  }
+
   .dependency-progress {
     display: flex;
     align-items: center;
@@ -1294,8 +1311,7 @@
 
   .submit-script-col {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 6px;
+    grid-template-rows: minmax(0, 1fr);
     min-height: 380px;
   }
 
@@ -1348,20 +1364,73 @@
     margin: 0;
   }
 
-  .submit-script-label {
-    color: var(--muted);
-    font-size: 12px;
-    margin-top: 4px;
-  }
-
   #submitScriptInput {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12.5px;
     line-height: 1.5;
-    min-height: 300px;
+    min-height: 120px;
     white-space: pre;
     overflow: auto;
     tab-size: 4;
+  }
+
+  .submit-script-frame {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  #submitLockedPreview {
+    margin: 0;
+    padding: 10px 12px 8px;
+    max-height: 220px;
+    overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--muted);
+    white-space: pre;
+    user-select: text;
+  }
+
+  .submit-divider {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 3px 8px 3px 12px;
+    border-top: 1px dashed var(--line);
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+
+  .submit-script-frame #submitScriptInput {
+    border: none;
+    border-radius: 0;
+    resize: none;
+    min-height: 0;
+    flex: 1;
+  }
+
+  .regen-body-btn {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .regen-body-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .submit-hint {
@@ -1656,8 +1725,14 @@
           <div id="qosLimitHint" class="submit-hint"></div>
         </div>
         <div class="submit-script-col">
-          <div class="submit-script-label">作业脚本：顶部 #SBATCH 头随左侧选项自动更新，下方正文可自由编辑（必填项不能为空）。</div>
-          <textarea id="submitScriptInput" spellcheck="false"></textarea>
+          <div class="submit-script-frame">
+            <pre id="submitLockedPreview"></pre>
+            <div class="submit-divider">
+              <span># 作业命令</span>
+              <button type="button" class="regen-body-btn" id="regenJobBodyBtn" onclick="regenerateJobBody()">重新生成</button>
+            </div>
+            <textarea id="submitScriptInput" spellcheck="false" placeholder="正在根据项目内容生成作业命令..."></textarea>
+          </div>
         </div>
       </div>
     </div>
@@ -2589,7 +2664,14 @@ function confidenceText(value) {
 function precheckText(value) {
   if (value === 'ok') return '可找到';
   if (value === 'missing') return '未确认';
+  if (value === 'installed') return '已安装';
+  if (value === 'version_mismatch') return '版本不存在';
   return '需确认';
+}
+
+function versionSuggestionMarkup(item, index) {
+  if (item.precheck_status !== 'version_mismatch' || !item.suggested_version) return '';
+  return ` <button type="button" class="use-suggested-btn" onclick="applySuggestedVersion(${index})" title="${escapeHtml(item.precheck_detail || '')}">改用 ${escapeHtml(item.suggested_version)}</button>`;
 }
 
 function renderDependencyReviewHead() {
@@ -2635,6 +2717,17 @@ function dependencyProgressMarkup(item) {
   </div>`;
 }
 
+function applySuggestedVersion(index) {
+  const item = dependencyItems[index];
+  if (!item || !item.suggested_version) return;
+  item.version = item.suggested_version;
+  item.precheck_status = 'ok';
+  item.precheck_detail = `已改用建议版本 ${item.suggested_version}（原版本在软件源中不存在）`;
+  item.command = item.manager === 'pip' ? `pip install ${item.name}==${item.suggested_version}` : `conda install ${item.name}=${item.suggested_version}`;
+  renderDependencyReview();
+  addNotice(`已将 ${item.name} 的版本改为 ${item.suggested_version}`);
+}
+
 function renderDependencyReview() {
   if (!dependencyReviewBody) return;
   renderDependencyReviewHead();
@@ -2655,7 +2748,7 @@ function renderDependencyReview() {
     dependencySummary.textContent = `${dependencyItems.length} 个依赖项，${selectedCount} 个已勾选；来自可信依赖文件或脚本的 ${trustedCount} 项已默认勾选，推断项需手动确认。`;
   }
   dependencyReviewBody.innerHTML = dependencyItems.map((item, index) => {
-    const statusClass = item.precheck_status === 'ok' ? 'status-ok' : (item.precheck_status === 'missing' ? 'status-missing' : 'status-unknown');
+    const statusClass = (item.precheck_status === 'ok' || item.precheck_status === 'installed') ? 'status-ok' : (item.precheck_status === 'missing' ? 'status-missing' : 'status-unknown');
     const version = item.version || '需确认';
     if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed') {
       return `<tr>
@@ -2668,7 +2761,7 @@ function renderDependencyReview() {
     return `<tr>
       <td><input class="dependency-check" type="checkbox" ${item.selected ? 'checked' : ''} onchange="toggleDependencyItem(${index}, this.checked)" title="选择 ${escapeHtml(item.name)}"></td>
       <td class="dependency-name">${escapeHtml(item.name)}</td>
-      <td class="dependency-version" title="${escapeHtml(version)}">${escapeHtml(version)}</td>
+      <td class="dependency-version" title="${escapeHtml(item.precheck_detail || '')}">${escapeHtml(version)}${versionSuggestionMarkup(item, index)}</td>
       <td>${escapeHtml(item.manager || 'conda')}</td>
       <td class="dependency-source" title="${escapeHtml(item.source || '')}">${escapeHtml(item.source || '-')}</td>
       <td>${confidenceText(item.confidence)}</td>
@@ -2711,6 +2804,18 @@ function selectedDependenciesFromReview() {
 async function confirmDependencySelection() {
   selectedDependencyItems = selectedDependenciesFromReview();
   if (!selectedDependencyItems.length) {
+    // 检查到的依赖均已安装在项目环境中：无需安装，直接进入可布置作业状态
+    const allInstalled = dependencyItems.length > 0 && dependencyItems.every(item => item.precheck_status === 'installed');
+    if (allInstalled) {
+      dependencyModal.classList.remove('open');
+      dependencyPlanReady = false;
+      checkDepsBtn.textContent = '检查依赖';
+      depsState = 'installed';
+      const content = '### 依赖已就绪\n\n检查到的依赖均已安装在项目 Conda 环境中，无需重复安装。\n\n现在可以点击 **布置作业**。';
+      addChatMessage(content, 'ai', true);
+      await persistDisplayMessage('ai', content);
+      return;
+    }
     addNotice('请至少勾选一个依赖，或补充需求后重新检查', 'error');
     return;
   }
@@ -2891,6 +2996,98 @@ function applyDependencyValidationResults(validationResults) {
   renderDependencyReview();
 }
 
+function installProgressBar(percent) {
+  if (typeof percent !== 'number' || isNaN(percent)) return '';
+  const clamped = Math.max(0, Math.min(100, Math.floor(percent)));
+  const filled = Math.round(clamped / 5);
+  return `\`[${'█'.repeat(filled)}${'░'.repeat(20 - filled)}] ${clamped}%\``;
+}
+
+function updateInstallProgress(pending, evt) {
+  const percent = typeof evt.percent === 'number' ? evt.percent : null;
+  const stage = evt.stage || '';
+  const bar = installProgressBar(percent);
+  const lines = ['正在安装依赖到当前项目 Conda 环境...'];
+  if (bar) lines.push('', bar);
+  if (stage) lines.push('', stage + '...');
+  setMessageContent(pending, lines.join('\n'), 'ai');
+  if (dependencyReviewMode === 'installing' && dependencySummary) {
+    dependencySummary.textContent = percent !== null
+      ? `安装进度 ${Math.floor(percent)}%：${stage || '执行中'}`
+      : (stage || '正在安装...');
+  }
+}
+
+function handleAutoFixEvent(evt) {
+  if (evt.status === 'analyzing') {
+    addNotice('安装失败，正在根据软件源真实可用版本生成修正命令...', 'info');
+  } else if (evt.status === 'retry') {
+    addNotice(`已自动修正安装命令并重试：${evt.reason || ''}`, 'info');
+  } else if (evt.status === 'failed') {
+    addNotice('未能自动修复安装命令，请手动调整版本后重试', 'error');
+  }
+}
+
+function handleInstallFailure(pending, data) {
+  depsState = 'failed';
+  const detail = data.results ? `\n\n${formatInstallResults(data.results)}` : '';
+  const autoFixText = data.auto_fix && data.auto_fix.reason
+    ? `\n\n**自动修复**：${data.auto_fix.reason}（仍失败，请手动调整版本）`
+    : '';
+  setMessageContent(pending, (data.error || '依赖安装失败') + detail + autoFixText, 'ai');
+  setDependencyInstallState('failed', data.error || '依赖安装失败');
+  dependencyReviewMode = 'installed';
+  if (dependencyConfirmBtn) {
+    dependencyConfirmBtn.disabled = false;
+    dependencyConfirmBtn.textContent = '重试安装';
+  }
+  if (dependencyCancelBtn) {
+    dependencyCancelBtn.disabled = false;
+    dependencyCancelBtn.textContent = '关闭';
+  }
+  renderDependencyReview();
+  addNotice(data.error || '依赖安装失败', 'error');
+}
+
+async function consumeInstallStream(resp, pending) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalEvent = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep;
+    while ((sep = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      let evt = null;
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('data: ')) {
+          try { evt = JSON.parse(line.slice(6)); } catch (e) { evt = null; }
+        }
+      }
+      if (!evt) continue;
+      if (evt.type === 'progress') {
+        updateInstallProgress(pending, evt);
+      } else if (evt.type === 'command_start') {
+        updateInstallProgress(pending, { percent: null, stage: `开始执行：${evt.command}` });
+        setDependencyInstallState('installing', `正在执行：${evt.command}`);
+      } else if (evt.type === 'command_done') {
+        if (evt.returncode === 0) {
+          updateInstallProgress(pending, { percent: null, stage: '命令执行完成' });
+        }
+      } else if (evt.type === 'auto_fix') {
+        handleAutoFixEvent(evt);
+      } else if (evt.type === 'done' || evt.type === 'error') {
+        finalEvent = evt;
+      }
+    }
+  }
+  return finalEvent;
+}
+
 async function installProjectDependencies(options = {}) {
   const projectName = currentProjectName();
   if (!projectName || !lastProjectReport) {
@@ -2933,31 +3130,27 @@ async function installProjectDependencies(options = {}) {
         selected_items: selectedDependencyItems,
       }),
     });
-    const data = await resp.json();
-    if (!resp.ok) {
-      depsState = 'failed';
-      const detail = data.results ? `\n\n${formatInstallResults(data.results)}` : '';
-      setMessageContent(pending, (data.error || '依赖安装失败') + detail, 'ai');
-      setDependencyInstallState('failed', data.error || '依赖安装失败');
-      dependencyReviewMode = 'installed';
-      if (dependencyConfirmBtn) {
-        dependencyConfirmBtn.disabled = false;
-        dependencyConfirmBtn.textContent = '重试安装';
-      }
-      if (dependencyCancelBtn) {
-        dependencyCancelBtn.disabled = false;
-        dependencyCancelBtn.textContent = '关闭';
-      }
-      renderDependencyReview();
-      addNotice(data.error || '依赖安装失败', 'error');
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      // 非 SSE 的早期错误（400 参数问题等），沿用旧逻辑处理
+      const data = await resp.json();
+      handleInstallFailure(pending, resp.ok ? { error: '安装返回了意外格式', results: [] } : data);
       return;
     }
+    const finalEvent = await consumeInstallStream(resp, pending);
+    if (!finalEvent) throw new Error('安装进度流意外中断');
+    if (finalEvent.type === 'error') {
+      handleInstallFailure(pending, finalEvent.payload || {});
+      return;
+    }
+    const data = finalEvent.payload || {};
     setDependencyInstallState('validating', '安装完成，正在查验环境');
     applyDependencyValidationResults(data.validation_results || []);
     const content = `### 依赖安装完成
 
 - 项目 Conda 环境：\`${data.conda_env_dir}\`
 - 执行命令数：${(data.results || []).length}
+${data.auto_fix && data.auto_fix.reason ? `\n**已自动修正安装命令**：${data.auto_fix.reason}\n- 原命令：\`${(data.auto_fix.original_command || '').slice(0, 120)}\`\n- 修正后：${(data.auto_fix.commands || []).map(c => `\`${c}\``).join('、')}` : ''}
 
 ${formatInstallResults(data.results || [])}
 
@@ -3069,6 +3262,14 @@ function currentProjectDir() {
   if (lastProjectDir) return lastProjectDir;
   const project = projectsCache.find(p => p.name === selectedProjectName);
   return project ? project.path : `~/projects/${selectedProjectName}`;
+}
+
+function currentCondaEnvDir() {
+  // 优先级：接口返回的实时值 > 服务端项目列表下发的权威路径 > 按约定拼接的回退值
+  if (lastCondaEnvDir) return lastCondaEnvDir;
+  const project = projectsCache.find(p => p.name === selectedProjectName);
+  if (project && project.conda_env_dir) return project.conda_env_dir;
+  return `${currentProjectDir()}/.slurm-agent/conda-env`;
 }
 
 function readSubmitForm() {
@@ -3219,36 +3420,79 @@ function buildSbatchHeader(form) {
   return lines.join('\n');
 }
 
-function buildSubmitScriptTemplate(form) {
+let submitSkeleton = null; // 服务端下发的锁定区骨架：project_dir/conda_env_dir/conda_sh/prelude
+let jobBodyGenerating = false;
+
+function fallbackSubmitPrelude() {
+  // 骨架接口失败时的回退：按约定路径拼前导，保证弹窗可用
   const projectDir = currentProjectDir();
-  const condaEnv = lastCondaEnvDir || `${projectDir}/.slurm-agent/conda-env`;
-  return `${buildSbatchHeader(form)}
+  const condaEnv = currentCondaEnvDir();
+  return [
+    'set -euo pipefail',
+    '# 运行目录',
+    `cd ${projectDir}`,
+    'mkdir -p logs runs',
+    '',
+    '# 激活项目 Conda 环境',
+    'set +u',
+    'source "$(conda info --base)/etc/profile.d/conda.sh"',
+    `conda activate "${condaEnv}"`,
+    'set -u',
+  ].join('\n');
+}
 
-set -euo pipefail
-cd ${projectDir}
-mkdir -p logs runs
+function renderSubmitLockedPreviews() {
+  const lockedEl = document.getElementById('submitLockedPreview');
+  if (!lockedEl) return;
+  const header = buildSbatchHeader(readSubmitForm());
+  const prelude = (submitSkeleton && submitSkeleton.prelude) || fallbackSubmitPrelude();
+  lockedEl.textContent = `${header}\n\n${prelude}`;
+}
 
-# 激活项目 Conda 环境（如不需要可删除）
-set +u
-source ${condaEnv}/bin/activate
-set -u
+function assembleSubmitScript() {
+  // 提交时才拼完整脚本：锁定头部 + 服务端前导 + 用户可编辑正文
+  const header = buildSbatchHeader(readSubmitForm());
+  const prelude = (submitSkeleton && submitSkeleton.prelude) || fallbackSubmitPrelude();
+  const body = submitScriptInput.value.trimEnd();
+  return `${header}\n\n${prelude}\n\n${body}\n`;
+}
 
-# TODO: 在下面写你的作业命令（示例）
-srun python -u main.py
-`;
+async function generateJobBody() {
+  if (jobBodyGenerating) return;
+  const projectName = currentProjectName();
+  if (!projectName) return;
+  jobBodyGenerating = true;
+  const regenBtn = document.getElementById('regenJobBodyBtn');
+  if (regenBtn) regenBtn.disabled = true;
+  submitScriptInput.value = '';
+  submitScriptInput.placeholder = '正在根据项目内容生成作业命令...';
+  try {
+    const resp = await fetch('/api/projects/job-body', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: projectName, form: readSubmitForm() }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    submitScriptInput.value = data.body || '';
+  } catch (e) {
+    submitScriptInput.value = '# AI 生成失败，请手动填写作业命令\n# 示例：srun python -u main.py\n';
+    addNotice('生成作业命令失败：' + e.message, 'error');
+  } finally {
+    submitScriptInput.placeholder = '作业命令（可修改）';
+    jobBodyGenerating = false;
+    if (regenBtn) regenBtn.disabled = false;
+  }
+}
+
+function regenerateJobBody() {
+  if (jobBodyGenerating) return;
+  generateJobBody();
 }
 
 function syncScriptHeader() {
-  // 表单变化时只重写顶部 #SBATCH 块，保留用户编辑的正文
-  const form = readSubmitForm();
-  const header = buildSbatchHeader(form);
-  const lines = submitScriptInput.value.split('\n');
-  let start = 0;
-  if (lines[0] && lines[0].startsWith('#!')) start = 1;
-  let end = start;
-  while (end < lines.length && lines[end].startsWith('#SBATCH')) end++;
-  const body = lines.slice(end).join('\n').replace(/^\n+/, '\n');
-  submitScriptInput.value = header + (body.trim() ? body : '\n');
+  // 表单变化只刷新锁定的头部预览；正文区独立，不再整体重写
+  renderSubmitLockedPreviews();
 }
 
 async function openJobSubmitModal() {
@@ -3270,8 +3514,20 @@ async function openJobSubmitModal() {
   if (!jobNameEl.value.trim()) jobNameEl.value = selectedProjectName || 'my-job';
   renderSubmitAccountOptions();
   applyQosLimits();
-  submitScriptInput.value = buildSubmitScriptTemplate(readSubmitForm());
   jobSubmitModal.classList.add('open');
+  renderSubmitLockedPreviews();
+  // 服务端权威骨架（真实目录/conda 路径/激活前导）
+  try {
+    const resp = await fetch(`/api/projects/job-skeleton?project_name=${encodeURIComponent(currentProjectName())}`);
+    const data = await resp.json();
+    if (resp.ok && data.status === 'ok') {
+      submitSkeleton = data;
+      renderSubmitLockedPreviews();
+    }
+  } catch (e) {
+    /* 骨架获取失败时使用前端回退前导 */
+  }
+  await generateJobBody();
 }
 
 function closeJobSubmitModal(event) {
@@ -3300,18 +3556,20 @@ async function submitJobFromModal() {
   if (!form.account) missing.push(['submitAccount', '计费账户']);
   if (!form.partition) missing.push(['submitPartition', '分区']);
   if (!form.qos) missing.push(['submitQos', 'QoS']);
-  const script = submitScriptInput.value;
+  const bodyText = submitScriptInput.value.trim();
   if (missing.length) {
     missing.forEach(([id]) => document.getElementById(id).classList.add('invalid'));
     addNotice('必填项不能为空：' + missing.map(([, name]) => name).join('、'), 'error');
     document.getElementById(missing[0][0]).focus();
     return;
   }
-  if (!script.trim()) {
-    addNotice('作业脚本不能为空', 'error');
+  if (!bodyText) {
+    addNotice('作业命令不能为空', 'error');
     submitScriptInput.focus();
     return;
   }
+  // 完整脚本 = 锁定头部 + 服务端前导 + 用户可编辑正文，提交时组装
+  const script = assembleSubmitScript();
 
   isProcessing = true;
   submitJobBtn.disabled = true;

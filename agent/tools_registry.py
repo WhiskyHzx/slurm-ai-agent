@@ -405,7 +405,11 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                     },
                     "conda_env": {
                         "type": "string",
-                        "description": "conda 环境名",
+                        "description": (
+                            "conda 环境名或环境绝对路径。"
+                            "若用户在本平台创建了项目，优先传项目环境路径："
+                            "$HOME/projects/<项目名>/.slurm-agent/conda-env"
+                        ),
                     },
                     "command": {
                         "type": "string",

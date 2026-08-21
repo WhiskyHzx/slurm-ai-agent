@@ -9,6 +9,7 @@ extracts them into the user's project directory.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -16,9 +17,16 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platform fallback
+    fcntl = None
 
 
 DEFAULT_REMOTE_PROJECTS_BASE = "~/projects"
@@ -100,6 +108,55 @@ def find_conda_executable() -> str:
     raise FileTransferError(
         "未找到 conda。请先安装 Miniconda，或设置 SLURM_CONDA_EXE=/path/to/conda"
     )
+
+
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def project_lock(project_dir: Path, timeout: float = 10.0):
+    """
+    Serialize conda/pip mutations for one project (across threads and processes).
+
+    FastAPI runs sync endpoints in a thread pool, so the same project can be
+    mutated concurrently by two requests; separate processes (extra workers)
+    are also possible. A thread lock plus an flock on
+    <project>/.slurm-agent/install.lock covers both cases.
+    """
+    lock_path = project_dir / ".slurm-agent" / "install.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_key = str(lock_path)
+    with _THREAD_LOCKS_GUARD:
+        thread_lock = _THREAD_LOCKS.setdefault(lock_key, threading.Lock())
+
+    deadline = time.monotonic() + timeout
+    while not thread_lock.acquire(timeout=0.5):
+        if time.monotonic() >= deadline:
+            raise FileTransferError("该项目正在执行另一个安装/初始化任务，请稍后重试")
+    try:
+        fd = None
+        try:
+            if fcntl is not None:
+                fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise FileTransferError(
+                                "该项目正在被其他进程安装/初始化，请稍后重试"
+                            )
+                        time.sleep(0.5)
+            yield
+        finally:
+            if fd is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+    finally:
+        thread_lock.release()
 
 
 def normalize_project_name(raw_name: str) -> str:
@@ -185,38 +242,47 @@ def ensure_conda_room(conda_env_dir: Path) -> bool:
         return False
 
     conda_env_dir.parent.mkdir(parents=True, exist_ok=True)
-    conda_exe = find_conda_executable()
-    python_version = get_conda_python_version()
-    channels = get_conda_channels()
-    channel_args = ["--override-channels"]
-    for channel in channels:
-        channel_args.extend(["-c", channel])
-    result = subprocess.run(
-        [
-            conda_exe,
-            "create",
-            "-y",
-            *channel_args,
-            "-p",
-            str(conda_env_dir),
-            f"python={python_version}",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=get_conda_create_timeout(),
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "conda create failed").strip()
-        if "Terms of Service have not been accepted" in detail or "CondaToSNonInteractiveError" in detail:
-            raise FileTransferError(
-                "创建项目 Conda 环境失败：当前 Conda 默认源需要先接受 Anaconda 服务条款。"
-                "本项目已默认使用 conda-forge 并覆盖默认源；如果你仍看到这个错误，"
-                "请检查 SLURM_CONDA_CHANNELS 是否包含 repo.anaconda.com，或在终端执行："
-                "\nconda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main"
-                "\nconda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r"
-            )
-        raise FileTransferError(f"创建项目 Conda 环境失败: {detail[-1000:]}")
-    return True
+    # conda_env_dir = <project>/.slurm-agent/conda-env，项目锁放在 <project>/.slurm-agent/ 下
+    with project_lock(conda_env_dir.parent.parent):
+        # 拿到锁后双重检查：可能已有并发请求完成创建
+        if (conda_env_dir / "conda-meta" / "history").exists():
+            return False
+        # 自愈：上次 conda create 中断会留下“有文件但无 conda-meta/history”的半成品环境，
+        # 直接再 create 会报 prefix already exists，先清理后重建
+        if conda_env_dir.exists():
+            shutil.rmtree(conda_env_dir)
+        conda_exe = find_conda_executable()
+        python_version = get_conda_python_version()
+        channels = get_conda_channels()
+        channel_args = ["--override-channels"]
+        for channel in channels:
+            channel_args.extend(["-c", channel])
+        result = subprocess.run(
+            [
+                conda_exe,
+                "create",
+                "-y",
+                *channel_args,
+                "-p",
+                str(conda_env_dir),
+                f"python={python_version}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=get_conda_create_timeout(),
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "conda create failed").strip()
+            if "Terms of Service have not been accepted" in detail or "CondaToSNonInteractiveError" in detail:
+                raise FileTransferError(
+                    "创建项目 Conda 环境失败：当前 Conda 默认源需要先接受 Anaconda 服务条款。"
+                    "本项目已默认使用 conda-forge 并覆盖默认源；如果你仍看到这个错误，"
+                    "请检查 SLURM_CONDA_CHANNELS 是否包含 repo.anaconda.com，或在终端执行："
+                    "\nconda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main"
+                    "\nconda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r"
+                )
+            raise FileTransferError(f"创建项目 Conda 环境失败: {detail[-1000:]}")
+        return True
 
 
 def extract_archive_to_project(

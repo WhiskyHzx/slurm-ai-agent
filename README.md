@@ -91,7 +91,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-如果直接使用登录节点上的 Miniconda Python，也可以在对应 conda 环境里安装依赖。
+> **环境边界**：服务自身的依赖固定用 venv + pip 管理（如上）；conda 只服务于用户项目的科学计算环境（`<项目>/.slurm-agent/conda-env`），不要把服务依赖装进 conda base，也不要用 conda base 的 Python 跑本服务。
 
 ## 配置
 
@@ -119,7 +119,11 @@ export SLURM_UPLOAD_MAX_BYTES="2147483648"
 
 ```bash
 cd slurm-ai-agent
+source .venv/bin/activate
 PYTHONPATH=. uvicorn server.app:app --host 0.0.0.0 --port 8080
+
+# 或不激活 venv，直接用其解释器启动：
+# .venv/bin/python -m uvicorn server.app:app --host 0.0.0.0 --port 8080
 ```
 
 在 VS Code Remote SSH 中使用时，通常可以通过端口转发访问本地浏览器里的 `http://localhost:8080`。

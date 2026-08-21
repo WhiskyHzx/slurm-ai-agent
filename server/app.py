@@ -11,18 +11,22 @@ server/app.py — FastAPI 后端入口。
   uvicorn server.app:app --host 0.0.0.0 --port 8080
 """
 
+import asyncio
 import json
 import logging
 import os
+import queue
 import re
 import shlex
 import subprocess
 import tempfile
+import threading
 import getpass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import requests
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,21 +38,26 @@ from agent.tools_registry import TOOL_DEFINITIONS, ToolExecutor
 from core.file_transfer import (
     CHUNK_SIZE,
     FileTransferError,
+    ProjectWorkspace,
     ensure_project_workspace,
     find_conda_executable,
     get_max_upload_bytes,
     get_remote_projects_base,
     package_and_upload,
+    project_lock,
     project_workspace,
     safe_relative_path,
 )
 from core.dependency_planner import (
     DependencyItem,
+    _extract_json_object,
+    installed_packages_snapshot,
     items_to_markdown,
     merge_dependency_items,
     parse_ai_dependency_items,
     precheck_dependencies,
     scan_project_dependencies,
+    search_package_versions,
     serialize_items,
 )
 from config.model_config import (
@@ -171,6 +180,11 @@ class ProjectInstallRequest(BaseModel):
     selected_items: list[dict] = []
 
 
+class JobBodyRequest(BaseModel):
+    name: str
+    form: dict = {}
+
+
 class ProjectChatAppendRequest(BaseModel):
     project_name: str
     role: str
@@ -207,6 +221,34 @@ MAX_BASH_FILE_CHARS = 3000
 MAX_PACKAGE_QUERIES = 6
 MAX_READABLE_TEXT_FILES = 24
 MAX_READABLE_TEXT_FILE_CHARS = 5000
+
+# ---------------------------------------------------------------------------
+# 集群硬件上下文：分区 GPU 型号 → conda 包需要的 CUDA 构建下限。
+# 目的：防止 LLM 凭旧知识选包（如给 RTX 5090 选 CUDA 11 构建）。
+# RTX 5090 是 Blackwell（sm_120），需要 CUDA >= 12.8 编译的包才能用 GPU；
+# A100 是 Ampere（sm_80），CUDA >= 11 的构建即可。
+# ---------------------------------------------------------------------------
+PARTITION_GPU_CUDA_REQUIREMENTS = {
+    "GPU-RTX5090": "RTX 5090（Blackwell，sm_120）— 必须选 CUDA >= 12.8 编译的包构建",
+    "P107-RTX5090": "RTX 5090（Blackwell，sm_120）— 必须选 CUDA >= 12.8 编译的包构建",
+    "GPU-A100": "A100（Ampere，sm_80）— 需要 CUDA >= 11.0 编译的包构建",
+    "P107-A100": "A100（Ampere，sm_80）— 需要 CUDA >= 11.0 编译的包构建",
+}
+
+
+def _hardware_context_text() -> str:
+    lines = [
+        "集群分区与 GPU 硬件（选包/选构建时必须遵守）：",
+        "- CPU-6530 / CPU-8358P / Students：无 GPU，选 CPU 构建（nompi 或 openmpi，不带 cuda）",
+    ]
+    for partition, requirement in PARTITION_GPU_CUDA_REQUIREMENTS.items():
+        lines.append(f"- {partition}：{requirement}")
+    lines.append(
+        "选包规则：涉及 GPU 计算的包（如 pytorch、gromacs、tensorflow），必须根据目标分区的 GPU "
+        "在包管理查询结果里选择满足 CUDA 要求的构建变体（conda 的 build 字段，如 nompi_cuda、cuda126）；"
+        "查询结果中查不到满足要求的构建时，版本留空并写入需确认问题，不要猜。"
+    )
+    return "\n".join(lines)
 READABLE_TEXT_SUFFIXES = {
     ".sh", ".bash", ".sbatch", ".txt", ".md", ".rst", ".log",
     ".py", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".java",
@@ -496,7 +538,7 @@ def _build_project_report_prompt(workspace, extra_notes: str = "") -> str:
 5. 每个项目的 conda 环境已准备在 <conda_env>，依赖安装命令优先使用该环境。
 6. 如果依赖名称、入口命令、数据路径或算力需求不确定，必须列入“需要用户确认的问题”，不能擅自假设。
 7. 如果包管理查询结果不足，请给出可复制的 conda/pip 查询命令。
-8. “将要安装的程序环境列表”必须带版本或版本范围；不知道版本时写“需确认”，不要编造。
+8. “将要安装的程序环境列表”必须带版本或版本范围；版本号只能来自项目文件、用户输入或包管理查询结果中的真实版本，其它情况写“需确认”，不要编造。特别禁止把其它集群 module 系统里的版本号（如 gromacs/2019.4-gcc-9.2.0-openmpi 中的 2019.4）直接当作 conda/pip 可安装版本。
 9. “安装命令”只能包含 conda/mamba/pip 安装命令，每行一条，不要写 rm、curl、wget、bash、sh、source、export 或其它 shell 操作。
 10. 输出使用 Markdown，必须严格包含以下标题：
    - ## 1. 项目理解
@@ -513,6 +555,10 @@ def _build_project_report_prompt(workspace, extra_notes: str = "") -> str:
 <folder_path>{workspace.project_dir}</folder_path>
 <conda_env>{workspace.conda_env_dir}</conda_env>
 </项目元信息>
+
+<集群硬件上下文>
+{_hardware_context_text()}
+</集群硬件上下文>
 
 <用户输入记录>
 以下内容来自用户在创建作业目录、补充说明和后续修改意见中的所有文字输入：
@@ -535,9 +581,53 @@ def _build_project_report_prompt(workspace, extra_notes: str = "") -> str:
     return _trim_text(context, MAX_CONTEXT_TEXT_CHARS)
 
 
-def _build_ai_dependency_json_prompt(workspace, scanned_items: list[DependencyItem], extra_notes: str = "") -> str:
-    notes_path = workspace.project_dir / PROJECT_NOTES_FILENAME
-    notes_text = notes_path.read_text(encoding="utf-8", errors="ignore") if notes_path.exists() else "暂无项目需求记录。"
+def _search_results_text(items: list[DependencyItem], notes_text: str) -> str:
+    """
+    汇总“包管理查询结果”：优先用预检拿到的真实版本/构建列表，
+    再补充从需求记录识别出的包名查询（_conda_package_queries）。
+    这是 LLM 选版本的事实依据，避免凭旧知识指定不存在的版本。
+    """
+    lines: list[str] = []
+    for item in items:
+        if item.precheck_status == "installed":
+            lines.append(f"### {item.name}\n已安装在项目环境（{item.precheck_detail}），无需再选。")
+            continue
+        if item.available_versions:
+            detail = f"可用版本（旧→新）：{item.available_versions}"
+            if item.precheck_status == "version_mismatch":
+                detail += f"；注意：请求版本 {item.version} 不存在，建议 {item.suggested_version}"
+            lines.append(f"### {item.name}\n{detail}")
+        elif item.precheck_status == "missing":
+            lines.append(f"### {item.name}\n软件源中未找到该包，请确认包名或改用其它渠道。")
+    # 需求记录里识别出、但不在扫描清单里的包也查一遍（如用户写了 gromacs）
+    known = {item.name.lower() for item in items}
+    extra_queries: list[str] = []
+    for candidate in _infer_package_candidates(notes_text):
+        if candidate.lower() not in known:
+            extra_queries.append(candidate)
+    for name in extra_queries[:MAX_PACKAGE_QUERIES]:
+        search = search_package_versions(name)
+        if search["ok"]:
+            builds = ", ".join(search["builds"][-12:])
+            lines.append(
+                f"### {name}\n可用版本（旧→新）：{', '.join(search['versions'][-10:])}\n最近构建：{builds}"
+            )
+        else:
+            lines.append(f"### {name}\n查询失败：{search['error']}")
+    if not lines:
+        return "未查询到可用版本信息；报告中请给出需要用户确认的包管理查询命令。"
+    return "\n\n".join(lines)
+
+
+def _build_ai_dependency_json_prompt(
+    workspace,
+    scanned_items: list[DependencyItem],
+    extra_notes: str = "",
+    notes_text: str = "",
+) -> str:
+    if not notes_text:
+        notes_path = workspace.project_dir / PROJECT_NOTES_FILENAME
+        notes_text = notes_path.read_text(encoding="utf-8", errors="ignore") if notes_path.exists() else "暂无项目需求记录。"
     if extra_notes.strip():
         notes_text += f"\n\n## 本次追加意见\n{extra_notes.strip()}\n"
     scanned_json = json.dumps(serialize_items(scanned_items), ensure_ascii=False, indent=2)
@@ -552,14 +642,23 @@ def _build_ai_dependency_json_prompt(workspace, scanned_items: list[DependencyIt
 规则：
 1. 已在扫描结果中出现的依赖不要重复返回。
 2. 只有当项目文本、用户需求或源码明显需要某个依赖时才返回。
-3. 不确定的版本留空，不要编造。
-4. 不要返回 python、pip、setuptools、wheel。
-5. CUDA/PyTorch/TensorFlow 相关项要保守，版本不确定时写空。
-6. 最多返回 20 项。
+3. **版本号只能来自 <包管理查询结果> 中的真实版本、项目文件或用户输入**；不确定就留空，禁止凭记忆编造。特别禁止把其它集群 module 系统的版本号（如 gromacs/2019.4-gcc-9.2.0-openmpi）当作可安装版本。
+4. 涉及 GPU 的包：根据 <集群硬件上下文> 在查询结果的构建变体（build，如 nompi_cuda、cuda126、mpi_openmpi）里选择满足目标 GPU CUDA 要求的，并把构建写进 version（conda 三段式语法，如 "2026.3=nompi_cuda"）；查不到满足要求的构建就留空并在 reason 里说明。
+5. 不要返回 python、pip、setuptools、wheel。
+6. CUDA/PyTorch/TensorFlow 相关项要保守，版本不确定时写空。
+7. 最多返回 20 项。
 
-<已扫描依赖>
+<已扫描依赖（含预检的真实版本信息）>
 {scanned_json}
 </已扫描依赖>
+
+<包管理查询结果>
+{_search_results_text(scanned_items, notes_text)}
+</包管理查询结果>
+
+<集群硬件上下文>
+{_hardware_context_text()}
+</集群硬件上下文>
 
 <用户输入记录>
 {notes_text}
@@ -658,7 +757,15 @@ def _normalize_install_command(command: str, conda_env_dir: Path) -> list[str]:
 
 
 def _commands_from_selected_items(selected_items: list[dict]) -> list[str]:
-    commands: list[str] = []
+    """
+    将勾选项合并为至多两条命令：conda 一条、pip 一条（conda 在前）。
+
+    合并的理由：逐包分开安装会导致 conda 重复求解且后一次安装可能
+    升降级前一次装的包；pip 安装后若再跑 conda install，conda 可能
+    覆盖 pip 装的文件，因此固定 conda 先、pip 后。
+    """
+    conda_specs: list[str] = []
+    pip_specs: list[str] = []
     for item in selected_items:
         if not isinstance(item, dict):
             continue
@@ -672,58 +779,176 @@ def _commands_from_selected_items(selected_items: list[dict]) -> list[str]:
         spec = name
         if version and version.lower() not in {"需确认", "unknown", "none", "null"}:
             if manager == "pip":
-                spec = f"{name}{version}"
+                if re.fullmatch(r"[0-9][A-Za-z0-9.*_+!-]*", version):
+                    # 裸版本号拼 ==，否则 name1.2.3 是非法 requirement
+                    spec = f"{name}=={version}"
+                else:
+                    spec = f"{name}{version}"
             elif version.startswith("=="):
                 spec = f"{name}={version[2:]}"
             elif version.startswith("="):
+                # 以 = 开头的写法（如 =2026.3）直接拼接
                 spec = f"{name}{version}"
+            elif "=" in version:
+                # 含 = 但不以 = 开头的是 version=build 三段式（如 2026.3=nompi_cuda），
+                # 需要补一个 = 组成 name=version=build
+                spec = f"{name}={version}"
             elif re.fullmatch(r"[0-9][A-Za-z0-9.*_+!-]*", version):
                 spec = f"{name}={version}"
-        commands.append(f"{manager} install {shlex.quote(spec)}")
-    return commands[:40]
+        (conda_specs if manager == "conda" else pip_specs).append(shlex.quote(spec))
+
+    commands: list[str] = []
+    if conda_specs[:40]:
+        commands.append("conda install " + " ".join(conda_specs[:40]))
+    if pip_specs[:40]:
+        commands.append("pip install " + " ".join(pip_specs[:40]))
+    return commands
 
 
 def _validate_installed_items(selected_items: list[dict], conda_env_dir: Path) -> list[dict]:
-    if not selected_items:
+    """用一次 conda list 快照校验所有勾选包，代替逐包查询。"""
+    valid_names = []
+    for item in selected_items[:40]:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                valid_names.append(name)
+    if not valid_names:
         return []
+
     try:
         conda_exe = find_conda_executable()
     except FileTransferError as e:
-        return [{
-            "name": str(item.get("name") or ""),
-            "status": "unknown",
-            "detail": str(e),
-        } for item in selected_items]
+        return [{"name": name, "status": "unknown", "detail": str(e)} for name in valid_names]
+
+    installed: dict[str, str] = {}
+    try:
+        result = subprocess.run(
+            [conda_exe, "list", "-p", str(conda_env_dir)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        for line in (result.stdout or "").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                installed[parts[0].lower().replace("_", "-")] = parts[1]
+    except subprocess.TimeoutExpired:
+        return [{"name": name, "status": "unknown", "detail": "验证超时"} for name in valid_names]
+    except OSError as e:
+        return [{"name": name, "status": "unknown", "detail": str(e)} for name in valid_names]
 
     results: list[dict] = []
-    for item in selected_items[:40]:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
-            continue
-        try:
-            result = subprocess.run(
-                [conda_exe, "list", "-p", str(conda_env_dir), name],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-        except subprocess.TimeoutExpired:
-            results.append({"name": name, "status": "unknown", "detail": "验证超时"})
-            continue
-        output = (result.stdout or result.stderr or "").strip()
-        found = result.returncode == 0 and any(
-            line.split() and line.split()[0].lower().replace("_", "-") == name.lower().replace("_", "-")
-            for line in output.splitlines()
-            if line and not line.startswith("#")
-        )
-        results.append({
-            "name": name,
-            "status": "ok" if found else "missing",
-            "detail": _trim_text(output, 1000) or "无输出",
-        })
+    for name in valid_names:
+        key = name.lower().replace("_", "-")
+        if key in installed:
+            results.append({"name": name, "status": "ok", "detail": f"已安装 {installed[key]}"})
+        else:
+            results.append({"name": name, "status": "missing", "detail": "环境中未找到该包"})
     return results
+
+
+def _light_workspace(project_name: str) -> ProjectWorkspace:
+    """解析工作区并确保目录存在，但不触发 conda create（用于轻量只读接口）。"""
+    safe_project_name, project_dir, conda_env_dir = project_workspace(project_name)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".slurm-agent").mkdir(parents=True, exist_ok=True)
+    return ProjectWorkspace(
+        project_name=safe_project_name,
+        project_dir=project_dir,
+        conda_env_dir=conda_env_dir,
+        conda_created=False,
+    )
+
+
+def _conda_sh_path() -> str:
+    """
+    返回可 source 的 conda.sh 绝对路径。
+
+    现代 conda 的环境目录里不再有 bin/activate，正确做法是 source
+    base 安装下的 etc/profile.d/conda.sh 再 conda activate <prefix>。
+    """
+    conda_exe = Path(find_conda_executable()).resolve()
+    candidate = conda_exe.parent.parent / "etc" / "profile.d" / "conda.sh"
+    if candidate.exists():
+        return str(candidate)
+    # 兜底：作业里动态展开 base 路径（要求计算节点 conda 在 PATH）
+    return "$(conda info --base)/etc/profile.d/conda.sh"
+
+
+def _build_job_body_prompt(workspace: ProjectWorkspace, form: dict) -> str:
+    notes_path = workspace.project_dir / PROJECT_NOTES_FILENAME
+    notes_text = notes_path.read_text(encoding="utf-8", errors="ignore") if notes_path.exists() else ""
+    installed = installed_packages_snapshot(workspace.conda_env_dir)
+    installed_text = ", ".join(sorted(installed)[:150]) or "（环境为空或尚未安装依赖）"
+    form_lines = [f"- {key}: {value}" for key, value in (form or {}).items() if value not in (None, "")]
+    form_text = "\n".join(form_lines) or "（用户未调整，均为默认值）"
+    python_bin = workspace.conda_env_dir / "bin" / "python"
+    context = f"""
+你是 USTC 107 算力平台的 Slurm 作业命令生成器。请根据项目内容，生成 sbatch 脚本的“作业命令正文”。
+
+<硬性规则>
+1. 只输出作业命令正文（bash 命令与注释），不要输出 #!/bin/bash 和任何 #SBATCH 行——头部由系统生成。
+2. 不要输出 cd、mkdir、conda 激活、source 等环境准备命令——系统已在正文之前固定处理：工作目录已切到项目目录，项目 Conda 环境已激活。
+3. 主计算命令用 srun 开头（如 srun python -u train.py --epochs 10）。
+4. 程序产生的输出文件保存到 runs/<作业名>-${{SLURM_JOB_ID}}/ 目录。
+5. python 命令加 -u 实时输出；正文开头结尾用 echo 打印时间戳，便于排查。
+6. 入口脚本、参数不确定时选最合理的默认，并在注释中标注“默认值，可修改”。
+7. 只输出代码本身，不要 Markdown 代码块标记，不要解释文字。
+</硬性规则>
+
+<项目元信息>
+- 项目目录：{workspace.project_dir}
+- 项目 Conda 环境：{workspace.conda_env_dir}
+- 环境 python：{python_bin}
+</项目元信息>
+
+<用户选择的作业参数>
+{form_text}
+</用户选择的作业参数>
+
+<环境已安装的包（部分）>
+{installed_text}
+</环境已安装的包>
+
+<用户需求记录>
+{notes_text.strip() or "（无）"}
+</用户需求记录>
+
+<项目目录摘要>
+{_project_tree(workspace.project_dir)}
+</项目目录摘要>
+
+<可直接阅读的文本文件内容>
+{_collect_readable_text_files(workspace.project_dir)}
+</可直接阅读的文本文件内容>
+"""
+    return _trim_text(context, MAX_CONTEXT_TEXT_CHARS)
+
+
+def _extract_bash_body(raw: str) -> str:
+    """从 LLM 回复里提取纯命令正文：剥围栏、去头部行、去重复的环境准备行。"""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    fences = re.findall(r"```(?:bash|shell|sh)?\s*(.*?)```", text, flags=re.S)
+    if fences:
+        text = max(fences, key=len).strip()
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#SBATCH") or stripped.startswith("#!"):
+            continue
+        # 已由锁定区固定处理的内容，防止模型重复输出；
+        # 注意不过滤 cd——正文中 cd 进子目录是合法需求
+        if re.match(r"^(source\s+\S*conda\.sh|conda\s+activate\b|conda\s+run\b)", stripped):
+            continue
+        if re.match(r"^mkdir\s+-p\s+(logs|runs)\b", stripped):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +1121,7 @@ async def reset(req: Request):
 
 
 @app.post("/api/slurm/refresh")
-async def slurm_refresh():
+def slurm_refresh():
     """Refresh SLURM_JWT on the login node and verify Slurm REST API access."""
     try:
         token = refresh_slurm_token()
@@ -1167,6 +1392,7 @@ async def list_projects():
             items.append({
                 "name": path.name,
                 "path": str(path),
+                "conda_env_dir": str(path / ".slurm-agent" / "conda-env"),
                 "updated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
                 "has_chat": history_path.exists(),
                 "has_notes": notes_path.exists(),
@@ -1205,7 +1431,7 @@ async def append_project_chat(req: ProjectChatAppendRequest):
 
 
 @app.post("/api/projects")
-async def create_project(req: ProjectCreateRequest):
+def create_project(req: ProjectCreateRequest):
     """Create a project directory and its per-project conda environment."""
     try:
         workspace = ensure_project_workspace(req.name)
@@ -1230,7 +1456,7 @@ async def create_project(req: ProjectCreateRequest):
 
 
 @app.post("/api/projects/report")
-async def project_report(req: ProjectReportRequest):
+def project_report(req: ProjectReportRequest):
     """Generate a dependency/environment plan before installing dependencies."""
     try:
         workspace = ensure_project_workspace(req.name)
@@ -1239,6 +1465,9 @@ async def project_report(req: ProjectReportRequest):
             extra_notes=req.extra_notes,
         )
         scanned_items = scan_project_dependencies(workspace.project_dir)
+        # 先对静态扫描结果做版本感知预检，把真实可用版本/构建喂给 LLM，
+        # 避免 LLM 凭旧知识（或其它集群的 module 版本号）指定不存在的版本
+        scanned_items = precheck_dependencies(scanned_items, workspace.conda_env_dir)
         llm = LLMProvider()
         ai_items: list[DependencyItem] = []
         try:
@@ -1257,7 +1486,14 @@ async def project_report(req: ProjectReportRequest):
         except Exception:
             logger.exception("AI 依赖补充失败，继续使用静态扫描结果")
 
-        dependency_items = precheck_dependencies(merge_dependency_items(scanned_items + ai_items))
+        # AI 新增的包再单独预检（扫描项已检过，search 有缓存不会重复查）
+        scanned_keys = {(item.manager, item.name.lower()) for item in scanned_items}
+        new_ai_items = [
+            item for item in ai_items
+            if (item.manager, item.name.lower()) not in scanned_keys
+        ]
+        new_ai_items = precheck_dependencies(new_ai_items, workspace.conda_env_dir)
+        dependency_items = merge_dependency_items(scanned_items + new_ai_items)
         report = items_to_markdown(
             dependency_items,
             "下面是根据依赖文件、脚本、源码 import 和用户补充需求得到的安装清单。请在弹窗中确认勾选项后再安装。",
@@ -1280,65 +1516,543 @@ async def project_report(req: ProjectReportRequest):
     }
 
 
-@app.post("/api/projects/install-deps")
-async def install_project_dependencies(req: ProjectInstallRequest):
-    """Run allowed conda/pip install commands from a reviewed dependency plan."""
+INSTALL_COMMAND_TIMEOUT = int(os.environ.get("SLURM_INSTALL_TIMEOUT", "1800"))
+
+# ---------------------------------------------------------------------------
+# 安装引擎：预取下载进度 + SSE 事件流
+# ---------------------------------------------------------------------------
+
+
+def _conda_pkgs_dir(conda_exe: str) -> Optional[Path]:
+    """解析 conda 包缓存目录（取第一个 pkgs_dirs），预取下载会写到那里。"""
     try:
+        result = subprocess.run(
+            [conda_exe, "info", "--json"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    data = _extract_json_object((result.stdout or "") + "\n" + (result.stderr or ""))
+    if isinstance(data, dict):
+        dirs = data.get("pkgs_dirs") or []
+        if dirs:
+            try:
+                pkgs = Path(str(dirs[0])).expanduser()
+                pkgs.mkdir(parents=True, exist_ok=True)
+                return pkgs
+            except OSError:
+                return None
+    return None
+
+
+def _prefetch_conda_packages(conda_exe: str, install_argv: list[str], on_progress) -> Optional[str]:
+    """
+    先 dry-run 拿事务计划，再自己流式下载 FETCH 列表到 conda pkgs 缓存目录。
+
+    背景：conda 25.x 的 --json 只在结束时输出一个 JSON 对象，没有增量进度；
+    而 conda 看到包已在 pkgs 缓存里就会跳过下载。因此用字节级自下载实现真实百分比，
+    之后再执行真正的 conda install（全部命中缓存，秒级完成）。
+
+    返回 None 表示成功或无需预取；返回错误字符串表示失败（调用方回退直接安装）。
+    """
+    dry_argv = [*install_argv, "--dry-run", "--json"]
+    try:
+        proc = subprocess.run(dry_argv, capture_output=True, text=True, timeout=300)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return f"dry-run 执行失败： {e}"
+    if proc.returncode != 0:
+        return "dry-run 返回非零"
+    data = _extract_json_object((proc.stdout or "") + "\n" + (proc.stderr or ""))
+    if not isinstance(data, dict) or not isinstance(data.get("actions"), dict):
+        return "dry-run 未返回事务计划"
+    fetch_list = [p for p in (data["actions"].get("FETCH") or []) if isinstance(p, dict)]
+    if not fetch_list:
+        return None
+
+    pkgs_dir = _conda_pkgs_dir(conda_exe)
+    if pkgs_dir is None:
+        return "无法解析 pkgs 缓存目录"
+    pending = [
+        p for p in fetch_list
+        if p.get("fn") and p.get("url") and not (pkgs_dir / str(p["fn"])).exists()
+    ]
+    if not pending:
+        return None
+
+    total_bytes = sum(int(p.get("size") or 0) for p in pending)
+    done_bytes = 0
+    for pkg in pending:
+        fn = str(pkg["fn"])
+        target = pkgs_dir / fn
+        tmp = pkgs_dir / f"{fn}.agent-{os.getpid()}.part"
+        try:
+            with requests.get(str(pkg["url"]), stream=True, timeout=(15, 120)) as resp:
+                resp.raise_for_status()
+                with tmp.open("wb") as out:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        out.write(chunk)
+                        done_bytes += len(chunk)
+                        on_progress(done_bytes, total_bytes, fn)
+            os.replace(tmp, target)
+        except Exception as e:  # 预取失败不阻断安装，回退给 conda 自己下载
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return f"预取 {fn} 失败： {e}"
+    return None
+
+
+def _emit_pip_stage(line: str, emit_stage) -> None:
+    """从 pip 输出中解析粗粒度阶段，推送进度文本。"""
+    stripped = line.strip()
+    lowered = stripped.lower()
+    if lowered.startswith("collecting "):
+        emit_stage(f"解析 {stripped.split()[1]}", 30)
+    elif lowered.startswith("downloading "):
+        emit_stage(f"下载 {stripped.split()[1]}", 50)
+    elif lowered.startswith("installing collected packages"):
+        emit_stage("安装包到环境", 70)
+    elif lowered.startswith("successfully installed"):
+        emit_stage("安装完成", 95)
+
+
+def _run_install_command(
+    command: str,
+    argv: list[str],
+    cwd: Path,
+    emit_stage,
+) -> tuple[int, str]:
+    """
+    执行单条安装命令。
+
+    conda 命令：先预取（带字节级下载进度），再正式安装（命中缓存）。
+    返回 (returncode, output)。
+    """
+    is_conda = "install" in [part.lower() for part in argv[:3]] and not argv[0].endswith("python")
+    if is_conda:
+        emit_stage("求解依赖中（生成事务计划）", 5)
+
+        def _on_download(done: int, total: int, fn: str) -> None:
+            if total > 0:
+                emit_stage(f"下载 {fn}（{_fmt_bytes(done)}/{_fmt_bytes(total)}）", 5 + 85.0 * done / total)
+            else:
+                emit_stage(f"下载 {fn}（{_fmt_bytes(done)}）", None)
+
+        prefetch_error = _prefetch_conda_packages(argv[0], argv, _on_download)
+        if prefetch_error:
+            logger.info("conda 预取跳过，回退直接安装：%s", prefetch_error)
+        emit_stage("解包并安装到项目环境", 90)
+
+    proc = subprocess.Popen(
+        argv,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+    )
+    output_lines: list[str] = []
+
+    def _reader() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            output_lines.append(line)
+            if not is_conda:
+                try:
+                    _emit_pip_stage(line, emit_stage)
+                except Exception:
+                    pass
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+    try:
+        proc.wait(timeout=INSTALL_COMMAND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        output_lines.append("\n[安装命令超时，已被终止]")
+    reader.join(timeout=10)
+    return proc.returncode, "".join(output_lines)
+
+
+def _fmt_bytes(value: int) -> str:
+    value = max(0, int(value))
+    if value >= 1024 * 1024 * 1024:
+        return f"{value / 1024 / 1024 / 1024:.1f} GB"
+    if value >= 1024 * 1024:
+        return f"{value / 1024 / 1024:.1f} MB"
+    if value >= 1024:
+        return f"{value / 1024:.0f} KB"
+    return f"{value} B"
+
+
+def _package_names_from_command(command: str) -> list[str]:
+    """从展示用的安装命令里提取包名（去掉版本与构建、去掉选项及选项值）。"""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return []
+    names: list[str] = []
+    skip_next = False
+    for part in parts[2:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if part in {"-c", "--channel", "-p", "--prefix", "-n", "--name", "-r", "--requirement"}:
+            skip_next = True
+            continue
+        if part.startswith("-"):
+            continue
+        name = re.split(r"[=<>=!~\s]", part, 1)[0].strip("._-")
+        if name and name.lower() not in {"install"} and name not in names:
+            names.append(name)
+    return names
+
+
+def _llm_fix_install_commands(
+    failed_command: str,
+    output: str,
+    selected_items: list[dict],
+) -> Optional[tuple[list[str], str]]:
+    """
+    安装失败后的自动修复：查询软件源真实版本 → LLM 重新选版 → 返回修正命令。
+
+    返回 (commands, reason)；失败返回 None。命令会经过 _extract_install_commands
+    白名单过滤与 _normalize_install_command 归一化，保证安全。
+    """
+    names = _package_names_from_command(failed_command)
+    if not names:
+        return None
+    search_lines: list[str] = []
+    for name in names[:8]:
+        search = search_package_versions(name)
+        if search["ok"]:
+            search_lines.append(
+                f"### {name}\n可用版本（旧→新）：{', '.join(search['versions'][-10:])}\n"
+                f"最近构建：{', '.join(search['builds'][-12:])}"
+            )
+        else:
+            search_lines.append(f"### {name}\n查询失败：{search['error']}")
+
+    selected_text = "\n".join(
+        f"- {item.get('name')} {item.get('version') or '(未指定版本)'} ({item.get('manager', 'conda')})"
+        for item in selected_items[:40] if isinstance(item, dict)
+    ) or "（无）"
+
+    prompt = f"""conda/pip 安装命令执行失败了。请根据包管理器的真实查询结果修正安装命令。
+
+失败的命令：
+{failed_command}
+
+失败输出（截断）：
+{_trim_text(output, 3000)}
+
+<包管理查询结果（真实可用版本与构建）>
+{chr(10).join(search_lines)}
+</包管理查询结果>
+
+<集群硬件上下文>
+{_hardware_context_text()}
+</集群硬件上下文>
+
+<用户原本勾选的依赖>
+{selected_text}
+</用户原本勾选的依赖>
+
+要求：
+1. 只返回严格 JSON：{{"commands": ["conda install ...", ...], "reason": "一句话说明改了什么"}}
+2. commands 里只能有 conda install / pip install 命令，每条一行。
+3. 版本号必须来自上面的查询结果；需要 GPU 的包按硬件上下文选择构建（conda 三段式如 gromacs=2026.3=nompi_cuda）。
+4. 查询结果里没有合适的包/版本时，commands 返回空数组，并在 reason 里说明原因。"""
+
+    try:
+        llm = LLMProvider()
+        response = llm.chat(
+            messages=[
+                {"role": "system", "content": "你是依赖安装修复助手，只返回严格 JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=800,
+        )
+    except Exception:
+        logger.exception("安装修复 LLM 调用失败")
+        return None
+
+    raw = response.choices[0].message.content or ""
+    match = re.search(r"```(?:json)?\s*(.*?)```", raw, flags=re.S)
+    if match:
+        raw = match.group(1).strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    commands = [str(c) for c in (data.get("commands") or []) if isinstance(c, str) and c.strip()]
+    reason = str(data.get("reason") or "").strip()[:500]
+    # 白名单过滤，只保留可识别的安装命令
+    commands = _extract_install_commands("\n".join(commands))
+    if not commands:
+        return None
+    return commands, reason
+
+
+@app.post("/api/projects/install-deps")
+def install_project_dependencies(req: ProjectInstallRequest):
+    """
+    执行用户确认过的依赖安装，SSE 流式返回进度百分比与结果。
+
+    进度机制：conda 命令先 dry-run 拿事务计划，再自下载包到 pkgs 缓存
+    （字节级真实百分比），最后正式安装（命中缓存）；pip 用阶段标记粗粒度推进。
+    安装失败时自动携带真实包查询结果满 LLM 重新选版并重试一次。
+    """
+    try:
+        # 先确保工作区就绪（可能触发 conda create，内部自会加项目锁）；
+        # 之后再拿锁执行安装，避免嵌套拿锁死锁
         workspace = ensure_project_workspace(req.name)
         selected_items = req.selected_items or []
         commands = _commands_from_selected_items(selected_items) or _extract_install_commands(req.plan)
-        if not commands:
-            return JSONResponse(
-                {"error": "未选择可安装依赖，也未在方案中找到可执行的 conda/mamba/pip install 命令"},
-                status_code=400,
-            )
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    if not commands:
+        return JSONResponse(
+            {"error": "未选择可安装依赖，也未在方案中找到可执行的 conda/mamba/pip install 命令"},
+            status_code=400,
+        )
 
-        results = []
-        for command in commands:
-            argv = _normalize_install_command(command, workspace.conda_env_dir)
-            result = subprocess.run(
-                argv,
-                cwd=workspace.project_dir,
-                capture_output=True,
-                text=True,
-                timeout=1200,
-            )
-            output = _trim_text(((result.stdout or "") + "\n" + (result.stderr or "")).strip(), 4000)
-            results.append({
-                "command": command,
-                "executed": " ".join(shlex.quote(part) for part in argv),
-                "returncode": result.returncode,
-                "output": output,
-            })
-            if result.returncode != 0:
-                return JSONResponse({
-                    "error": f"依赖安装失败：{command}",
+    def event_stream():
+        events: queue.Queue = queue.Queue()
+        sentinel = object()
+
+        class _Progress:
+            """线程安全地限流推送进度事件（阶段或百分比变化时才推）。"""
+
+            def __init__(self, command_index: int, command_total: int):
+                self.base = command_index * 100.0 / command_total
+                self.span = 100.0 / command_total
+                self._last_percent: Optional[float] = None
+                self._last_stage = ""
+                self._last_ts = 0.0
+
+            def stage(self, text: str, percent: Optional[float] = None) -> None:
+                now = datetime.now().timestamp()
+                overall = None
+                if percent is not None:
+                    overall = self.base + self.span * min(100.0, max(0.0, percent)) / 100.0
+                stage_changed = text != self._last_stage
+                percent_changed = (
+                    overall is not None
+                    and (self._last_percent is None or abs(overall - self._last_percent) >= 1.0)
+                )
+                if not (stage_changed or percent_changed):
+                    return
+                # 阶段变化立即推送；纯百分比刷新限流到每 0.5 秒一次
+                if not stage_changed and now - self._last_ts < 0.5:
+                    return
+                self._last_percent = overall
+                self._last_stage = text
+                self._last_ts = now
+                events.put({
+                    "type": "progress",
+                    "percent": round(overall, 1) if overall is not None else None,
+                    "stage": text,
+                })
+
+        def worker() -> None:
+            results: list[dict] = []
+            auto_fix_info: Optional[dict] = None
+            try:
+                with project_lock(workspace.project_dir):
+                    queue_commands = list(commands)
+                    index = 0
+                    fixed_for_current = False
+                    while index < len(queue_commands):
+                        command = queue_commands[index]
+                        events.put({"type": "command_start", "index": index, "command": command,
+                                    "total": len(queue_commands)})
+                        progress = _Progress(index, len(queue_commands))
+                        try:
+                            argv = _normalize_install_command(command, workspace.conda_env_dir)
+                        except FileTransferError as e:
+                            results.append({"command": command, "executed": "", "returncode": 1,
+                                            "output": str(e)})
+                            events.put({"type": "command_done", "index": index, "returncode": 1,
+                                        "output": str(e)})
+                            break
+                        returncode, output = _run_install_command(
+                            command, argv, workspace.project_dir, progress.stage,
+                        )
+                        results.append({
+                            "command": command,
+                            "executed": " ".join(shlex.quote(part) for part in argv),
+                            "returncode": returncode,
+                            "output": _trim_text(output.strip(), 4000),
+                        })
+                        events.put({"type": "command_done", "index": index, "returncode": returncode,
+                                    "output": _trim_text(output.strip(), 800)})
+                        if returncode == 0:
+                            index += 1
+                            fixed_for_current = False
+                            continue
+
+                        # 失败：先尝试 LLM 携真实版本自动修复，重试一次
+                        if not fixed_for_current:
+                            events.put({"type": "auto_fix", "status": "analyzing",
+                                        "failed_command": command})
+                            fix = _llm_fix_install_commands(command, output, selected_items)
+                            if fix:
+                                fixed_commands, reason = fix
+                                auto_fix_info = {
+                                    "applied": True,
+                                    "original_command": command,
+                                    "commands": fixed_commands,
+                                    "reason": reason,
+                                }
+                                # 原失败结果标记为已被自动修复取代：重试成功后
+                                # 最终成败只看修正命令，不因历史失败误报
+                                if results:
+                                    results[-1]["superseded"] = True
+                                events.put({"type": "auto_fix", "status": "retry",
+                                            "reason": reason, "commands": fixed_commands})
+                                # 用修正命令替换失败命令，后续原命令继续执行
+                                queue_commands = (
+                                    queue_commands[:index] + fixed_commands + queue_commands[index + 1:]
+                                )
+                                fixed_for_current = True
+                                continue
+                            events.put({"type": "auto_fix", "status": "failed",
+                                        "reason": "未能生成修正命令"})
+                        break
+
+                    effective_results = [r for r in results if not r.get("superseded")]
+                    if any(r.get("returncode") for r in effective_results):
+                        events.put({"type": "error", "payload": {
+                            "error": "依赖安装失败：" + next(
+                                (r["command"] for r in effective_results if r.get("returncode")), ""
+                            ),
+                            "status": "failed",
+                            "project_name": workspace.project_name,
+                            "conda_env_dir": str(workspace.conda_env_dir),
+                            "results": results,
+                            "auto_fix": auto_fix_info,
+                        }})
+                        return
+
+                    # 验证也在锁内完成，避免刚装完就被并发操作覆盖
+                    validation_results = _validate_installed_items(selected_items, workspace.conda_env_dir)
+                events.put({"type": "done", "payload": {
+                    "status": "ok",
+                    "project_name": workspace.project_name,
+                    "project_dir": str(workspace.project_dir),
+                    "conda_env_dir": str(workspace.conda_env_dir),
+                    "results": results,
+                    "validation_results": validation_results,
+                    "auto_fix": auto_fix_info,
+                }})
+            except Exception as e:
+                logger.exception("安装项目依赖失败")
+                events.put({"type": "error", "payload": {
+                    "error": f"安装项目依赖失败: {e}",
                     "status": "failed",
                     "project_name": workspace.project_name,
                     "conda_env_dir": str(workspace.conda_env_dir),
                     "results": results,
-                }, status_code=500)
-    except subprocess.TimeoutExpired:
-        return JSONResponse({"error": "依赖安装超时，请缩小安装范围后重试"}, status_code=500)
+                }})
+            finally:
+                events.put(sentinel)
+
+        threading.Thread(target=worker, daemon=True).start()
+        while True:
+            item = events.get()
+            if item is sentinel:
+                break
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/projects/job-skeleton")
+def project_job_skeleton(project_name: str):
+    """
+    下发作业脚本“锁定区”的权威值：真实项目目录、conda 环境路径、
+    conda.sh 绝对路径与固定激活前导。前端只展示不可改。
+    """
+    try:
+        workspace = _light_workspace(project_name)
+        conda_sh = _conda_sh_path()
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
-        logger.exception("安装项目依赖失败")
-        return JSONResponse({"error": f"安装项目依赖失败: {e}"}, status_code=500)
+        logger.exception("获取作业脚本骨架失败")
+        return JSONResponse({"error": f"获取作业脚本骨架失败: {e}"}, status_code=500)
 
-    validation_results = _validate_installed_items(selected_items, workspace.conda_env_dir)
+    prelude = "\n".join([
+        "set -euo pipefail",
+        "# 运行目录",
+        f"cd {shlex.quote(str(workspace.project_dir))}",
+        "mkdir -p logs runs",
+        "",
+        "# 激活项目 Conda 环境",
+        "set +u",
+        # conda_sh 由服务端解析：真实绝对路径，或 $(conda info --base) 兜底。
+        # 后者绝不能 shlex.quote——单引号会禁用 $() 命令替换导致 source 失败
+        f"source {conda_sh}",
+        f"conda activate {shlex.quote(str(workspace.conda_env_dir))}",
+        "set -u",
+    ])
     return {
         "status": "ok",
         "project_name": workspace.project_name,
         "project_dir": str(workspace.project_dir),
         "conda_env_dir": str(workspace.conda_env_dir),
-        "results": results,
-        "validation_results": validation_results,
+        "conda_sh": conda_sh,
+        "prelude": prelude,
+    }
+
+
+@app.post("/api/projects/job-body")
+def project_job_body(req: JobBodyRequest):
+    """一次 LLM 调用生成作业命令正文；#SBATCH 头与目录/环境激活由锁定区负责。"""
+    try:
+        workspace = _light_workspace(req.name)
+        prompt = _build_job_body_prompt(workspace, req.form)
+        llm = LLMProvider()
+        response = llm.chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是 Slurm 作业命令生成器，只输出 bash 命令正文，不要任何解释。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=1200,
+        )
+        body = _extract_bash_body(response.choices[0].message.content or "")
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("生成作业命令正文失败")
+        return JSONResponse({"error": f"生成作业命令正文失败: {e}"}, status_code=500)
+
+    if not body:
+        return JSONResponse({"error": "模型未返回有效命令，请在正文区手动填写"}, status_code=500)
+    return {
+        "status": "ok",
+        "project_name": workspace.project_name,
+        "body": body,
     }
 
 
 @app.post("/api/jobs/submit")
-async def submit_project_job(req: JobSubmitRequest):
+def submit_project_job(req: JobSubmitRequest):
     """Save the reviewed sbatch script into the project and submit it via Slurm REST."""
     script = (req.script or "").strip()
     job_name = (req.job_name or "").strip()
@@ -1436,7 +2150,10 @@ async def files_upload(
                         out.write(chunk)
                 file_count += 1
 
-            result = package_and_upload(staging_dir, file_count, project_name)
+            # 打包/落盘/解压/建环境都是阻塞操作，丢到线程池执行，避免冻结事件循环
+            result = await asyncio.to_thread(
+                package_and_upload, staging_dir, file_count, project_name
+            )
 
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=502)

@@ -8,11 +8,12 @@ import json
 import re
 import shlex
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from core.file_transfer import FileTransferError, find_conda_executable
+from core.file_transfer import FileTransferError, find_conda_executable, get_conda_channels
 
 try:
     import tomllib
@@ -31,6 +32,12 @@ TRUSTED_SOURCE_FILES = {
 MAX_ITEMS = 80
 MAX_PRECHECK_ITEMS = 40
 MAX_IMPORT_ITEMS = 24
+# conda search 冷缓存时要下载 repodata，首次可能要几十秒；8 秒会大面积“预检超时”
+CONDA_SEARCH_TIMEOUT = 60
+PIP_INDEX_TIMEOUT = 20
+# 搜索结果缓存（含版本列表），同一包在 report/install 两个阶段不重复查
+SEARCH_CACHE_TTL_SECONDS = 600
+_SEARCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 @dataclass
@@ -46,6 +53,9 @@ class DependencyItem:
     precheck_status: str = "unknown"
     precheck_detail: str = ""
     command: str = ""
+    # 版本感知预检的结果：软件源里真实存在的版本（逗号分隔，最近优先）与建议版本
+    available_versions: str = ""
+    suggested_version: str = ""
 
 
 def _clean_name(value: str) -> str:
@@ -97,13 +107,23 @@ def _install_command(name: str, version: str, manager: str) -> str:
     spec = name
     if version:
         if manager == "pip":
-            spec = f"{name}{version}"
+            pinned = version.strip()
+            if re.fullmatch(r"[0-9][A-Za-z0-9.*_+!-]*", pinned):
+                # 裸版本号必须拼 ==，否则生成 name1.2.3 这样的非法 requirement
+                spec = f"{name}=={pinned}"
+            else:
+                spec = f"{name}{pinned}"
         else:
             pinned = version.strip()
             if pinned.startswith("=="):
                 spec = f"{name}={pinned[2:]}"
             elif pinned.startswith("="):
+                # 以 = 开头的写法（如 =2026.3）直接拼接
                 spec = f"{name}{pinned}"
+            elif "=" in pinned:
+                # 含 = 但不以 = 开头的是 version=build 三段式（如 2026.3=nompi_cuda），
+                # 需要补一个 = 组成 name=version=build
+                spec = f"{name}={pinned}"
             elif re.fullmatch(r"[0-9][A-Za-z0-9.*_+!-]*", pinned):
                 spec = f"{name}={pinned}"
     if manager == "pip":
@@ -356,7 +376,205 @@ def scan_project_dependencies(project_dir: Path) -> list[DependencyItem]:
     return _dedupe(items)
 
 
-def precheck_dependencies(items: list[DependencyItem]) -> list[DependencyItem]:
+def installed_packages_snapshot(conda_env_dir: Path | None) -> dict[str, str]:
+    """公开封装：返回项目环境已安装包 {name: version} 快照。"""
+    try:
+        conda_exe = find_conda_executable()
+    except FileTransferError:
+        return {}
+    return _installed_packages(conda_exe, conda_env_dir)
+
+
+def _installed_packages(conda_exe: str, conda_env_dir: Path | None) -> dict[str, str]:
+    """Snapshot {normalized_name: version} of packages already in the project env."""
+    if conda_env_dir is None or not (conda_env_dir / "conda-meta").exists():
+        return {}
+    try:
+        result = subprocess.run(
+            [conda_exe, "list", "-p", str(conda_env_dir)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    installed: dict[str, str] = {}
+    for line in (result.stdout or "").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            installed[parts[0].lower().replace("_", "-")] = parts[1]
+    return installed
+
+
+def _normalize_requested_version(version: str) -> str:
+    """把各种写法归一成纯版本号：'==1.2', '=1.2', '1.2.*' → '1.2'。"""
+    v = str(version or "").strip()
+    v = v.lstrip("=")
+    # 保留 version=build 三段式中的 version 部分
+    v = v.split("=", 1)[0]
+    v = v.strip(".*")
+    return v
+
+
+def _version_key(version: str):
+    """把版本号转成可比较的元组，数值段用 int、非数值段用小写字符串。"""
+    parts = re.split(r"[._-]", str(version))
+    key = []
+    for part in parts:
+        if part.isdigit():
+            key.append((0, int(part), ""))
+        else:
+            key.append((1, 0, part.lower()))
+    return tuple(key)
+
+
+def _version_matches(requested: str, available: list[str]) -> bool:
+    """requested 是否能在 available 中命中（支持裸版本与前缀通配）。"""
+    target = _normalize_requested_version(requested)
+    if not target:
+        return True
+    wildcard = str(requested).strip().endswith(".*") or str(requested).strip().endswith("*")
+    for v in available:
+        if v == target:
+            return True
+        if wildcard and v.startswith(target):
+            return True
+    return False
+
+
+def _suggest_version(requested: str, available: list[str]) -> str:
+    """从可用版本中挑建议版本：优先同 major.minor，其次同 major，最后最新。"""
+    target = _normalize_requested_version(requested)
+    if not available:
+        return ""
+    if target:
+        segments = re.split(r"[._-]", target)
+        if len(segments) >= 2:
+            prefix = ".".join(segments[:2])
+            same_minor = [v for v in available if v.startswith(prefix + ".") or v == prefix]
+            if same_minor:
+                return same_minor[-1]
+        if segments:
+            major = segments[0]
+            same_major = [v for v in available if v.split(".", 1)[0] == major]
+            if same_major:
+                return same_major[-1]
+    return available[-1]
+
+
+def _extract_json_object(text: str) -> Any | None:
+    """从 conda --json 输出中提取第一个完整 JSON 对象（前后可能有 WARNING 文本）。"""
+    for match in re.finditer(r"\{", text):
+        candidate = text[match.start():]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def search_package_versions(
+    name: str,
+    conda_exe: str | None = None,
+    timeout: int = CONDA_SEARCH_TIMEOUT,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """
+    查询 conda-forge 上某包的真实可用版本与构建。
+
+    返回 {"ok": bool, "versions": [...], "builds": [...], "error": str}。
+    versions 按版本升序；builds 是最近若干个 "version=build" 字符串。
+    结果带 TTL 缓存，report 与 install 阶段复用，避免重复下载 repodata。
+    """
+    cache_key = str(name or "").strip().lower()
+    now = time.monotonic()
+    if use_cache and cache_key in _SEARCH_CACHE:
+        cached_at, cached = _SEARCH_CACHE[cache_key]
+        if now - cached_at < SEARCH_CACHE_TTL_SECONDS:
+            return dict(cached)
+
+    result: dict[str, Any] = {"ok": False, "versions": [], "builds": [], "error": ""}
+    try:
+        conda_exe = conda_exe or find_conda_executable()
+    except FileTransferError as e:
+        result["error"] = str(e)
+        return result
+
+    channel_args = ["--override-channels"]
+    for channel in get_conda_channels():
+        channel_args.extend(["-c", channel])
+    try:
+        proc = subprocess.run(
+            [conda_exe, "search", "--json", *channel_args, cache_key],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        result["error"] = f"conda search 超时（>{timeout}s）"
+        return result
+    except OSError as e:
+        result["error"] = f"conda search 执行失败： {e}"
+        return result
+
+    raw = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    data = _extract_json_object(raw)
+    entries: list[dict[str, Any]] = []
+    if isinstance(data, dict):
+        if isinstance(data.get("error"), dict):
+            result["error"] = str(data["error"].get("message") or data["error"])[:300]
+        elif data.get("exception_name") == "PackagesNotFoundError":
+            result["error"] = "软件源中未找到该包"
+        elif isinstance(data.get(cache_key), list):
+            entries = [e for e in data[cache_key] if isinstance(e, dict) and e.get("version")]
+    if not entries and not result["error"]:
+        # 非 JSON 输出（如 conda tos 提示）也算查询失败
+        result["error"] = _trim_search_output(raw)
+    if entries:
+        # 按版本排序，同版本多个构建保留全部
+        entries.sort(key=lambda e: _version_key(str(e.get("version"))))
+        versions: list[str] = []
+        for entry in entries:
+            v = str(entry.get("version"))
+            if v not in versions:
+                versions.append(v)
+        builds = [
+            f"{e.get('version')}={e.get('build')}" for e in entries[-24:]
+        ]
+        result.update({"ok": True, "versions": versions, "builds": builds, "error": ""})
+
+    if use_cache:
+        _SEARCH_CACHE[cache_key] = (now, dict(result))
+    return result
+
+
+def _trim_search_output(text: str, limit: int = 300) -> str:
+    cleaned = " ".join(str(text or "").split())
+    return cleaned[:limit] or "无输出"
+
+
+def _parse_pip_available_versions(output: str) -> list[str]:
+    """从 `pip index versions` 输出中解析可用版本列表（倒序→升序）。"""
+    for line in str(output or "").splitlines():
+        if "Available versions:" in line:
+            versions = [
+                v.strip() for v in line.split("Available versions:", 1)[1].split(",") if v.strip()
+            ]
+            versions.reverse()
+            return versions
+    return []
+
+
+def precheck_dependencies(items: list[DependencyItem], conda_env_dir: Path | None = None) -> list[DependencyItem]:
+    """
+    预检分三部分：
+    1. 是否已安装在项目 Conda 环境（conda list 快照一次，已装项默认不勾选，避免重复安装）；
+    2. 软件源里是否可获取（conda search / pip index），并解析真实可用版本；
+    3. 版本校验：请求的版本在软件源中不存在时标记 version_mismatch 并给出建议版本，
+       避免把其它集群的 module 版本号直接当成 conda 版本导致安装失败。
+    """
     try:
         conda_exe = find_conda_executable()
     except FileTransferError as e:
@@ -365,38 +583,106 @@ def precheck_dependencies(items: list[DependencyItem]) -> list[DependencyItem]:
             item.precheck_detail = str(e)
         return items
 
+    installed = _installed_packages(conda_exe, conda_env_dir)
+    env_python = conda_env_dir / "bin" / "python" if conda_env_dir else None
+
     for item in items[:MAX_PRECHECK_ITEMS]:
-        try:
-            if item.manager == "pip":
-                result = subprocess.run(
-                    [conda_exe, "run", "python", "-m", "pip", "index", "versions", item.name],
-                    capture_output=True,
-                    text=True,
-                    timeout=8,
-                )
-            else:
-                result = subprocess.run(
-                    [conda_exe, "search", "--override-channels", "-c", "conda-forge", item.name],
-                    capture_output=True,
-                    text=True,
-                    timeout=8,
-                )
-        except subprocess.TimeoutExpired:
-            item.precheck_status = "unknown"
-            item.precheck_detail = "预检超时"
-            continue
-        except OSError as e:
-            item.precheck_status = "unknown"
-            item.precheck_detail = str(e)
+        key = item.name.lower().replace("_", "-")
+        if key in installed:
+            item.precheck_status = "installed"
+            item.precheck_detail = f"当前项目环境已安装 {item.name} {installed[key]}，无需重复安装"
+            item.selected = False
             continue
 
-        output = (result.stdout or result.stderr or "").strip()
-        item.precheck_status = "ok" if result.returncode == 0 and output else "missing"
-        item.precheck_detail = "\n".join(output.splitlines()[:8])[:800] or "无输出"
+        if item.manager == "pip":
+            try:
+                if env_python is not None and env_python.exists():
+                    # 直接用项目环境里的 python 查询，避免 conda run 开销
+                    result = subprocess.run(
+                        [str(env_python), "-m", "pip", "index", "versions", item.name],
+                        capture_output=True,
+                        text=True,
+                        timeout=PIP_INDEX_TIMEOUT,
+                    )
+                else:
+                    result = subprocess.run(
+                        [conda_exe, "run", "python", "-m", "pip", "index", "versions", item.name],
+                        capture_output=True,
+                        text=True,
+                        timeout=PIP_INDEX_TIMEOUT,
+                    )
+            except subprocess.TimeoutExpired:
+                item.precheck_status = "unknown"
+                item.precheck_detail = "预检超时"
+                continue
+            except OSError as e:
+                item.precheck_status = "unknown"
+                item.precheck_detail = str(e)
+                continue
+
+            output = (result.stdout or "").strip()
+            versions = _parse_pip_available_versions(output)
+            if result.returncode == 0 and versions:
+                item.available_versions = ", ".join(versions[-10:])
+                if _version_matches(item.version, versions):
+                    item.precheck_status = "ok"
+                    item.precheck_detail = f"软件源可用，最新版本 {versions[-1]}"
+                else:
+                    item.precheck_status = "version_mismatch"
+                    item.suggested_version = _suggest_version(item.version, versions)
+                    item.precheck_detail = (
+                        f"请求版本 {item.version or '(空)'} 不存在，可用最新 {versions[-1]}；"
+                        f"已建议 {item.suggested_version}"
+                    )
+            elif result.returncode == 0 and output:
+                item.precheck_status = "ok"
+                item.precheck_detail = "\n".join(output.splitlines()[:4])[:400]
+            else:
+                item.precheck_status = "missing"
+                item.precheck_detail = "\n".join((output or (result.stderr or "")).splitlines()[:4])[:400] or "无输出"
+            continue
+
+        # conda：版本感知搜索
+        search = search_package_versions(item.name, conda_exe=conda_exe)
+        if not search["ok"]:
+            item.precheck_status = "missing" if "未找到该包" in search["error"] else "unknown"
+            item.precheck_detail = _trim_search_output(search["error"])
+            continue
+
+        versions: list[str] = search["versions"]
+        builds: list[str] = search["builds"]
+        item.available_versions = ", ".join(versions[-10:])
+        if not item.version:
+            item.precheck_status = "ok"
+            item.precheck_detail = f"软件源可用，最新版本 {versions[-1]}（未指定版本，默认装最新）"
+            continue
+        if _version_matches(item.version, versions):
+            item.precheck_status = "ok"
+            # 展示该版本下的构建变体（nompi/cuda/openmpi 等），供 LLM 与用户选择
+            requested = _normalize_requested_version(item.version)
+            matching_builds = [b for b in builds if b.split("=", 1)[0] == requested]
+            if matching_builds:
+                item.precheck_detail = f"版本 {requested} 可用，构建：{', '.join(matching_builds)}"
+            else:
+                item.precheck_detail = f"版本 {requested} 可用"
+        else:
+            item.precheck_status = "version_mismatch"
+            item.suggested_version = _suggest_version(item.version, versions)
+            item.precheck_detail = (
+                f"请求版本 {item.version} 在软件源中不存在（最近可用：{item.available_versions}）；"
+                f"建议改用 {item.suggested_version}"
+            )
     return items
 
 
 def items_to_markdown(items: list[DependencyItem], summary: str = "") -> str:
+    precheck_text = {
+        "ok": "可找到",
+        "missing": "未确认",
+        "installed": "已安装",
+        "unknown": "需确认",
+        "version_mismatch": "版本不存在",
+    }
     lines = ["## 依赖检查结果"]
     if summary.strip():
         lines.extend(["", summary.strip()])
@@ -405,16 +691,25 @@ def items_to_markdown(items: list[DependencyItem], summary: str = "") -> str:
         "| 默认 | 名称 | 版本 | 安装器 | 来源 | 置信度 | 预检 |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ])
+    mismatch_lines: list[str] = []
     for item in items:
         selected = "是" if item.selected else "否"
         version = item.version or "需确认"
+        precheck = precheck_text.get(item.precheck_status, item.precheck_status)
         lines.append(
-            f"| {selected} | `{item.name}` | {version} | {item.manager} | {item.source} | {item.confidence} | {item.precheck_status} |"
+            f"| {selected} | `{item.name}` | {version} | {item.manager} | {item.source} | {item.confidence} | {precheck} |"
         )
+        if item.precheck_status == "version_mismatch" and item.suggested_version:
+            mismatch_lines.append(
+                f"- `{item.name}`：请求版本 {item.version or '(空)'} 在软件源中不存在，"
+                f"建议改用 {item.suggested_version}（可用版本：{item.available_versions or '见预检详情'}）"
+            )
     lines.extend([
         "",
-        "可信依赖已默认勾选；AI 或源码 import 推断项需要用户在弹窗中确认后再安装。",
+        "可信依赖已默认勾选；已安装项默认不勾选；AI 或源码 import 推断项需要用户在弹窗中确认后再安装。",
     ])
+    if mismatch_lines:
+        lines.extend(["", "**以下依赖的版本在软件源中不存在，安装前请改用建议版本：**", *mismatch_lines])
     return "\n".join(lines)
 
 

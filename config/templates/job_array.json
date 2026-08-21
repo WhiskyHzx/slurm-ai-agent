@@ -60,9 +60,9 @@
     },
     "conda_env": {
       "type": "string",
-      "label": "conda 环境名",
+      "label": "conda 环境",
       "default": "dl",
-      "description": "已配置好的 conda 环境名称"
+      "description": "conda 环境名或环境绝对路径；本项目工作流应使用项目环境 $HOME/projects/<项目名>/.slurm-agent/conda-env"
     },
     "command": {
       "type": "string",
