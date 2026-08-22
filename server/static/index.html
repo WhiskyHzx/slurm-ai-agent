@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>107 算力控制台</title>
 <style>
+  /* 全局隐藏滚动条（保留滚动能力）：列表/表格/脚本区不再露出右侧滑块 */
+  *, *::before, *::after {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  *::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
   :root {
     --bg: #f4f5f2;
     --surface: #ffffff;
@@ -18,7 +30,7 @@
     --red: #b91c1c;
     --green: #15803d;
     --shadow: 0 10px 28px rgba(24, 33, 47, 0.08);
-    --topbar-bg: rgba(255, 255, 255, 0.94);
+    --topbar-bg: rgba(255, 255, 255, 0.72);
     --focus-ring: rgba(37, 99, 235, 0.12);
     --modal-scrim: rgba(24, 33, 47, 0.28);
     --modal-shadow: 0 18px 50px rgba(24, 33, 47, 0.22);
@@ -37,6 +49,9 @@
     --tool-ink: #78350f;
     --primary-ink: #ffffff;
     --icon-btn-size: 36px;
+    /* 毛玻璃面板颜色（随主题统一） */
+    --glass: rgba(255, 255, 255, 0.92);
+    --glass-line: rgba(255, 255, 255, 0.55);
   }
 
   :root[data-theme="dark"] {
@@ -52,10 +67,12 @@
     --red: #f87171;
     --green: #34d399;
     --shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
-    --topbar-bg: rgba(17, 17, 19, 0.96);
+    --topbar-bg: rgba(17, 17, 19, 0.72);
     --focus-ring: rgba(129, 140, 248, 0.2);
     --modal-scrim: rgba(0, 0, 0, 0.58);
     --modal-shadow: 0 18px 50px rgba(0, 0, 0, 0.56);
+    --glass: rgba(28, 28, 32, 0.9);
+    --glass-line: rgba(255, 255, 255, 0.12);
     --group-bg: #1d1d20;
     --group-hover: #28282b;
     --notice-ink: #86efac;
@@ -96,6 +113,9 @@
     padding: 12px 20px;
     border-bottom: 1px solid var(--line);
     background: var(--topbar-bg);
+    /* macOS 风格毛玻璃顶栏 */
+    backdrop-filter: saturate(180%) blur(18px);
+    -webkit-backdrop-filter: saturate(180%) blur(18px);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -117,6 +137,49 @@
     font-weight: 700;
     letter-spacing: 0;
   }
+
+  /* 顶栏标题：hover 或文档模式下，双层文字从下向上滑动切换 */
+  .brand-swap {
+    display: block;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .swap-window {
+    display: block;
+    overflow: hidden;
+    height: 1.45em;
+  }
+
+  .swap-stack {
+    display: block;
+    transition: transform .42s cubic-bezier(.32, .72, .33, 1);
+    will-change: transform;
+  }
+
+  .swap-row {
+    display: block;
+    height: 1.45em;
+    line-height: 1.45em;
+    white-space: nowrap;
+  }
+
+  .brand-swap:hover .swap-stack,
+  body.docs-mode .brand-swap .swap-stack {
+    transform: translateY(-1.45em);
+  }
+
+  .brand-swap .swap-accent { color: var(--blue); }
+
+  /* 左栏标题 projects → docs：随文档模式整体切换 */
+  .sidebar-title .swap-window { height: 1.35em; }
+  .sidebar-title .swap-row { height: 1.35em; line-height: 1.35em; }
+  body.docs-mode .sidebar-title .swap-stack { transform: translateY(-1.35em); }
 
   .brand-subtitle {
     color: var(--muted);
@@ -151,7 +214,8 @@
     height: 36px;
     padding: 0 12px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: 9px;
+    transition: background .15s ease, transform .1s ease, box-shadow .15s ease, border-color .15s ease;
     background: var(--surface);
     color: var(--ink);
     cursor: pointer;
@@ -159,10 +223,16 @@
   }
 
   .btn:hover { background: var(--surface-soft); }
+  .btn:active { transform: scale(0.97); }
   .btn.primary {
-    border-color: var(--blue);
-    background: var(--blue);
+    border-color: transparent;
+    background: linear-gradient(180deg, #3b82f6, #2563eb);
     color: var(--primary-ink);
+    box-shadow: 0 3px 10px rgba(37, 99, 235, 0.32);
+  }
+
+  .btn.primary:hover {
+    background: linear-gradient(180deg, #4d8dfa, #2d6cf0);
   }
   .btn.teal {
     border-color: var(--teal);
@@ -204,7 +274,7 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 270px minmax(420px, 1fr) 430px;
+    grid-template-columns: 270px 0px minmax(420px, 1fr) 430px;
     gap: 0;
     height: calc(100vh - 65px);
     max-width: none;
@@ -212,24 +282,197 @@
     margin: 0;
     overflow: hidden;
     border-top: 1px solid var(--line);
+    /* 侧栏展开/收起：列宽带阻尼滑动（docs 阅读器列同理） */
+    transition: grid-template-columns .42s cubic-bezier(.32, .72, .33, 1);
   }
 
   .layout.left-collapsed {
-    grid-template-columns: 46px minmax(420px, 1fr) 430px;
+    grid-template-columns: 46px 0px minmax(420px, 1fr) 430px;
   }
 
   .layout.right-collapsed {
-    grid-template-columns: 270px minmax(420px, 1fr) 46px;
+    grid-template-columns: 270px 0px minmax(420px, 1fr) 46px;
   }
 
   .layout.left-collapsed.right-collapsed {
-    grid-template-columns: 46px minmax(420px, 1fr) 46px;
+    grid-template-columns: 46px 0px minmax(420px, 1fr) 46px;
+  }
+
+  /* 帮助文档模式：阅读器滑入成为中间宽栏，智能体收窄靠右，资源栏收成轨道 */
+  .layout.docs-open,
+  .layout.docs-open.right-collapsed {
+    grid-template-columns: 270px minmax(420px, 1fr) minmax(340px, 480px) 46px;
+  }
+
+  .layout.docs-open.left-collapsed,
+  .layout.docs-open.left-collapsed.right-collapsed {
+    grid-template-columns: 46px minmax(420px, 1fr) minmax(340px, 480px) 46px;
   }
 
   .main, .left-sidebar, .right-sidebar {
     min-width: 0;
     min-height: 0;
   }
+
+  /* --------------------------------------------------------------------- */
+  /* 帮助文档阅读器（默认列宽 0，docs-open 时滑入） */
+  /* --------------------------------------------------------------------- */
+  .docs-reader {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border-right: 1px solid var(--line);
+    background: var(--bg);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .docs-reader-inner {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    opacity: 0;
+    transform: translateX(-20px);
+    transition: opacity .38s ease .12s, transform .48s cubic-bezier(.22, .9, .34, 1) .08s;
+  }
+
+  .layout.docs-open .docs-reader-inner {
+    opacity: 1;
+    transform: none;
+  }
+
+  .docs-reader-head {
+    min-height: 52px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: var(--surface);
+  }
+
+  .docs-breadcrumb {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .docs-close-btn {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+  }
+
+  .docs-content {
+    padding: 22px 28px 48px;
+    overflow-y: auto;
+    min-width: 0;
+    font-size: 13.5px;
+    line-height: 1.7;
+  }
+
+  .docs-content h1 { font-size: 22px; margin: 4px 0 14px; line-height: 1.3; }
+  .docs-content h2 { font-size: 17px; margin: 22px 0 8px; }
+  .docs-content h3 { font-size: 14.5px; margin: 16px 0 6px; }
+  .docs-content h4 { font-size: 13.5px; margin: 14px 0 6px; }
+  .docs-content p { margin: 0 0 10px; }
+  .docs-content ul, .docs-content ol { margin: 6px 0 12px 20px; padding: 0; }
+  .docs-content li { margin: 3px 0; }
+  .docs-content pre {
+    margin: 10px 0;
+    padding: 12px;
+    overflow-x: auto;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--code-bg);
+  }
+  .docs-content code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  .docs-content :not(pre) > code { padding: 1px 4px; border-radius: 4px; background: var(--code-bg); }
+  .docs-content table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    margin: 10px 0;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .docs-content th, .docs-content td { padding: 6px 9px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+  .docs-content th { background: var(--group-bg); font-weight: 700; }
+  .docs-content blockquote { margin: 10px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
+  .docs-content hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+  .docs-content a { color: var(--blue); }
+
+  /* 左栏文档树：docs 模式下从上向下展开 */
+  .docs-tree {
+    display: none;
+    overflow-y: auto;
+    padding: 6px;
+  }
+
+  .layout.docs-open .docs-tree { display: block; }
+  .layout.docs-open #projectsList { display: none; }
+  .layout.docs-open .sidebar-actions { display: none; }
+
+  @keyframes docsCascadeIn {
+    from { opacity: 0; transform: translateY(-14px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  .docs-tree .cascade {
+    animation: docsCascadeIn .34s cubic-bezier(.22, .9, .34, 1) both;
+    animation-delay: calc(var(--i, 0) * 45ms);
+  }
+
+  .docs-dir-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 7px;
+    background: none;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 750;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .docs-dir-label:hover { background: var(--surface-soft); }
+  .docs-dir-label .caret { transition: transform .28s ease; font-size: 9px; }
+  .docs-dir-label.open .caret { transform: rotate(90deg); }
+
+  .docs-file-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 6px 8px 6px 20px;
+    border: none;
+    border-radius: 7px;
+    background: none;
+    color: var(--ink);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .docs-file-item:hover { background: var(--surface-soft); }
+  .docs-file-item.active { background: var(--focus-soft, rgba(59, 130, 246, .12)); color: var(--blue); font-weight: 650; }
 
   .left-sidebar, .right-sidebar {
     background: var(--surface);
@@ -282,6 +525,43 @@
     place-items: center;
   }
 
+  /* 上传按钮：点击后原位变文件夹按钮，左侧紧挨着滑出文件按钮 */
+  .upload-fab {
+    display: flex;
+    align-items: center;
+    height: 32px;
+    gap: 0;
+    transition: gap .34s cubic-bezier(.32, 1.2, .5, 1);
+  }
+
+  .upload-fab.split { gap: 4px; }
+
+  .upload-fab .upload-child {
+    width: 0;
+    min-width: 0;
+    height: 32px;
+    padding: 0;
+    border-width: 0;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateX(12px) scale(0.6);
+    pointer-events: none;
+    transition: width .34s cubic-bezier(.32, 1.2, .5, 1),
+                border-width .34s cubic-bezier(.32, 1.2, .5, 1),
+                opacity .2s ease,
+                transform .34s cubic-bezier(.32, 1.2, .5, 1);
+  }
+
+  .upload-fab.split .upload-child {
+    width: 32px;
+    min-width: 32px;
+    padding: 0;
+    border-width: 1px;
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+
   .project-list {
     overflow-y: auto;
     padding: 8px;
@@ -289,6 +569,14 @@
     align-content: start;
     gap: 4px;
   }
+
+  /* 小文件夹行展开：带阻尼淡入，不硬生生出现 */
+  @keyframes rowIn {
+    from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+    to { opacity: 1; transform: none; }
+  }
+
+  .project-list .subdir-row { animation: rowIn .3s cubic-bezier(.32, 1.1, .5, 1); }
 
   .project-item {
     min-height: 38px;
@@ -301,6 +589,7 @@
     gap: 2px;
     cursor: pointer;
     text-align: left;
+    transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
   }
 
   .project-item:hover {
@@ -310,6 +599,7 @@
   .project-item.active {
     border-color: var(--line);
     background: var(--surface-soft);
+    box-shadow: inset 3px 0 0 #2563eb;
   }
 
   .project-name {
@@ -325,6 +615,113 @@
     color: var(--muted);
     font-size: 11px;
   }
+
+  /* 项目内数据集小文件夹（二级条目） */
+  .project-sub-item {
+    min-height: 30px;
+    padding: 4px 9px 4px 26px;
+  }
+
+  .project-sub-item .project-name {
+    font-size: 12.5px;
+    font-weight: 550;
+  }
+
+  /* 小文件夹悬浮操作（新建/重命名/删除）与拖拽上传高亮 */
+  .project-item { position: relative; }
+
+  .subdir-ops {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    gap: 2px;
+  }
+
+  .project-item:hover .subdir-ops { display: flex; }
+
+  .subdir-op {
+    min-width: 20px;
+    height: 20px;
+    padding: 0 4px;
+    display: grid;
+    place-items: center;
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .subdir-op:hover { background: var(--surface-soft); color: var(--ink); }
+
+  .subdir-op.danger:hover { color: #c0392b; }
+
+  .project-item.drag-over {
+    border-color: #2563eb;
+    background: rgba(37, 99, 235, 0.08);
+  }
+
+  /* 小文件夹行内编辑（新建/重命名不弹窗，直接在行内变输入框） */
+  .subdir-editing {
+    display: flex;
+    align-items: center;
+    cursor: default;
+  }
+
+  .subdir-edit-input {
+    width: 100%;
+    font: inherit;
+    font-size: 12.5px;
+    padding: 3px 6px;
+    border: 1px solid #2563eb;
+    border-radius: 5px;
+    outline: none;
+    background: var(--surface);
+    color: var(--text);
+  }
+
+  /* 提交弹窗工具条与作业模板列表 */
+  .submit-divider-ops { display: flex; gap: 6px; }
+
+  .template-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+
+  .template-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    transition: border-color .15s ease, background .15s ease;
+  }
+
+  .template-row:hover {
+    border-color: #2563eb;
+    background: rgba(37, 99, 235, 0.05);
+  }
+
+  .template-main:hover .template-name { color: #2563eb; }
+
+  .template-main {
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+  }
+
+  .template-name { font-size: 13px; font-weight: 600; }
+
+  .template-meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  .template-empty { color: var(--muted); font-size: 12.5px; padding: 8px 2px; }
 
   .collapsed-rail {
     height: 100%;
@@ -481,22 +878,49 @@
     position: fixed;
     inset: 0;
     background: var(--modal-scrim);
-    display: none;
+    /* macOS 风格：背景轻微景深模糊 */
+    backdrop-filter: blur(8px) saturate(120%);
+    -webkit-backdrop-filter: blur(8px) saturate(120%);
+    display: flex;
     align-items: center;
     justify-content: center;
     z-index: 60;
     padding: 20px;
+    /* 丝滑开合：透明度渐变而非硬切 */
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity .28s ease, visibility 0s linear .28s;
   }
 
   .modal-backdrop.open {
     display: flex;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition: opacity .28s ease;
+  }
+
+  /* 弹窗本体：带回弹阻尼的升入动画 */
+  .modal-backdrop .modal {
+    transform: translateY(14px) scale(0.96);
+    opacity: 0;
+    transition: transform .36s cubic-bezier(.32, 1.25, .5, 1), opacity .24s ease;
+  }
+
+  .modal-backdrop.open .modal {
+    transform: none;
+    opacity: 1;
   }
 
   .modal {
     width: min(420px, 100%);
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 8px;
+    background: var(--glass);
+    /* macOS 风格毛玻璃面板（颜色随主题统一） */
+    backdrop-filter: blur(30px) saturate(170%);
+    -webkit-backdrop-filter: blur(30px) saturate(170%);
+    border: 1px solid var(--glass-line);
+    border-radius: 14px;
     box-shadow: var(--modal-shadow);
   }
 
@@ -505,6 +929,45 @@
     max-height: min(760px, calc(100vh - 36px));
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  /* 提交弹窗：占屏 70-80% 高，无页眉页脚，内容滚动；
+     取消/提交按钮在右列脚本区底部，右列底部与左侧最低点齐平 */
+  #jobSubmitModal .modal.wide {
+    width: min(820px, 100%);
+    height: 76vh;
+    max-height: 82vh;
+    min-height: 68vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #jobSubmitModal .modal-body {
+    overflow-y: auto;
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #jobSubmitModal .submit-layout {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* 取消/提交按钮：右列脚本区底部（不单独占一行宽度） */
+  .submit-inline-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  /* 辅助弹窗（模板列表/命名）：叠在提交弹窗之上，避免被后出现的弹窗盖住 */
+  #templateListModal,
+  #subdirModal {
+    z-index: 90;
   }
 
   .modal-head, .modal-body, .modal-actions {
@@ -565,6 +1028,23 @@
     overflow: auto;
     border: 1px solid var(--line);
     border-radius: 8px;
+  }
+
+  /* 依赖弹窗：纯表格，表格边框即弹窗边框 */
+  #dependencyModal .modal-body { padding: 0; }
+  #dependencyModal .dependency-table-wrap {
+    border: none;
+    border-radius: 0;
+    max-height: calc(76vh - 2px);
+  }
+  #dependencyModal .modal { overflow: hidden; }
+
+  .dependency-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
   }
 
   .dependency-table {
@@ -717,6 +1197,38 @@
     gap: 10px;
     padding: 10px;
     min-height: 0;
+    position: relative;
+  }
+
+  /* 历史作业覆盖层：从右侧栏底部滑上来盖住节点情况/作业情况，仅限右栏内部 */
+  .history-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    transform: translateY(103%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform .42s cubic-bezier(.22, .9, .32, 1), opacity .3s ease;
+  }
+
+  .history-overlay.open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .history-panel {
+    height: 100%;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .history-toggle-btn {
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .table-wrap {
@@ -834,7 +1346,7 @@
 
   .toast {
     padding: 11px 36px 11px 13px;
-    border-radius: 8px;
+    border-radius: 12px;
     font-size: 13px;
     border: 1px solid;
     box-shadow: var(--shadow);
@@ -844,6 +1356,8 @@
     max-height: 45vh;
     overflow: auto;
     white-space: pre-wrap;
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
   }
 
   .toast.notice {
@@ -1299,7 +1813,8 @@
 
   .submit-layout {
     display: grid;
-    grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+    /* 左列表单收窄，右列脚本区宽度保持不变（弹窗总宽相应收窄） */
+    grid-template-columns: minmax(185px, 220px) minmax(0, 1fr);
     gap: 14px;
   }
 
@@ -1311,22 +1826,26 @@
 
   .submit-script-col {
     display: grid;
-    grid-template-rows: minmax(0, 1fr);
-    min-height: 380px;
+    /* 脚本框 + 底部内联按钮行：两部分加按钮的总高与左列齐平 */
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: 0;
   }
 
+  /* 表单项：名称与输入框同行（总宽度不变），label 右对齐收窄 */
   .submit-field {
     display: grid;
-    gap: 4px;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
     min-width: 0;
   }
 
   .submit-field label {
     color: var(--muted);
     font-size: 12px;
+    text-align: right;
+    white-space: nowrap;
   }
-
-  .submit-field .req { color: #d64545; margin-left: 2px; }
 
   .submit-field input,
   .submit-field select {
@@ -1387,7 +1906,8 @@
   #submitLockedPreview {
     margin: 0;
     padding: 10px 12px 8px;
-    max-height: 220px;
+    min-height: 150px;
+    max-height: 260px;
     overflow: auto;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12.5px;
@@ -1403,8 +1923,9 @@
     justify-content: space-between;
     gap: 8px;
     padding: 3px 8px 3px 12px;
-    border-top: 1px dashed var(--line);
-    border-bottom: 1px solid var(--line);
+    /* 与上半部分（锁定区）实线分割，与下半部分（命令区）虚线分割 */
+    border-top: 1px solid var(--line);
+    border-bottom: 1px dashed var(--line);
     color: var(--muted);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
@@ -1457,7 +1978,13 @@
     .layout.left-collapsed,
     .layout.right-collapsed,
     .layout.left-collapsed.right-collapsed {
-      grid-template-columns: 46px minmax(0, 1fr) 46px;
+      grid-template-columns: 46px 0px minmax(0, 1fr) 46px;
+    }
+    .layout.docs-open,
+    .layout.docs-open.right-collapsed,
+    .layout.docs-open.left-collapsed,
+    .layout.docs-open.left-collapsed.right-collapsed {
+      grid-template-columns: 46px minmax(0, 1fr) minmax(0, 1fr) 46px;
     }
     .layout:not(.left-open) .left-sidebar .sidebar-panel,
     .layout:not(.right-open) .right-sidebar .right-content {
@@ -1488,7 +2015,12 @@
 <div class="shell">
   <header class="topbar">
     <div class="brand">
-      <div class="brand-title">107 算力控制台</div>
+      <button class="brand-title brand-swap" id="docsModeBtn" onclick="toggleDocsMode()" title="查看帮助文档">
+        <span class="swap-window"><span class="swap-stack">
+          <span class="swap-row">107 算力控制台</span>
+          <span class="swap-row swap-accent">帮助文档</span>
+        </span></span>
+      </button>
       <div class="brand-subtitle">Slurm 资源监视、项目文件上传、智能助手</div>
     </div>
     <div class="top-actions">
@@ -1503,19 +2035,36 @@
       </div>
       <section class="sidebar-panel">
         <div class="sidebar-head">
-          <div class="sidebar-title">projects</div>
-          <div class="sidebar-actions">
-            <button class="btn collapse-btn primary" onclick="openNewJobFlow()" title="新作业">＋</button>
-            <button class="btn collapse-btn" onclick="chooseUploadFiles()" title="上传文件">↑</button>
-            <button class="btn collapse-btn" onclick="chooseUploadFolder()" title="上传文件夹">▣</button>
+          <div class="sidebar-title">
+            <span class="swap-window"><span class="swap-stack">
+              <span class="swap-row">projects</span>
+              <span class="swap-row">docs</span>
+            </span></span>
           </div>
-          <button class="btn collapse-btn" onclick="toggleLeftSidebar(true)" title="收起项目列表">‹</button>
+          <div class="sidebar-actions">
+            <div class="upload-fab" id="uploadFab">
+              <button class="btn collapse-btn upload-child" onclick="closeUploadSplit(); chooseUploadFiles()" title="上传文件">↑</button>
+              <button class="btn collapse-btn upload-main" id="uploadMainBtn" onclick="toggleUploadSplit()" title="上传文件或文件夹">↑</button>
+            </div>
+            <button class="btn collapse-btn primary" onclick="openNewJobFlow()" title="新作业">＋</button>
+          </div>
         </div>
         <div id="projectsList" class="project-list">
           <div class="empty">正在读取作业目录</div>
         </div>
+        <div id="docsTree" class="docs-tree"></div>
       </section>
     </aside>
+
+    <section id="docsReader" class="docs-reader" aria-hidden="true">
+      <div class="docs-reader-inner">
+        <div class="docs-reader-head">
+          <div id="docsBreadcrumb" class="docs-breadcrumb">帮助文档</div>
+          <button class="btn docs-close-btn" onclick="toggleDocsMode(false)" title="关闭文档，返回控制台">✕</button>
+        </div>
+        <div id="docsContent" class="docs-content"></div>
+      </div>
+    </section>
 
     <section id="assistantPanel" class="assistant open">
       <section class="panel">
@@ -1533,7 +2082,7 @@
               </div>
             </div>
             <div class="composer-right assistant-actions">
-              <button class="btn composer-add" onclick="chooseDependencyFiles()" title="添加依赖清单文件">+</button>
+              <button class="btn composer-add" onclick="chooseDependencyFiles()" title="添加对话附件（仅文本文件）">+</button>
               <span class="composer-divider"></span>
               <button id="checkDepsBtn" class="btn" onclick="generateProjectReport()">检查依赖</button>
               <button id="confirmRunBtn" class="btn primary" onclick="confirmRunPlan()">布置作业</button>
@@ -1588,8 +2137,8 @@
                 <div class="panel-heading">
                   <h2 class="panel-title">作业情况</h2>
                   <div id="jobsSummary" class="panel-stat">正在加载作业数据</div>
-                  <div id="myJobsDetail" class="panel-stat secondary">我的作业状态等待数据</div>
                 </div>
+                <button class="btn history-toggle-btn" onclick="toggleHistoryOverlay(true)" title="查看本人的历史作业">历史作业</button>
               </div>
               <div class="table-wrap">
                 <table>
@@ -1600,10 +2149,40 @@
                       <th>名称</th>
                       <th>状态</th>
                       <th>分区</th>
+                      <th>时长</th>
                     </tr>
                   </thead>
                   <tbody id="jobsTable">
-                    <tr><td colspan="5" class="empty">正在加载作业数据</td></tr>
+                    <tr><td colspan="6" class="empty">正在加载作业数据</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div id="historyOverlay" class="history-overlay">
+            <div class="panel history-panel">
+              <div class="panel-head">
+                <div class="panel-heading">
+                  <h2 class="panel-title">历史作业</h2>
+                  <div id="historySummary" class="panel-stat secondary">最近 30 天</div>
+                </div>
+                <button class="btn" onclick="toggleHistoryOverlay(false)" title="返回实时面板">关闭</button>
+              </div>
+              <div class="table-wrap history-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>名称</th>
+                      <th>状态</th>
+                      <th>分区</th>
+                      <th>提交时间</th>
+                      <th>运行时长</th>
+                    </tr>
+                  </thead>
+                  <tbody id="historyTable">
+                    <tr><td colspan="6" class="empty">点击“历史作业”加载</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -1616,6 +2195,32 @@
 </div>
 
 <div id="notices" class="toast-stack"></div>
+
+<div id="subdirModal" class="modal-backdrop" onclick="closeSubdirModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head" id="subdirModalTitle">新建小文件夹</div>
+    <div class="modal-body">
+      <label for="subdirNameInput">文件夹名称</label>
+      <input id="subdirNameInput" type="text" placeholder="如 数据集1" onkeydown="if(event.key==='Enter'){event.preventDefault(); confirmSubdirModal()}">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeSubdirModal()">取消</button>
+      <button class="btn primary" id="subdirModalConfirm" onclick="confirmSubdirModal()">确定</button>
+    </div>
+  </div>
+</div>
+
+<div id="templateListModal" class="modal-backdrop" onclick="closeTemplateListModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">作业模板</div>
+    <div class="modal-body">
+      <div id="templateListBox" class="template-list"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeTemplateListModal()">关闭</button>
+    </div>
+  </div>
+</div>
 <div id="jobModal" class="modal-backdrop" onclick="closeJobModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
     <div class="modal-head">新作业</div>
@@ -1631,9 +2236,7 @@
 </div>
 <div id="dependencyModal" class="modal-backdrop" onclick="closeDependencyModal(event)">
   <div class="modal wide" onclick="event.stopPropagation()">
-    <div class="modal-head">确认依赖安装清单</div>
     <div class="modal-body dependency-review">
-      <div id="dependencySummary" class="dependency-summary">正在准备依赖清单</div>
       <div class="dependency-table-wrap">
         <table id="dependencyReviewTable" class="dependency-table">
           <thead id="dependencyReviewHead">
@@ -1651,12 +2254,18 @@
           <tbody id="dependencyReviewBody">
             <tr><td colspan="8" class="empty">暂无依赖项</td></tr>
           </tbody>
+          <tfoot>
+            <tr class="dependency-actions-row">
+              <td colspan="8">
+                <div class="dependency-actions">
+                  <button id="dependencyCancelBtn" class="btn" onclick="closeDependencyModal()">取消</button>
+                  <button id="dependencyConfirmBtn" class="btn primary" onclick="confirmDependencySelection()">安装</button>
+                </div>
+              </td>
+            </tr>
+          </tfoot>
         </table>
       </div>
-    </div>
-    <div class="modal-actions">
-      <button id="dependencyCancelBtn" class="btn" onclick="closeDependencyModal()">稍后处理</button>
-      <button id="dependencyConfirmBtn" class="btn primary" onclick="confirmDependencySelection()">确认清单</button>
     </div>
   </div>
 </div>
@@ -1680,28 +2289,33 @@
 
 <div id="jobSubmitModal" class="modal-backdrop" onclick="closeJobSubmitModal(event)">
   <div class="modal wide" onclick="event.stopPropagation()">
-    <div class="modal-head">布置作业（确认 sbatch 脚本）</div>
     <div class="modal-body dependency-review">
       <div class="submit-layout">
         <div class="submit-options">
           <div class="submit-field">
-            <label for="submitJobName">作业名<span class="req">*</span></label>
+            <label for="submitJobName">作业名</label>
             <input id="submitJobName" type="text" placeholder="如 my-train" oninput="onSubmitFieldChange()">
           </div>
           <div class="submit-field">
-            <label for="submitAccount">计费账户<span class="req">*</span></label>
+            <label for="submitRunDir">运行目录</label>
+            <select id="submitRunDir" onchange="onSubmitRunDirChange()">
+              <option value="">项目根目录</option>
+            </select>
+          </div>
+          <div class="submit-field">
+            <label for="submitAccount">计费账户</label>
             <select id="submitAccount" onchange="onSubmitAccountChange()">
               <option value="">加载中...</option>
             </select>
           </div>
           <div class="submit-field">
-            <label for="submitPartition">分区<span class="req">*</span></label>
+            <label for="submitPartition">分区</label>
             <select id="submitPartition" onchange="onSubmitPartitionChange()">
               <option value="">加载中...</option>
             </select>
           </div>
           <div class="submit-field">
-            <label for="submitQos">QoS<span class="req">*</span></label>
+            <label for="submitQos">QoS</label>
             <select id="submitQos" onchange="onSubmitQosChange()">
               <option value="">加载中...</option>
             </select>
@@ -1715,7 +2329,7 @@
             <input id="submitGpus" type="number" min="0" max="4" value="1" oninput="onSubmitFieldChange()">
           </div>
           <div class="submit-field">
-            <label for="submitCpus">每任务 CPU 核数</label>
+            <label for="submitCpus">CPU 核数</label>
             <input id="submitCpus" type="number" min="1" max="48" value="4" oninput="onSubmitFieldChange()">
           </div>
           <div class="submit-field">
@@ -1728,17 +2342,21 @@
           <div class="submit-script-frame">
             <pre id="submitLockedPreview"></pre>
             <div class="submit-divider">
-              <span># 作业命令</span>
-              <button type="button" class="regen-body-btn" id="regenJobBodyBtn" onclick="regenerateJobBody()">重新生成</button>
+              <span>&gt;_ 作业命令</span>
+              <span class="submit-divider-ops">
+                <button type="button" class="regen-body-btn" id="regenJobBodyBtn" onclick="regenerateJobBody()">重新生成</button>
+                <button type="button" class="regen-body-btn" onclick="openLoadJobTemplate()">从模板加载</button>
+                <button type="button" class="regen-body-btn" onclick="openSaveJobTemplate()">保存为模板</button>
+              </span>
             </div>
             <textarea id="submitScriptInput" spellcheck="false" placeholder="正在根据项目内容生成作业命令..."></textarea>
           </div>
+          <div class="submit-inline-actions">
+            <button class="btn" onclick="closeJobSubmitModal()">取消</button>
+            <button id="submitJobBtn" class="btn primary" onclick="submitJobFromModal()">提交作业</button>
+          </div>
         </div>
       </div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn" onclick="closeJobSubmitModal()">取消</button>
-      <button id="submitJobBtn" class="btn primary" onclick="submitJobFromModal()">提交作业</button>
     </div>
   </div>
 </div>
@@ -1754,7 +2372,6 @@ const dependencyModal = document.getElementById('dependencyModal');
 const dependencyReviewTable = document.getElementById('dependencyReviewTable');
 const dependencyReviewHead = document.getElementById('dependencyReviewHead');
 const dependencyReviewBody = document.getElementById('dependencyReviewBody');
-const dependencySummary = document.getElementById('dependencySummary');
 const dependencyCancelBtn = document.getElementById('dependencyCancelBtn');
 const dependencyConfirmBtn = document.getElementById('dependencyConfirmBtn');
 const noticesEl = document.getElementById('notices');
@@ -1781,6 +2398,8 @@ let hasShownNewJobPrompt = false;
 let lastProjectReport = '';
 let lastProjectDir = '';
 let selectedProjectName = '';
+let selectedSubdir = ''; // 当前选中的数据集小文件夹（空 = 项目根会话）
+const expandedProjects = new Set(); // 左边栏已展开小文件夹列表的项目名
 let projectsCache = [];
 let currentModel = '';
 let availableModels = [];
@@ -1823,17 +2442,21 @@ function autoResizeComposer() {
   userInput.style.height = `${Math.min(userInput.scrollHeight, 220)}px`;
 }
 
-function syncProjectName(value) {
+function syncProjectName(value, subdir = '') {
   const name = (value || '').trim();
   selectedProjectName = name;
+  selectedSubdir = (subdir || '').trim();
   localStorage.setItem('slurmAgentProjectName', name);
+  localStorage.setItem('slurmAgentSubdir', selectedSubdir);
   if (sessionSubtitle) {
-    sessionSubtitle.textContent = name ? `当前会话：${name}` : '选择左侧作业目录开始会话';
+    sessionSubtitle.textContent = name
+      ? (selectedSubdir ? `当前会话：${name}/${selectedSubdir}` : `当前会话：${name}`)
+      : '选择左侧作业目录开始会话';
   }
   renderProjects(projectsCache);
 }
 
-syncProjectName(localStorage.getItem('slurmAgentProjectName') || '');
+syncProjectName(localStorage.getItem('slurmAgentProjectName') || '', localStorage.getItem('slurmAgentSubdir') || '');
 
 function escapeHtml(value) {
   const div = document.createElement('div');
@@ -2034,6 +2657,8 @@ function applySidebarState() {
   workspace.classList.toggle('right-collapsed', rightCollapsed);
   workspace.classList.toggle('left-open', !leftCollapsed);
   workspace.classList.toggle('right-open', !rightCollapsed);
+  // 上次停留在文档模式则恢复（在折叠状态应用之后，保证右栏原状态被正确记录）
+  if (localStorage.getItem('slurmDocsMode') === 'true') toggleDocsMode(true);
 }
 
 function toggleLeftSidebar(collapsed) {
@@ -2043,9 +2668,125 @@ function toggleLeftSidebar(collapsed) {
 }
 
 function toggleRightSidebar(collapsed) {
+  // 文档模式下资源栏固定为轨道；要展开先退出文档模式
+  if (docsMode && !collapsed) {
+    toggleDocsMode(false);
+    return;
+  }
   localStorage.setItem('slurmRightCollapsed', String(collapsed));
   workspace.classList.toggle('right-collapsed', collapsed);
   workspace.classList.toggle('right-open', !collapsed);
+}
+
+// ---------------------------------------------------------------------------
+// 帮助文档模式：顶栏「帮助文档」进入，左栏变文档树，中间滑入阅读器，智能体收窄靠右
+// ---------------------------------------------------------------------------
+let docsMode = false;
+let docsTreeData = null;
+let docsExpandedDirs = null;
+let activeDocsPath = '';
+let docsRightWasCollapsed = null;
+
+function toggleDocsMode(force) {
+  const target = typeof force === 'boolean' ? force : !docsMode;
+  if (target === docsMode) return;
+  docsMode = target;
+  workspace.classList.toggle('docs-open', docsMode);
+  document.body.classList.toggle('docs-mode', docsMode);
+  const reader = document.getElementById('docsReader');
+  if (reader) reader.setAttribute('aria-hidden', String(!docsMode));
+  if (docsMode) {
+    // 进入时收起资源栏，退出时恢复原状态
+    docsRightWasCollapsed = workspace.classList.contains('right-collapsed');
+    if (!docsRightWasCollapsed) {
+      workspace.classList.add('right-collapsed');
+      workspace.classList.remove('right-open');
+    }
+    if (!docsTreeData) {
+      loadDocsTree().then(() => renderDocsTree());
+    } else {
+      renderDocsTree();
+    }
+    if (!activeDocsPath) openDocsFile('overview/index.md');
+  } else if (docsRightWasCollapsed === false) {
+    workspace.classList.remove('right-collapsed');
+    workspace.classList.add('right-open');
+  }
+  localStorage.setItem('slurmDocsMode', String(docsMode));
+}
+
+async function loadDocsTree() {
+  try {
+    const res = await fetch('/api/docs/tree');
+    const data = await res.json();
+    if (data.status === 'ok') {
+      docsTreeData = data.tree || [];
+      if (!docsExpandedDirs) {
+        docsExpandedDirs = new Set(docsTreeData.filter(n => n.type === 'dir').map(n => n.name));
+      }
+    }
+  } catch (e) {
+    addNotice('加载文档目录失败：' + e.message, 'error');
+  }
+}
+
+function docsTreeHtml(nodes, depth) {
+  return nodes.map(node => {
+    if (node.type === 'dir') {
+      const open = docsExpandedDirs.has(node.name);
+      const kids = open ? `<div class="docs-dir-children">${docsTreeHtml(node.children || [], depth + 1)}</div>` : '';
+      return `<div class="docs-node cascade" style="--i:${depth}">
+        <button class="docs-dir-label${open ? ' open' : ''}" onclick="toggleDocsDir('${escapeHtml(node.name)}')">
+          <span class="caret">▶</span>${escapeHtml(node.name)}
+        </button>${kids}
+      </div>`;
+    }
+    return `<button class="docs-file-item cascade${node.path === activeDocsPath ? ' active' : ''}"
+      style="--i:${depth + 1}" onclick="openDocsFile('${escapeHtml(node.path)}')" title="${escapeHtml(node.title)}">
+      ${escapeHtml(node.title)}
+    </button>`;
+  }).join('');
+}
+
+function renderDocsTree() {
+  const tree = document.getElementById('docsTree');
+  if (!tree || !docsTreeData) return;
+  tree.innerHTML = docsTreeData.length
+    ? docsTreeHtml(docsTreeData, 0)
+    : '<div class="empty">文档目录为空</div>';
+}
+
+function toggleDocsDir(name) {
+  if (docsExpandedDirs.has(name)) docsExpandedDirs.delete(name);
+  else docsExpandedDirs.add(name);
+  renderDocsTree();
+}
+
+async function openDocsFile(path) {
+  activeDocsPath = path;
+  renderDocsTree();
+  try {
+    const res = await fetch('/api/docs/content?path=' + encodeURIComponent(path));
+    const data = await res.json();
+    if (data.status !== 'ok') throw new Error(data.error || '读取失败');
+    const content = document.getElementById('docsContent');
+    const crumb = document.getElementById('docsBreadcrumb');
+    if (content) content.innerHTML = renderMarkdown(data.content);
+    if (crumb) crumb.textContent = data.title;
+    if (content) content.scrollTop = 0;
+  } catch (e) {
+    addNotice('打开文档失败：' + e.message, 'error');
+  }
+}
+
+// 行内编辑状态：{projectIndex, subIndex, mode: 'create'|'rename'}，null 表示无编辑
+let subdirEditing = null;
+
+function subdirEditRowHtml(value, placeholder) {
+  return `<div class="project-item project-sub-item subdir-editing">
+    <input class="subdir-edit-input" type="text" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"
+      onkeydown="onSubdirEditKey(event)" onblur="onSubdirEditBlur()">
+  </div>`;
 }
 
 function renderProjects(projects) {
@@ -2054,14 +2795,449 @@ function renderProjects(projects) {
     projectsList.innerHTML = '<div class="empty">暂无作业目录</div>';
     return;
   }
-  projectsList.innerHTML = projects.map(project => {
+  // 当前选中的项目若有小文件夹则默认展开
+  if (selectedProjectName) {
+    const current = projects.find(p => p.name === selectedProjectName);
+    if (current && (current.subdirs || []).length) expandedProjects.add(selectedProjectName);
+  }
+  projectsList.innerHTML = projects.map((project, projectIndex) => {
     const active = project.name === selectedProjectName ? ' active' : '';
     const meta = project.has_chat ? '有会话记录' : (project.has_notes ? '有需求记录' : '未开始会话');
-    return `<button class="project-item${active}" onclick="selectProject('${escapeHtml(project.name)}')" title="${escapeHtml(project.path)}">
+    const subdirs = project.subdirs || [];
+    const editing = subdirEditing && subdirEditing.projectIndex === projectIndex ? subdirEditing : null;
+    let html = `<button class="project-item${active}" onclick="selectProjectByIndex(${projectIndex})" title="${escapeHtml(project.path)}"
+      ondragover="onSubdirRowDragOver(event, ${projectIndex}, -1)" ondragleave="onSubdirRowDragLeave(event)" ondrop="onSubdirRowDrop(event, ${projectIndex}, -1)">
       <span class="project-name">${escapeHtml(project.name)}</span>
       <span class="project-meta">${escapeHtml(meta)}</span>
+      <span class="subdir-ops">
+        <span class="subdir-op" title="新建小文件夹" onclick="event.stopPropagation(); startSubdirCreate(${projectIndex})">＋</span>
+      </span>
     </button>`;
+    const creatingHere = editing && editing.mode === 'create';
+    if ((subdirs.length || creatingHere) && expandedProjects.has(project.name)) {
+      // 新建行置顶，其余小文件夹按修改时间倒序（后端已排序）
+      if (creatingHere) {
+        html += subdirEditRowHtml('', '输入名称，回车创建');
+      }
+      html += subdirs.map((sub, subIndex) => {
+        if (editing && editing.mode === 'rename' && editing.subIndex === subIndex) {
+          return subdirEditRowHtml(sub, '新名称，回车确认');
+        }
+        const subActive = project.name === selectedProjectName && sub === selectedSubdir ? ' active' : '';
+        return `<button class="project-item project-sub-item${subActive}" onclick="selectProjectByIndex(${projectIndex}, ${subIndex})" title="${escapeHtml(project.path + '/' + sub + '（可拖拽文件/文件夹上传到此目录）')}"
+          ondragover="onSubdirRowDragOver(event, ${projectIndex}, ${subIndex})" ondragleave="onSubdirRowDragLeave(event)" ondrop="onSubdirRowDrop(event, ${projectIndex}, ${subIndex})">
+          <span class="project-name">📁 ${escapeHtml(sub)}</span>
+          <span class="subdir-ops">
+            <span class="subdir-op" title="重命名" onclick="event.stopPropagation(); startSubdirRename(${projectIndex}, ${subIndex})">✎</span>
+            <span class="subdir-op danger" title="删除" onclick="event.stopPropagation(); deleteSubdir(${projectIndex}, ${subIndex})">✕</span>
+          </span>
+        </button>`;
+      }).join('');
+    }
+    return html;
   }).join('');
+  // 编辑态渲染后聚焦输入框（重命名时全选便于直接覆盖输入）
+  if (subdirEditing) {
+    const input = projectsList.querySelector('.subdir-edit-input');
+    if (input) {
+      input.focus();
+      if (subdirEditing.mode === 'rename') input.select();
+    }
+  }
+}
+
+function selectProjectByIndex(projectIndex, subIndex = -1) {
+  const project = projectsCache[projectIndex];
+  if (!project) return;
+  const subdir = subIndex >= 0 ? ((project.subdirs || [])[subIndex] || '') : '';
+  selectProject(project.name, subdir);
+}
+
+// ---------------------------------------------------------------------------
+// 小文件夹编辑（新建/重命名/删除）与拖拽上传
+// ---------------------------------------------------------------------------
+let subdirModalAction = null;
+
+function openSubdirModal({ title, value = '', placeholder = '', confirmText = '确定', onConfirm }) {
+  document.getElementById('subdirModalTitle').textContent = title;
+  const input = document.getElementById('subdirNameInput');
+  input.value = value;
+  input.placeholder = placeholder || '';
+  document.getElementById('subdirModalConfirm').textContent = confirmText;
+  subdirModalAction = onConfirm;
+  document.getElementById('subdirModal').classList.add('open');
+  window.setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+
+function closeSubdirModal(event) {
+  if (event && event.target !== document.getElementById('subdirModal')) return;
+  document.getElementById('subdirModal').classList.remove('open');
+  subdirModalAction = null;
+}
+
+async function confirmSubdirModal() {
+  const action = subdirModalAction;
+  const value = document.getElementById('subdirNameInput').value.trim();
+  closeSubdirModal();
+  if (action) await action(value);
+}
+
+function startSubdirCreate(projectIndex) {
+  // 行内新建：项目下最顶部出现输入框，回车创建（新建后按修改时间倒序自然置顶）
+  const project = projectsCache[projectIndex];
+  if (!project) return;
+  expandedProjects.add(project.name);
+  subdirEditing = { projectIndex, subIndex: -1, mode: 'create' };
+  renderProjects(projectsCache);
+}
+
+function startSubdirRename(projectIndex, subIndex) {
+  // 行内重命名：把该行名称换成输入框（原名全选），回车/失焦确认，Esc 取消
+  const project = projectsCache[projectIndex];
+  if (!project || !(project.subdirs || [])[subIndex]) return;
+  subdirEditing = { projectIndex, subIndex, mode: 'rename' };
+  renderProjects(projectsCache);
+}
+
+function onSubdirEditKey(event) {
+  event.stopPropagation();
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    confirmSubdirEdit();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    cancelSubdirEdit();
+  }
+}
+
+function onSubdirEditBlur() {
+  // 点击输入框以外的地方 = 确认（Enter/Esc 已先行处理并清空 subdirEditing）
+  if (subdirEditing) confirmSubdirEdit();
+}
+
+function cancelSubdirEdit() {
+  subdirEditing = null;
+  renderProjects(projectsCache);
+}
+
+async function confirmSubdirEdit() {
+  const editing = subdirEditing;
+  if (!editing) return;
+  const input = projectsList.querySelector('.subdir-edit-input');
+  const value = input ? input.value.trim() : '';
+  // 先清空编辑状态，避免失焦二次触发
+  subdirEditing = null;
+  const project = projectsCache[editing.projectIndex];
+  if (!project) { renderProjects(projectsCache); return; }
+  if (!value) { renderProjects(projectsCache); return; } // 空名 = 取消
+  try {
+    if (editing.mode === 'create') {
+      const resp = await fetch('/api/projects/subdirs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_name: project.name, name: value }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || '新建失败');
+      expandedProjects.add(project.name);
+      await loadProjects(false);
+      addNotice(`小文件夹已创建：${project.name}/${data.subdir}，可拖拽文件/文件夹上传到其中`);
+    } else {
+      const subdir = (project.subdirs || [])[editing.subIndex] || '';
+      if (!subdir) { renderProjects(projectsCache); return; }
+      const resp = await fetch('/api/projects/subdirs/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_name: project.name, subdir, new_name: value }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || '重命名失败');
+      if (project.name === selectedProjectName && selectedSubdir === subdir) {
+        syncProjectName(project.name, data.subdir);
+      }
+      await loadProjects(false);
+      addNotice(`小文件夹已重命名：${subdir} → ${data.subdir}`);
+    }
+  } catch (e) {
+    renderProjects(projectsCache);
+    addNotice((editing.mode === 'create' ? '新建' : '重命名') + '小文件夹失败: ' + e.message, 'error');
+  }
+}
+
+async function deleteSubdir(projectIndex, subIndex) {
+  const project = projectsCache[projectIndex];
+  const subdir = project && (project.subdirs || [])[subIndex];
+  if (!project || !subdir) return;
+  if (!window.confirm(`确定删除小文件夹 "${subdir}"？\n其中所有文件与会话记录将被移除，不可恢复。`)) return;
+  try {
+    const resp = await fetch('/api/projects/subdirs/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_name: project.name, subdir }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '删除失败');
+    if (project.name === selectedProjectName && selectedSubdir === subdir) {
+      await selectProject(project.name, '');
+    } else {
+      await loadProjects(false);
+    }
+    addNotice(`小文件夹已删除：${project.name}/${subdir}`);
+  } catch (e) {
+    addNotice('删除小文件夹失败: ' + e.message, 'error');
+  }
+}
+
+let subDirDragOverEl = null;
+
+function onSubdirRowDragOver(event, projectIndex, subIndex) {
+  if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('Files')) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const el = event.currentTarget;
+  if (subDirDragOverEl && subDirDragOverEl !== el) subDirDragOverEl.classList.remove('drag-over');
+  subDirDragOverEl = el;
+  el.classList.add('drag-over');
+}
+
+function onSubdirRowDragLeave(event) {
+  const el = event.currentTarget;
+  el.classList.remove('drag-over');
+  if (subDirDragOverEl === el) subDirDragOverEl = null;
+}
+
+async function onSubdirRowDrop(event, projectIndex, subIndex) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.currentTarget.classList.remove('drag-over');
+  subDirDragOverEl = null;
+  const project = projectsCache[projectIndex];
+  if (!project || isUploading) return;
+  const subdir = subIndex >= 0 ? ((project.subdirs || [])[subIndex] || '') : '';
+  await handleDropUpload(event.dataTransfer, project.name, subdir);
+}
+
+function readEntryDirectory(reader) {
+  // readEntries 每次最多返 100 条，需循环读空
+  return new Promise(resolve => {
+    const all = [];
+    const readBatch = () => reader.readEntries(batch => {
+      if (!batch.length) return resolve(all);
+      all.push(...batch);
+      readBatch();
+    }, () => resolve(all));
+    readBatch();
+  });
+}
+
+async function collectEntryFiles(entry, prefix, out) {
+  if (!entry) return;
+  if (entry.isFile) {
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    out.push({ file, path: prefix + entry.name });
+  } else if (entry.isDirectory) {
+    const children = await readEntryDirectory(entry.createReader());
+    for (const child of children) await collectEntryFiles(child, prefix + entry.name + '/', out);
+  }
+}
+
+async function handleDropUpload(dataTransfer, projectName, subdir) {
+  if (isUploading) return;
+  // DataTransferItem 在事件处理器返回后失效，必须先同步取出 entries
+  const entries = Array.from(dataTransfer.items || [])
+    .map(item => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
+    .filter(Boolean);
+  if (!entries.length) return;
+  const collected = [];
+  for (const entry of entries) await collectEntryFiles(entry, '', collected);
+  if (!collected.length) {
+    addNotice('拖入的内容没有可上传的文件', 'error');
+    return;
+  }
+  await uploadCollectedFiles(projectName, subdir, collected);
+}
+
+async function uploadCollectedFiles(projectName, subdir, collected) {
+  const formData = new FormData();
+  formData.append('project_name', projectName);
+  if (subdir) formData.append('subdir', subdir);
+  for (const item of collected) formData.append('files', item.file, item.path);
+  isUploading = true;
+  addNotice(`正在上传 ${collected.length} 个文件到 ${projectName}${subdir ? '/' + subdir : ''} ...`);
+  try {
+    const resp = await fetch('/api/files/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) {
+      addNotice(data.error || '文件上传失败', 'error');
+      return;
+    }
+    if (projectsCache.some(p => p.name === projectName)) expandedProjects.add(projectName);
+    await loadProjects(false);
+    addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.total_bytes)} → ${data.remote_project_dir}`);
+    addChatMessage(`### 文件上传完成
+
+- 文件数：${data.file_count}
+- 总大小：${formatBytes(data.total_bytes)}
+- 目标目录：\`${data.remote_project_dir}\`
+
+同名文件已覆盖，原有其他文件保留。`, 'ai', true);
+  } catch (e) {
+    addNotice('文件上传失败: ' + e.message, 'error');
+  } finally {
+    isUploading = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 作业脚本模板：提交弹窗里拼好的完整 .sh 脚本保存/加载/删除
+// ---------------------------------------------------------------------------
+let jobTemplatesCache = [];
+
+function openSaveJobTemplate() {
+  // 默认模板名取当前作业名，空则回退到时间戳
+  const jobName = (document.getElementById('submitJobName').value || '').trim();
+  openSubdirModal({
+    title: '保存为作业模板',
+    value: jobName,
+    placeholder: '模板名称（如 gromacs-md）',
+    confirmText: '保存',
+      onConfirm: async (name) => {
+      if (!name) { addNotice('模板名称不能为空', 'error'); return; }
+      const content = assembleSubmitScript();
+      if (!submitScriptInput.value.trim() && !window.confirm('作业命令还是空的，仍要保存模板？')) return;
+      try {
+        const resp = await fetch('/api/job-templates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, content }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || '保存失败');
+        addNotice(`作业模板已保存${data.overwritten ? '（覆盖旧版）' : ''}：${name} → ${data.path}`);
+      } catch (e) {
+        addNotice('保存模板失败: ' + e.message, 'error');
+      }
+    },
+  });
+}
+
+async function openLoadJobTemplate() {
+  try {
+    const resp = await fetch('/api/job-templates');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '获取失败');
+    jobTemplatesCache = data.templates || [];
+    renderJobTemplateList(jobTemplatesCache);
+    document.getElementById('templateListModal').classList.add('open');
+  } catch (e) {
+    addNotice('获取作业模板失败: ' + e.message, 'error');
+  }
+}
+
+function closeTemplateListModal(event) {
+  if (event && event.target !== document.getElementById('templateListModal')) return;
+  document.getElementById('templateListModal').classList.remove('open');
+}
+
+function renderJobTemplateList(templates) {
+  const box = document.getElementById('templateListBox');
+  if (!templates.length) {
+    box.innerHTML = '<div class="template-empty">还没有保存过模板。配置好作业参数与命令后，点「保存为模板」即可复用。</div>';
+    return;
+  }
+  box.innerHTML = templates.map((t, i) => `
+    <div class="template-row">
+      <div class="template-main" onclick="applyJobTemplate(${i})" title="点击加载到提交弹窗">
+        <div class="template-name">${escapeHtml(t.name)}</div>
+        <div class="template-meta">${escapeHtml(formatDateTime((t.mtime || 0) * 1000))} · ${formatBytes(t.size || 0)}</div>
+      </div>
+      <span class="subdir-op danger" title="删除模板" onclick="deleteJobTemplate(${i})">✕</span>
+    </div>`).join('');
+}
+
+function isPreludeLine(line) {
+  // 锁定前导的特征行：cd / source conda.sh / conda activate，加载时跳过（以当前骨架为准重新生成）
+  const t = line.trim();
+  return /^cd\s/.test(t) || /^source\s+\S*conda\.sh/.test(t) || /^conda\s+activate/.test(t);
+}
+
+function parseSbatchScript(content) {
+  // 解析完整 .sh：#SBATCH 参数 → 表单；跳过前导；剩余为作业命令正文
+  const form = {};
+  const lines = content.split('\n');
+  let i = 0;
+  for (; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t.startsWith('#!')) continue;
+    const m = t.match(/^#SBATCH\s+--([\w-]+)(?:=(.*))?/);
+    if (m) { form[m[1]] = (m[2] || '').trim(); continue; }
+    if (t === '') continue;
+    break;
+  }
+  // 跳过锁定前导（cd / source / conda activate）与空行
+  while (i < lines.length) {
+    const t = lines[i].trim();
+    if (t === '' || isPreludeLine(t)) { i++; continue; }
+    break;
+  }
+  const body = lines.slice(i).join('\n').replace(/^\n+/, '');
+  return { form, body };
+}
+
+function applyJobTemplate(index) {
+  const template = jobTemplatesCache[index];
+  if (!template) return;
+  const { form, body } = parseSbatchScript(template.content || '');
+  const setIfOption = (selectId, value) => {
+    const sel = document.getElementById(selectId);
+    if (!sel || !value) return;
+    if (Array.from(sel.options).some(o => o.value === value)) sel.value = value;
+  };
+  if (form['job-name']) document.getElementById('submitJobName').value = form['job-name'];
+  setIfOption('submitAccount', form.account);
+  setIfOption('submitPartition', form.partition);
+  setIfOption('submitQos', form.qos);
+  if (form.nodes) document.getElementById('submitNodes').value = form.nodes;
+  if (form['cpus-per-task']) document.getElementById('submitCpus').value = form['cpus-per-task'];
+  const gres = (form.gres || '').match(/gpu:(\d+)/);
+  if (gres) document.getElementById('submitGpus').value = gres[1];
+  if (form.time) {
+    // --time 为分钟数（buildSbatchHeader 生成格式），兼容 HH:MM:SS
+    let minutes = 0;
+    if (/^\d+$/.test(form.time)) minutes = parseInt(form.time, 10);
+    else {
+      const parts = form.time.split(':').map(Number);
+      if (parts.length >= 2 && parts.every(n => !isNaN(n))) {
+        minutes = parts[0] * 60 + parts[1] + Math.round((parts[2] || 0) / 60);
+      }
+    }
+    if (minutes > 0) document.getElementById('submitHours').value = Math.max(0.25, Math.round(minutes / 15) / 4);
+  }
+  submitScriptInput.value = body;
+  renderSubmitLockedPreviews();
+  onSubmitFieldChange();
+  closeTemplateListModal();
+  addNotice(`已加载模板「${template.name}」：作业参数与命令已恢复，锁定前导按当前运行目录重新生成`);
+}
+
+async function deleteJobTemplate(index) {
+  const template = jobTemplatesCache[index];
+  if (!template) return;
+  if (!window.confirm(`确定删除模板 "${template.name}"？`)) return;
+  try {
+    const resp = await fetch('/api/job-templates/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: template.name }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '删除失败');
+    jobTemplatesCache.splice(index, 1);
+    renderJobTemplateList(jobTemplatesCache);
+    addNotice(`模板已删除：${template.name}`);
+  } catch (e) {
+    addNotice('删除模板失败: ' + e.message, 'error');
+  }
 }
 
 async function loadProjects(selectStored = true) {
@@ -2072,16 +3248,17 @@ async function loadProjects(selectStored = true) {
     projectsCache = data.projects || [];
     renderProjects(projectsCache);
     const stored = localStorage.getItem('slurmAgentProjectName') || '';
+    const storedSubdir = localStorage.getItem('slurmAgentSubdir') || '';
     if (selectStored && stored && projectsCache.some(project => project.name === stored)) {
-      await selectProject(stored);
+      await selectProject(stored, storedSubdir);
     }
   } catch (e) {
     projectsList.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
   }
 }
 
-async function selectProject(name) {
-  syncProjectName(name);
+async function selectProject(name, subdir = '') {
+  syncProjectName(name, subdir);
   lastProjectReport = '';
   lastProjectDir = '';
   dependencyItems = [];
@@ -2093,13 +3270,15 @@ async function selectProject(name) {
   lastCondaEnvDir = '';
   activeToolCards.clear();
   try {
-    const resp = await fetch(`/api/projects/chat?project_name=${encodeURIComponent(name)}`);
+    const resp = await fetch(`/api/projects/chat?project_name=${encodeURIComponent(name)}&subdir=${encodeURIComponent(subdir || '')}`);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || '读取会话失败');
     messagesEl.innerHTML = '';
     const history = data.messages || [];
     if (!history.length) {
-      addChatMessage(`已打开作业目录：${name}\n可以继续上传文件、检查依赖，或直接询问我这个作业的提交方式。`, 'ai');
+      addChatMessage(subdir
+        ? `已打开数据集目录：${name}/${subdir}\nConda 环境与依赖检查为整个项目共享，可继续上传文件、直接布置作业，或询问我这个数据集的提交方式。`
+        : `已打开作业目录：${name}\n可以继续上传文件、检查依赖，或直接询问我这个作业的提交方式。`, 'ai');
     } else {
       for (const item of history) {
         addChatMessage(item.content, item.role === 'user' ? 'user' : 'ai');
@@ -2118,21 +3297,11 @@ async function persistDisplayMessage(role, content) {
     await fetch('/api/projects/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_name: projectName, role, content }),
+      body: JSON.stringify({ project_name: projectName, role, content, subdir: selectedSubdir }),
     });
   } catch (e) {
     console.warn('保存会话消息失败', e);
   }
-}
-
-function shortModelName(model) {
-  const text = String(model || '');
-  return text
-    .replace(/^deepseek[-_]?/i, '')
-    .replace(/^glm[-_]?/i, 'glm ')
-    .replace(/[-_]+/g, ' ')
-    .replace(/\bchat\b/i, '')
-    .trim() || text || 'model';
 }
 
 function renderModelOptions(config) {
@@ -2145,10 +3314,10 @@ function renderModelOptions(config) {
     modelOptions.innerHTML = '<div class="empty">无 DeepSeek/GLM 模型</div>';
     return;
   }
-  modelPill.textContent = shortModelName(currentModel);
+  modelPill.textContent = currentModel;
   modelOptions.innerHTML = models.map(model => {
     const active = model === currentModel ? ' active' : '';
-    return `<button class="model-option${active}" onclick="selectModel('${escapeHtml(model)}')" title="${escapeHtml(model)}">${escapeHtml(shortModelName(model))}</button>`;
+    return `<button class="model-option${active}" onclick="selectModel('${escapeHtml(model)}')" title="${escapeHtml(model)}">${escapeHtml(model)}</button>`;
   }).join('');
 }
 
@@ -2281,12 +3450,80 @@ function summarizeStates(states) {
   return entries.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(' / ');
 }
 
-function summarizeMyJobs(jobs, states) {
-  if (!jobs.length) return '我的作业：暂无正在排队或运行的记录';
-  const stateText = summarizeStates(states);
-  const examples = jobs.slice(0, 3).map(job => `#${job.id} ${shortJobName(job.name)} ${job.state}`).join('；');
-  const extra = jobs.length > 3 ? `；另有 ${jobs.length - 3} 个` : '';
-  return `我的作业：${stateText} · ${examples}${extra}`;
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (!total) return '-';
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (days) return `${days}天${hours}时`;
+  if (hours) return `${hours}时${minutes}分`;
+  if (minutes) return `${minutes}分`;
+  return `${total}秒`;
+}
+
+// 在线作业时长：RUNNING 显示已运行时长，PENDING 显示已排队时长
+function jobDurationText(job) {
+  if (Number(job.run_seconds) > 0) return `运行 ${formatDuration(job.run_seconds)}`;
+  if (Number(job.queue_seconds) > 0) return `排队 ${formatDuration(job.queue_seconds)}`;
+  return '-';
+}
+
+function formatDateTime(ts) {
+  const value = Number(ts);
+  if (!value) return '-';
+  const d = new Date(value * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function toggleHistoryOverlay(open) {
+  const overlay = document.getElementById('historyOverlay');
+  if (!overlay) return;
+  if (open) {
+    overlay.classList.add('open');
+    await loadHistoryJobs();
+  } else {
+    overlay.classList.remove('open');
+  }
+}
+
+async function loadHistoryJobs() {
+  const summary = document.getElementById('historySummary');
+  const tbody = document.getElementById('historyTable');
+  if (!summary || !tbody) return;
+  summary.textContent = '加载中…';
+  tbody.innerHTML = '<tr><td colspan="6" class="empty">正在加载历史作业</td></tr>';
+  try {
+    const resp = await fetch('/api/jobs/history');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '查询历史作业失败');
+    const jobs = data.jobs || [];
+    const states = {};
+    for (const job of jobs) {
+      const s = String(job.state || 'UNKNOWN').split(',', 1)[0].toUpperCase();
+      states[s] = (states[s] || 0) + 1;
+    }
+    const stateText = Object.entries(states).slice(0, 4).map(([k, v]) => `${k} ${v}`).join(' / ');
+    summary.textContent = `最近 ${data.days || 30} 天 ${data.count || jobs.length} 个 · ${stateText || '无记录'}`;
+    if (!jobs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无历史作业</td></tr>';
+      return;
+    }
+    tbody.innerHTML = jobs.map(job => `
+      <tr>
+        <td>${escapeHtml(job.id)}</td>
+        <td><div class="truncate" title="${escapeHtml(job.name)}" onclick="event.stopPropagation(); this.classList.toggle('expanded'); this.textContent = this.classList.contains('expanded') ? this.title : shortJobName(this.title)">${escapeHtml(shortJobName(job.name))}</div></td>
+        <td><span class="pill ${stateClass(job.state)}">${escapeHtml(job.state)}</span></td>
+        <td>${escapeHtml(job.partition)}</td>
+        <td>${escapeHtml(formatDateTime(job.submit_time))}</td>
+        <td>${escapeHtml(formatDuration(job.elapsed_seconds))}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    summary.textContent = '加载失败';
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">${escapeHtml(e.message)}</td></tr>`;
+  }
 }
 
 function formatUpdateTime(value) {
@@ -2389,7 +3626,7 @@ function renderNodeGroups(nodes) {
 }
 
 function renderJobGroups(jobs) {
-  if (!jobs.length) return '<tr><td colspan="5" class="empty">暂无作业数据</td></tr>';
+  if (!jobs.length) return '<tr><td colspan="6" class="empty">暂无作业数据</td></tr>';
   const currentUser = (window.lastDashboardData?.summary?.current_user || '').toString();
   const groups = groupBy(jobs, job => job.user).sort((a, b) => {
     if (String(a[0]) === currentUser) return -1;
@@ -2411,7 +3648,7 @@ function renderJobGroups(jobs) {
     const summaryRow = `
       <tr class="group-row" onclick="toggleJobGroup('${key}')">
         <td class="group-title"><span class="group-caret">${expanded ? '▼' : '▶'}</span>${escapeHtml(userLabel)}</td>
-        <td colspan="2">${group.length} 个作业</td>
+        <td colspan="3">${group.length} 个作业</td>
         <td colspan="2">${escapeHtml(summarizeStates(states))}</td>
       </tr>
     `;
@@ -2422,6 +3659,7 @@ function renderJobGroups(jobs) {
         <td><div class="truncate" title="${escapeHtml(job.name)}" onclick="event.stopPropagation(); this.classList.toggle('expanded'); this.textContent = this.classList.contains('expanded') ? this.title : shortJobName(this.title)">${escapeHtml(shortJobName(job.name))}</div></td>
         <td><span class="pill ${stateClass(job.state)}">${escapeHtml(job.state)}</span></td>
         <td>${escapeHtml(job.partition)}</td>
+        <td>${escapeHtml(jobDurationText(job))}</td>
       </tr>
     `).join('') : '';
     return summaryRow + detailRows;
@@ -2457,8 +3695,6 @@ function renderDashboard(data) {
     `${summary.node_count || 0} 台节点 · CPU ${formatUsage(summary.alloc_cpus || 0, summary.total_cpus || 0)} · GPU ${gpuUsageText}`;
   document.getElementById('jobsSummary').textContent =
     `全部 ${summary.job_count || 0} 个作业 · 我的 ${summary.my_job_count || 0} 个`;
-  document.getElementById('myJobsDetail').textContent =
-    summarizeMyJobs(data.my_jobs || [], summary.my_job_states || {});
   setUpdateStamps(updatedText, '手动更新', '手动更新');
 
   document.getElementById('nodesTable').innerHTML = renderNodeGroups(nodes);
@@ -2584,7 +3820,40 @@ async function refreshSlurmApi(notify = true) {
   }
 }
 
+function setUploadSplit(split) {
+  const fab = document.getElementById('uploadFab');
+  const main = document.getElementById('uploadMainBtn');
+  if (!fab) return;
+  fab.classList.toggle('split', split);
+  if (main) {
+    // 展开后原位变文件夹按钮，左侧滑出文件按钮
+    main.textContent = split ? '▣' : '↑';
+    main.title = split ? '上传文件夹' : '上传文件或文件夹';
+    main.onclick = split
+      ? function () { closeUploadSplit(); chooseUploadFolder(); }
+      : toggleUploadSplit;
+  }
+}
+
+function toggleUploadSplit() {
+  const fab = document.getElementById('uploadFab');
+  if (fab) setUploadSplit(!fab.classList.contains('split'));
+}
+
+function closeUploadSplit() {
+  setUploadSplit(false);
+}
+
+// 点击其他地方：分裂的上传按钮合并
+document.addEventListener('click', (e) => {
+  const fab = document.getElementById('uploadFab');
+  if (fab && fab.classList.contains('split') && !fab.contains(e.target)) {
+    closeUploadSplit();
+  }
+});
+
 function chooseUploadFiles() {
+  closeUploadSplit();
   if (isUploading) return;
   if (!currentProjectName()) {
     addNotice('请先输入作业目录名称', 'error');
@@ -2596,6 +3865,7 @@ function chooseUploadFiles() {
 }
 
 function chooseUploadFolder() {
+  closeUploadSplit();
   if (isUploading) return;
   if (!currentProjectName()) {
     addNotice('请先输入作业目录名称', 'error');
@@ -2629,6 +3899,20 @@ function renderDependencyFileChips() {
   `).join('');
 }
 
+// 对话附件：仅允许文本类文件，拒绝二进制
+const BINARY_FILE_EXT = /\.(zip|gz|tgz|tar|rar|7z|bz2|xz|exe|dll|so|dylib|bin|dat|png|jpe?g|gif|bmp|webp|ico|svgz|pdf|doc|docx|xls|xlsx|ppt|pptx|mp3|mp4|avi|mov|mkv|wav|flac|pyc|o|obj|a|lib|class|jar|war|whl|egg|npz|npy|h5|hdf5|pth|ckpt|safetensors|gguf|onnx|bin|pack|idx|arrow|parquet)$/i;
+
+function isBinaryFile(file) {
+  if (BINARY_FILE_EXT.test(file.name)) return true;
+  if (file.size > 2 * 1024 * 1024) return true; // 超过 2MB 视为不适合直接对话
+  const type = file.type || '';
+  if (type && !type.startsWith('text/') &&
+      !/(json|xml|yaml|yml|javascript|ecmascript|python|x-python|x-sh|shell|csv|markdown|sql|toml|ini|html)/i.test(type)) {
+    return true;
+  }
+  return false;
+}
+
 function chooseDependencyFiles() {
   if (isProcessing || isUploading) return;
   dependencyFileInput.value = '';
@@ -2639,12 +3923,20 @@ function handleDependencyFiles(input) {
   const selected = Array.from(input.files || []);
   if (!selected.length) return;
   const seen = new Set(pendingDependencyFiles.map(file => `${file.name}:${file.size}:${file.lastModified}`));
+  const rejected = [];
   for (const file of selected) {
+    if (isBinaryFile(file)) {
+      rejected.push(file.name);
+      continue;
+    }
     const key = `${file.name}:${file.size}:${file.lastModified}`;
     if (!seen.has(key)) {
       pendingDependencyFiles.push(file);
       seen.add(key);
     }
+  }
+  if (rejected.length) {
+    addNotice(`已忽略二进制/大文件（仅支持文本类文件）: ${rejected.join('、')}`, 'error');
   }
   renderDependencyFileChips();
   input.value = '';
@@ -2733,19 +4025,7 @@ function renderDependencyReview() {
   renderDependencyReviewHead();
   if (!dependencyItems.length) {
     dependencyReviewBody.innerHTML = '<tr><td colspan="8" class="empty">没有识别到依赖项，请补充依赖清单或算力要求后重试。</td></tr>';
-    dependencySummary.textContent = '未识别到可安装依赖';
     return;
-  }
-  const selectedCount = dependencyItems.filter(item => item.selected).length;
-  const trustedCount = dependencyItems.filter(item => item.source_kind === 'trusted').length;
-  if (dependencyReviewMode === 'installing') {
-    dependencySummary.textContent = `正在安装并查验 ${selectedDependencyItems.length} 个已选择依赖，请保持窗口打开。`;
-  } else if (dependencyReviewMode === 'installed') {
-    const doneCount = dependencyItems.filter(item => item.install_status === 'done').length;
-    const failedCount = dependencyItems.filter(item => item.install_status === 'failed').length;
-    dependencySummary.textContent = `安装与查验完成：${doneCount} 个完成，${failedCount} 个需要处理。`;
-  } else {
-    dependencySummary.textContent = `${dependencyItems.length} 个依赖项，${selectedCount} 个已勾选；来自可信依赖文件或脚本的 ${trustedCount} 项已默认勾选，推断项需手动确认。`;
   }
   dependencyReviewBody.innerHTML = dependencyItems.map((item, index) => {
     const statusClass = (item.precheck_status === 'ok' || item.precheck_status === 'installed') ? 'status-ok' : (item.precheck_status === 'missing' ? 'status-missing' : 'status-unknown');
@@ -2775,11 +4055,11 @@ function openDependencyModal() {
   dependencyReviewMode = 'review';
   if (dependencyCancelBtn) {
     dependencyCancelBtn.disabled = false;
-    dependencyCancelBtn.textContent = '稍后处理';
+    dependencyCancelBtn.textContent = '取消';
   }
   if (dependencyConfirmBtn) {
     dependencyConfirmBtn.disabled = false;
-    dependencyConfirmBtn.textContent = '确认清单';
+    dependencyConfirmBtn.textContent = '安装';
   }
   renderDependencyReview();
   dependencyModal.classList.add('open');
@@ -2804,19 +4084,17 @@ function selectedDependenciesFromReview() {
 async function confirmDependencySelection() {
   selectedDependencyItems = selectedDependenciesFromReview();
   if (!selectedDependencyItems.length) {
-    // 检查到的依赖均已安装在项目环境中：无需安装，直接进入可布置作业状态
+    // 未勾选任何依赖（或均已安装）：无需安装，直接进入可布置作业状态
     const allInstalled = dependencyItems.length > 0 && dependencyItems.every(item => item.precheck_status === 'installed');
-    if (allInstalled) {
-      dependencyModal.classList.remove('open');
-      dependencyPlanReady = false;
-      checkDepsBtn.textContent = '检查依赖';
-      depsState = 'installed';
-      const content = '### 依赖已就绪\n\n检查到的依赖均已安装在项目 Conda 环境中，无需重复安装。\n\n现在可以点击 **布置作业**。';
-      addChatMessage(content, 'ai', true);
-      await persistDisplayMessage('ai', content);
-      return;
-    }
-    addNotice('请至少勾选一个依赖，或补充需求后重新检查', 'error');
+    dependencyModal.classList.remove('open');
+    dependencyPlanReady = false;
+    checkDepsBtn.textContent = '检查依赖';
+    depsState = 'installed';
+    const content = allInstalled
+      ? '### 依赖已就绪\n\n检查到的依赖均已安装在项目 Conda 环境中，无需重复安装。\n\n现在可以点击 **布置作业**。'
+      : '### 依赖清单已确认\n\n未勾选任何安装项，跳过安装。\n\n现在可以点击 **布置作业**。';
+    addChatMessage(content, 'ai', true);
+    await persistDisplayMessage('ai', content);
     return;
   }
   dependencyPlanReady = true;
@@ -2857,12 +4135,14 @@ async function uploadSelectedFiles(input) {
 
   const formData = new FormData();
   formData.append('project_name', projectName);
+  // 上传目标跟随左边栏选中的小文件夹（未选中则上到项目根）
+  if (selectedSubdir) formData.append('subdir', selectedSubdir);
   for (const file of selected) {
     formData.append('files', file, file.webkitRelativePath || file.name);
   }
 
   isUploading = true;
-  addNotice(`正在上传 ${selected.length} 个文件...`);
+  addNotice(`正在上传 ${selected.length} 个文件到 ${projectName}${selectedSubdir ? '/' + selectedSubdir : ''} ...`);
   try {
     const resp = await fetch('/api/files/upload', { method: 'POST', body: formData });
     const data = await resp.json();
@@ -2870,18 +4150,18 @@ async function uploadSelectedFiles(input) {
       addNotice(data.error || '文件上传失败', 'error');
       return;
     }
-    syncProjectName(data.project_name);
+    syncProjectName(data.project_name, selectedSubdir);
+    if (selectedSubdir) expandedProjects.add(projectName);
     await loadProjects(false);
     renderProjects(projectsCache);
-    addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.archive_size)}，目录 ${data.remote_project_dir}；项目 Conda 环境${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
+    addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.total_bytes)}，目录 ${data.remote_project_dir}；项目 Conda 环境${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
     addChatMessage(`### 文件上传完成
 
 - 文件数：${data.file_count}
-- 压缩包大小：${formatBytes(data.archive_size)}
-- 项目目录：\`${data.remote_project_dir}\`
-- SHA256：\`${data.local_sha256}\`
+- 总大小：${formatBytes(data.total_bytes)}
+- 目标目录：\`${data.remote_project_dir}\`
 
-现在建议在输入框里补充依赖清单或算力要求，再点击 **检查依赖**。`, 'ai', true);
+同名文件已覆盖，原有其他文件保留。现在建议在输入框里补充依赖清单或算力要求，再点击 **检查依赖**。`, 'ai', true);
   } catch (e) {
     addNotice('文件上传失败: ' + e.message, 'error');
   } finally {
@@ -2916,7 +4196,7 @@ async function generateProjectReport() {
   if (sendBtn) sendBtn.disabled = true;
   if (checkDepsBtn) checkDepsBtn.disabled = true;
   confirmRunBtn.disabled = true;
-  const pending = addChatMessage('正在读取项目目录、已上传文件、依赖清单和算力要求，生成将要安装的程序环境列表...', 'ai');
+  const pending = addChatMessage('读取项目目录、依赖清单，生成将要安装的程序环境列表...', 'ai');
   try {
     const uploadData = await uploadDependencyFiles(projectName);
     if (uploadData) {
@@ -2938,17 +4218,10 @@ async function generateProjectReport() {
     lastProjectDir = data.project_dir || '';
     dependencyItems = Array.isArray(data.dependency_items) ? data.dependency_items : [];
     selectedDependencyItems = [];
-    setMessageContent(pending, data.report, 'ai');
-    await persistDisplayMessage('ai', data.report);
     dependencyPlanReady = false;
     checkDepsBtn.textContent = '检查依赖';
     userInput.placeholder = '还需更改';
     openDependencyModal();
-    addChatMessage(`请检查上面的依赖安装方案。
-
-- 弹窗中已列出每个依赖、版本、来源、置信度和预检状态。
-- 可信来源默认勾选；推断项需要你手动勾选。
-- 确认清单后，点击 **安装依赖** 开始安装。`, 'ai', true);
   } catch (e) {
     setMessageContent(pending, '检查依赖失败: ' + e.message, 'ai');
     addNotice('检查依赖失败: ' + e.message, 'error');
@@ -3011,11 +4284,6 @@ function updateInstallProgress(pending, evt) {
   if (bar) lines.push('', bar);
   if (stage) lines.push('', stage + '...');
   setMessageContent(pending, lines.join('\n'), 'ai');
-  if (dependencyReviewMode === 'installing' && dependencySummary) {
-    dependencySummary.textContent = percent !== null
-      ? `安装进度 ${Math.floor(percent)}%：${stage || '执行中'}`
-      : (stage || '正在安装...');
-  }
 }
 
 function handleAutoFixEvent(evt) {
@@ -3259,9 +4527,15 @@ function proceedToSubmitAnyway() {
 }
 
 function currentProjectDir() {
-  if (lastProjectDir) return lastProjectDir;
+  // 布置作业时优先跟随弹窗的运行目录下拉，其余场景跟随左边栏选中的小文件夹
+  const runDirSelect = document.getElementById('submitRunDir');
+  const runSubdir = runDirSelect && runDirSelect.closest('.modal').classList.contains('open')
+    ? (runDirSelect.value || '').trim() : '';
+  const subdir = runSubdir || selectedSubdir;
+  if (!subdir && lastProjectDir) return lastProjectDir;
   const project = projectsCache.find(p => p.name === selectedProjectName);
-  return project ? project.path : `~/projects/${selectedProjectName}`;
+  const base = project ? project.path : (lastProjectDir || `~/projects/${selectedProjectName}`);
+  return subdir ? `${base}/${subdir}` : base;
 }
 
 function currentCondaEnvDir() {
@@ -3470,7 +4744,11 @@ async function generateJobBody() {
     const resp = await fetch('/api/projects/job-body', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: projectName, form: readSubmitForm() }),
+      body: JSON.stringify({
+        name: projectName,
+        form: readSubmitForm(),
+        subdir: (document.getElementById('submitRunDir')?.value || '').trim(),
+      }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
@@ -3510,24 +4788,51 @@ async function openJobSubmitModal() {
     }
   }
   const jobNameEl = document.getElementById('submitJobName');
-  // 默认作业名 = 当前项目名
-  if (!jobNameEl.value.trim()) jobNameEl.value = selectedProjectName || 'my-job';
+  // 默认作业名：左边栏选中小文件夹时用其名，否则用项目名
+  if (!jobNameEl.value.trim()) jobNameEl.value = selectedSubdir || selectedProjectName || 'my-job';
+  renderSubmitRunDirOptions();
   renderSubmitAccountOptions();
   applyQosLimits();
   jobSubmitModal.classList.add('open');
   renderSubmitLockedPreviews();
-  // 服务端权威骨架（真实目录/conda 路径/激活前导）
+  // 服务端权威骨架（真实运行目录/conda 路径/激活前导，随运行目录联动）
+  await fetchSubmitSkeleton();
+  await generateJobBody();
+}
+
+function renderSubmitRunDirOptions() {
+  // 运行目录下拉：项目根 + 各数据集小文件夹，默认跟随左边栏选中
+  const el = document.getElementById('submitRunDir');
+  if (!el) return;
+  const subdirs = (projectsCache.find(p => p.name === selectedProjectName)?.subdirs) || [];
+  const prev = el.value;
+  el.innerHTML = ['<option value="">项目根目录</option>']
+    .concat(subdirs.map(s => `<option value="${escapeHtml(s)}">📁 ${escapeHtml(s)}</option>`))
+    .join('');
+  el.value = subdirs.includes(prev) ? prev : (subdirs.includes(selectedSubdir) ? selectedSubdir : '');
+}
+
+async function fetchSubmitSkeleton() {
   try {
-    const resp = await fetch(`/api/projects/job-skeleton?project_name=${encodeURIComponent(currentProjectName())}`);
+    const subdir = (document.getElementById('submitRunDir')?.value || '').trim();
+    const resp = await fetch(`/api/projects/job-skeleton?project_name=${encodeURIComponent(currentProjectName())}&subdir=${encodeURIComponent(subdir)}`);
     const data = await resp.json();
     if (resp.ok && data.status === 'ok') {
       submitSkeleton = data;
       renderSubmitLockedPreviews();
+      return true;
     }
   } catch (e) {
     /* 骨架获取失败时使用前端回退前导 */
   }
-  await generateJobBody();
+  return false;
+}
+
+async function onSubmitRunDirChange() {
+  // 切换运行目录：先即时刷新回退前导（cd 路径马上变化），再拉权威骨架
+  renderSubmitLockedPreviews();
+  await fetchSubmitSkeleton();
+  onSubmitFieldChange();
 }
 
 function closeJobSubmitModal(event) {
@@ -3580,6 +4885,7 @@ async function submitJobFromModal() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_name: projectName,
+        subdir: (document.getElementById('submitRunDir')?.value || '').trim(),
         script,
         job_name: form.jobName,
         partition: form.partition,
@@ -3599,10 +4905,11 @@ async function submitJobFromModal() {
 
 - 作业 ID：\`${jobId}\`
 - 作业名：\`${form.jobName}\`（分区 \`${form.partition}\`，账户 \`${form.account}\`）
+- 运行目录：\`${data.run_dir || data.project_dir}\`
 - 脚本已保存：\`${data.script_path}\`
-- 日志文件：\`${data.project_dir}/logs/${form.jobName}-${jobId}.out\` 与 \`.err\`
+- 日志文件：\`${data.run_dir || data.project_dir}/logs/${form.jobName}-${jobId}.out\` 与 \`.err\`
 
-可以在右侧「作业情况」面板跟踪状态，或直接问我“作业 ${jobId} 运行得怎么样了”。`;
+Conda 环境为整个项目共享，无需重复安装。可以在右侧「作业情况」面板跟踪状态，或直接问我“作业 ${jobId} 运行得怎么样了”。`;
     addChatMessage(content, 'ai', true);
   } catch (e) {
     addNotice('提交作业失败: ' + e.message, 'error');
@@ -3694,6 +5001,45 @@ async function sendMessage(forcedText = null, displayText = null) {
   if (checkDepsBtn) checkDepsBtn.disabled = true;
   userInput.value = '';
   autoResizeComposer();
+
+  // 对话附件：随消息一起上传到项目目录，并在消息中告知 agent
+  let messageText = text;
+  const attachments = pendingDependencyFiles.slice();
+  if (attachments.length) {
+    const projectName = currentProjectName();
+    if (!projectName) {
+      addNotice('请先选择或创建作业目录，再添加附件', 'error');
+      isProcessing = false;
+      userInput.disabled = false;
+      if (sendBtn) sendBtn.disabled = false;
+      if (checkDepsBtn) checkDepsBtn.disabled = false;
+      userInput.value = text;
+      autoResizeComposer();
+      return;
+    }
+    const formData = new FormData();
+    formData.append('project_name', projectName);
+    for (const file of attachments) formData.append('files', file, file.name);
+    try {
+      const resp = await fetch('/api/files/upload', { method: 'POST', body: formData });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || '附件上传失败');
+      pendingDependencyFiles = [];
+      renderDependencyFileChips();
+      messageText = `[已上传附件到项目目录: ${attachments.map(f => f.name).join('、')}]
+${text}`;
+    } catch (e) {
+      addNotice('附件上传失败: ' + e.message, 'error');
+      isProcessing = false;
+      userInput.disabled = false;
+      if (sendBtn) sendBtn.disabled = false;
+      if (checkDepsBtn) checkDepsBtn.disabled = false;
+      userInput.value = text;
+      autoResizeComposer();
+      return;
+    }
+  }
+
   addChatMessage(displayText || text, 'user');
   currentAiMessage = null;
   currentAiText = '';
@@ -3702,7 +5048,7 @@ async function sendMessage(forcedText = null, displayText = null) {
     const resp = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, project_name: currentProjectName() }),
+      body: JSON.stringify({ message: messageText, project_name: currentProjectName() }),
     });
     if (!resp.ok) {
       const err = await resp.json();

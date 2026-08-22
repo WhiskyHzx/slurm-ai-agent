@@ -3,19 +3,17 @@
 Server-side browser upload helpers.
 
 Users explicitly pick local files in the browser. FastAPI receives those upload
-streams on the SSH server, packages them, verifies the stored archive hash, and
-extracts them into the user's project directory.
+streams on the SSH server, stages them into a temp directory, and copies them
+straight into the user's project directory (merge-overwrite semantics).
 """
 
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import os
 import re
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import threading
 import time
@@ -47,9 +45,7 @@ class UploadResult:
     upload_id: str
     project_name: str
     file_count: int
-    archive_name: str
-    archive_size: int
-    local_sha256: str
+    total_bytes: int
     remote_project_dir: str
     conda_env_dir: str
     conda_created: bool
@@ -199,21 +195,6 @@ def resolve_server_path(path: str) -> Path:
     return Path(path).expanduser().resolve()
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def make_archive(source_dir: Path, archive_path: Path) -> None:
-    with tarfile.open(archive_path, "w:gz") as archive:
-        for path in sorted(source_dir.rglob("*")):
-            if path.is_file():
-                archive.add(path, arcname=path.relative_to(source_dir))
-
-
 def project_workspace(project_name: str) -> tuple[str, Path, Path]:
     safe_project_name = normalize_project_name(project_name)
     projects_base = resolve_server_path(get_remote_projects_base())
@@ -285,49 +266,37 @@ def ensure_conda_room(conda_env_dir: Path) -> bool:
         return True
 
 
-def extract_archive_to_project(
-    archive_path: Path,
-    upload_id: str,
-    project_name: str,
-) -> UploadResult:
-    workspace = ensure_project_workspace(project_name)
-    project_dir = workspace.project_dir
-    archive_dir = project_dir / ".slurm-agent" / "uploads"
-    stored_archive = archive_dir / f"{upload_id}.tar.gz"
+def copy_files_to_project(staging_dir: Path, file_count: int, project_name: str, subdir: str = "") -> UploadResult:
+    """
+    把 staging 暂存目录直接拷入项目目录（或项目内某个小文件夹）。
 
-    local_hash = sha256_file(archive_path)
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(archive_path, stored_archive)
+    增量覆盖语义（与原 tar 解压一致）：同名目录合并、同名文件覆盖写入、
+    项目里旧有而本次未上传的文件保留，不会先清空项目目录。
 
-    stored_hash = sha256_file(stored_archive)
-    if stored_hash != local_hash:
-        raise FileTransferError("服务端 SHA256 与上传包不一致，上传可能损坏")
-
-    with tarfile.open(stored_archive, "r:gz") as archive:
-        archive.extractall(project_dir)
-    stored_archive.unlink(missing_ok=True)
-
-    return UploadResult(
-        upload_id=upload_id,
-        project_name=workspace.project_name,
-        file_count=0,
-        archive_name=archive_path.name,
-        archive_size=archive_path.stat().st_size,
-        local_sha256=local_hash,
-        remote_project_dir=str(project_dir),
-        conda_env_dir=str(workspace.conda_env_dir),
-        conda_created=workspace.conda_created,
-    )
-
-
-def package_and_upload(staging_dir: Path, file_count: int, project_name: str) -> UploadResult:
+    subdir 非空时自动创建目标小文件夹（拖拽上传新数据集场景）。
+    """
     if file_count <= 0:
         raise FileTransferError("没有可上传的文件")
 
-    upload_id = uuid.uuid4().hex[:12]
-    with tempfile.TemporaryDirectory(prefix=f"slurm-agent-{upload_id}-") as tmp:
-        archive_path = Path(tmp) / f"{upload_id}.tar.gz"
-        make_archive(staging_dir, archive_path)
-        result = extract_archive_to_project(archive_path, upload_id, project_name)
-        result.file_count = file_count
-        return result
+    workspace = ensure_project_workspace(project_name)
+    subdir = (subdir or "").strip().strip("/")
+    if subdir:
+        if subdir.startswith(".") or ".." in subdir.split("/") or "/" in subdir:
+            raise FileTransferError(f"非法的小文件夹名称: {subdir}")
+        if subdir in ("logs", "runs"):
+            raise FileTransferError(f"不允许上传到运行产物目录: {subdir}")
+    target_dir = workspace.project_dir / subdir if subdir else workspace.project_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    total_bytes = sum(p.stat().st_size for p in staging_dir.rglob("*") if p.is_file())
+    # dirs_exist_ok=True → 合并而非报错；copy2 保留 mtime，便于用户排查文件新旧
+    shutil.copytree(staging_dir, target_dir, dirs_exist_ok=True, copy_function=shutil.copy2)
+
+    return UploadResult(
+        upload_id=uuid.uuid4().hex[:12],
+        project_name=workspace.project_name,
+        file_count=file_count,
+        total_bytes=total_bytes,
+        remote_project_dir=str(target_dir),
+        conda_env_dir=str(workspace.conda_env_dir),
+        conda_created=workspace.conda_created,
+    )

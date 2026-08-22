@@ -18,11 +18,12 @@ import os
 import queue
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import threading
 import getpass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -39,11 +40,11 @@ from core.file_transfer import (
     CHUNK_SIZE,
     FileTransferError,
     ProjectWorkspace,
+    copy_files_to_project,
     ensure_project_workspace,
     find_conda_executable,
     get_max_upload_bytes,
     get_remote_projects_base,
-    package_and_upload,
     project_lock,
     project_workspace,
     safe_relative_path,
@@ -81,16 +82,25 @@ agent: Optional[AgentLoop] = None
 project_agents: dict[str, AgentLoop] = {}
 
 
-def _history_path(project_name: str, create: bool = False) -> Path:
+def _history_path(project_name: str, subdir: str = "", create: bool = False) -> Path:
+    """会话记录路径：项目根会话存 .slurm-agent/chat-history.json，
+    小文件夹（数据集组）会话存 .slurm-agent/sessions/<子目录>.json，不污染数据集目录。"""
     safe_project_name, project_dir, _ = project_workspace(project_name)
     if create:
         project_dir.mkdir(parents=True, exist_ok=True)
         (project_dir / ".slurm-agent").mkdir(parents=True, exist_ok=True)
-    return project_dir / ".slurm-agent" / "chat-history.json"
+    subdir = (subdir or "").strip().strip("/")
+    if not subdir:
+        return project_dir / ".slurm-agent" / "chat-history.json"
+    if subdir.startswith(".") or ".." in subdir.split("/") or "/" in subdir:
+        raise FileTransferError(f"非法的小文件夹名称: {subdir}")
+    if create:
+        (project_dir / ".slurm-agent" / "sessions").mkdir(parents=True, exist_ok=True)
+    return project_dir / ".slurm-agent" / "sessions" / f"{subdir}.json"
 
 
-def _read_chat_history(project_name: str) -> list[dict]:
-    path = _history_path(project_name)
+def _read_chat_history(project_name: str, subdir: str = "") -> list[dict]:
+    path = _history_path(project_name, subdir)
     if not path.exists():
         return []
     try:
@@ -110,24 +120,24 @@ def _read_chat_history(project_name: str) -> list[dict]:
     return history
 
 
-def _write_chat_history(project_name: str, history: list[dict]) -> None:
-    path = _history_path(project_name, create=True)
+def _write_chat_history(project_name: str, history: list[dict], subdir: str = "") -> None:
+    path = _history_path(project_name, subdir, create=True)
     path.write_text(
         json.dumps(history[-200:], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def _append_chat_history(project_name: str, role: str, content: str) -> None:
+def _append_chat_history(project_name: str, role: str, content: str, subdir: str = "") -> None:
     if role not in {"user", "ai"} or not content.strip():
         return
-    history = _read_chat_history(project_name)
+    history = _read_chat_history(project_name, subdir)
     history.append({
         "role": role,
         "content": content,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     })
-    _write_chat_history(project_name, history)
+    _write_chat_history(project_name, history, subdir)
 
 
 def _agent_from_history(project_name: str) -> AgentLoop:
@@ -183,12 +193,14 @@ class ProjectInstallRequest(BaseModel):
 class JobBodyRequest(BaseModel):
     name: str
     form: dict = {}
+    subdir: str = ""
 
 
 class ProjectChatAppendRequest(BaseModel):
     project_name: str
     role: str
     content: str
+    subdir: str = ""
 
 
 class JobSubmitRequest(BaseModel):
@@ -198,13 +210,91 @@ class JobSubmitRequest(BaseModel):
     partition: str
     nodes: int = 1
     time_limit: int = 240  # 分钟
+    subdir: str = ""
 
 
 class ModelSelectRequest(BaseModel):
     model: str
 
 
+class SubdirCreateRequest(BaseModel):
+    project_name: str
+    name: str = ""  # 空 = 自动取名 数据集N
+
+
+class SubdirRenameRequest(BaseModel):
+    project_name: str
+    subdir: str
+    new_name: str
+
+
+class SubdirDeleteRequest(BaseModel):
+    project_name: str
+    subdir: str
+
+
+class JobTemplateSaveRequest(BaseModel):
+    name: str
+    content: str
+
+
+class JobTemplateDeleteRequest(BaseModel):
+    name: str
+
+
 PROJECT_NOTES_FILENAME = "PROJECT_NOTES.txt"
+
+# 项目内不作为数据集小文件夹展示的目录（服务自身/运行产物）
+SUBDIR_EXCLUDE_NAMES = {".slurm-agent", "logs", "runs"}
+
+
+def _project_subdirs(project_dir: Path, limit: int = 20) -> list[str]:
+    """扫描项目内的一级子目录作为数据集小文件夹（按修改时间倒序，新建的在前），
+    隐藏目录与运行产物目录除外。"""
+    candidates: list[tuple[float, str]] = []
+    try:
+        for path in project_dir.iterdir():
+            if not path.is_dir() or path.name.startswith(".") or path.name in SUBDIR_EXCLUDE_NAMES:
+                continue
+            try:
+                candidates.append((path.stat().st_mtime, path.name))
+            except OSError:
+                continue
+    except OSError:
+        return []
+    candidates.sort(reverse=True)
+    return [name for _, name in candidates[:limit]]
+
+
+def _resolve_run_dir(project_dir: Path, subdir: str = "") -> Path:
+    """把可选的小文件夹名解析为安全的作业运行目录。"""
+    subdir = (subdir or "").strip().strip("/")
+    if not subdir:
+        return project_dir
+    if subdir.startswith(".") or ".." in subdir.split("/") or "/" in subdir:
+        raise FileTransferError(f"非法的小文件夹名称: {subdir}")
+    run_dir = project_dir / subdir
+    if not run_dir.is_dir():
+        raise FileTransferError(f"小文件夹不存在: {subdir}（可先上传文件夹后重试）")
+    return run_dir
+
+
+def _validate_subdir_name(name: str, label: str = "小文件夹") -> str:
+    """校验小文件夹/模板等单级名称：非空、无路径分隔、非隐藏/保留名，返回清洗后的名字。"""
+    name = (name or "").strip().strip("/")
+    if not name:
+        raise FileTransferError(f"{label}名称不能为空")
+    if len(name) > 64:
+        raise FileTransferError(f"{label}名称过长（最多 64 字符）")
+    if name.startswith(".") or "/" in name or "\\" in name or ".." in name:
+        raise FileTransferError(f"非法的{label}名称: {name}")
+    if name in SUBDIR_EXCLUDE_NAMES:
+        raise FileTransferError(f"名称为保留目录: {name}")
+    return name
+
+
+def _subdir_session_path(project_dir: Path, subdir: str) -> Path:
+    return project_dir / ".slurm-agent" / "sessions" / f"{subdir}.json"
 
 # QoS 资源上限静态兑底表：来源 docs/docs-main/docs/overview/resources.md「平台内置 QOS 方案示例」，
 # 仅在 REST /qos 不可用时使用，正常运行时以 Slurm 实时数据为准。
@@ -316,15 +406,32 @@ def _summarize_node(node: dict) -> dict:
     }
 
 
+def _ts_seconds(value) -> int:
+    """从 REST 时间戳结构（{set, infinite, number}）或裸数字中提取 unix 秒。"""
+    if isinstance(value, dict):
+        return _number(value.get("number"))
+    return _number(value)
+
+
 def _summarize_job(job: dict) -> dict:
+    state = _state_text(job.get("job_state") or job.get("state"))
+    now = datetime.now().timestamp()
+    start = _ts_seconds(job.get("start_time"))
+    submit = _ts_seconds(job.get("submit_time"))
+    # run_time 字段在当前 slurmrestd 版本恒为 null，用时间戳推算：
+    # RUNNING 用 now - start_time，PENDING（start_time 为 0）用 now - submit_time 即排队时长
+    run_seconds = max(0, int(now - start)) if state.startswith("RUNNING") and start else 0
+    queue_seconds = max(0, int(now - submit)) if state.startswith("PENDING") and submit else 0
     return {
         "id": job.get("job_id") or job.get("jobid") or job.get("id") or "-",
         "name": job.get("name") or job.get("job_name") or "-",
         "user": job.get("user_name") or job.get("user") or "-",
         "partition": job.get("partition") or "-",
-        "state": _state_text(job.get("job_state") or job.get("state")),
+        "state": state,
         "nodes": job.get("nodes") or job.get("node_count") or "-",
         "time_limit": job.get("time_limit") or job.get("time_limit_number") or "-",
+        "run_seconds": run_seconds,
+        "queue_seconds": queue_seconds,
     }
 
 
@@ -878,7 +985,7 @@ def _conda_sh_path() -> str:
     return "$(conda info --base)/etc/profile.d/conda.sh"
 
 
-def _build_job_body_prompt(workspace: ProjectWorkspace, form: dict) -> str:
+def _build_job_body_prompt(workspace: ProjectWorkspace, form: dict, run_dir: Path = None) -> str:
     notes_path = workspace.project_dir / PROJECT_NOTES_FILENAME
     notes_text = notes_path.read_text(encoding="utf-8", errors="ignore") if notes_path.exists() else ""
     installed = installed_packages_snapshot(workspace.conda_env_dir)
@@ -886,12 +993,13 @@ def _build_job_body_prompt(workspace: ProjectWorkspace, form: dict) -> str:
     form_lines = [f"- {key}: {value}" for key, value in (form or {}).items() if value not in (None, "")]
     form_text = "\n".join(form_lines) or "（用户未调整，均为默认值）"
     python_bin = workspace.conda_env_dir / "bin" / "python"
+    run_dir = run_dir or workspace.project_dir
     context = f"""
 你是 USTC 107 算力平台的 Slurm 作业命令生成器。请根据项目内容，生成 sbatch 脚本的“作业命令正文”。
 
 <硬性规则>
 1. 只输出作业命令正文（bash 命令与注释），不要输出 #!/bin/bash 和任何 #SBATCH 行——头部由系统生成。
-2. 不要输出 cd、mkdir、conda 激活、source 等环境准备命令——系统已在正文之前固定处理：工作目录已切到项目目录，项目 Conda 环境已激活。
+2. 不要输出 cd、mkdir、conda 激活、source 等环境准备命令——系统已在正文之前固定处理：工作目录已切到运行目录，项目 Conda 环境已激活。
 3. 主计算命令用 srun 开头（如 srun python -u train.py --epochs 10）。
 4. 程序产生的输出文件保存到 runs/<作业名>-${{SLURM_JOB_ID}}/ 目录。
 5. python 命令加 -u 实时输出；正文开头结尾用 echo 打印时间戳，便于排查。
@@ -900,8 +1008,8 @@ def _build_job_body_prompt(workspace: ProjectWorkspace, form: dict) -> str:
 </硬性规则>
 
 <项目元信息>
-- 项目目录：{workspace.project_dir}
-- 项目 Conda 环境：{workspace.conda_env_dir}
+- 运行目录（作业 cd 后所在，数据集/入口脚本以此为准）：{run_dir}
+- 项目 Conda 环境（整个项目共享，勿重装）：{workspace.conda_env_dir}
 - 环境 python：{python_bin}
 </项目元信息>
 
@@ -1376,6 +1484,40 @@ async def dashboard():
     }
 
 
+@app.get("/api/jobs/history")
+def jobs_history(days: int = 30, limit: int = 50):
+    """查询当前用户的历史作业（slurmdbd），默认最近 30 天，按提交时间倒序。"""
+    try:
+        client = SlurmClient()
+        now = datetime.now()
+        params = {
+            "users": getpass.getuser(),
+            "start_time": (now - timedelta(days=max(1, days))).strftime("%Y-%m-%d"),
+            "end_time": (now + timedelta(days=1)).strftime("%Y-%m-%d"),
+        }
+        raw_jobs = client.get_jobs_history(params=params).get("jobs", [])
+        items = []
+        for job in raw_jobs:
+            if not isinstance(job, dict):
+                continue
+            times = job.get("time") or {}
+            states = (job.get("state") or {}).get("current") or []
+            items.append({
+                "id": job.get("job_id") or "-",
+                "name": job.get("name") or "-",
+                "state": _state_text(states[0] if states else None),
+                "partition": job.get("partition") or "-",
+                "submit_time": _ts_seconds(times.get("submission")),
+                "start_time": _ts_seconds(times.get("start")),
+                "end_time": _ts_seconds(times.get("end")),
+                "elapsed_seconds": max(0, _number(times.get("elapsed"))),
+            })
+        items.sort(key=lambda item: item["submit_time"], reverse=True)
+        return {"status": "ok", "days": max(1, days), "count": len(items), "jobs": items[:limit]}
+    except Exception as e:
+        return JSONResponse({"error": f"查询历史作业失败: {e}"}, status_code=500)
+
+
 @app.get("/api/projects")
 async def list_projects():
     """List first-level project folders under the configured projects base."""
@@ -1389,13 +1531,22 @@ async def list_projects():
             stat = path.stat()
             history_path = path / ".slurm-agent" / "chat-history.json"
             notes_path = path / PROJECT_NOTES_FILENAME
+            subdirs = _project_subdirs(path)
+            # 项目活跃时间 = 项目根/各小文件夹最新修改时间（小文件夹里的动静也算）
+            latest = stat.st_mtime
+            for sub in subdirs:
+                try:
+                    latest = max(latest, (path / sub).stat().st_mtime)
+                except OSError:
+                    continue
             items.append({
                 "name": path.name,
                 "path": str(path),
                 "conda_env_dir": str(path / ".slurm-agent" / "conda-env"),
-                "updated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "updated_at": datetime.fromtimestamp(latest).isoformat(timespec="seconds"),
                 "has_chat": history_path.exists(),
                 "has_notes": notes_path.exists(),
+                "subdirs": subdirs,
             })
         items.sort(key=lambda item: item["updated_at"], reverse=True)
     except Exception as e:
@@ -1403,18 +1554,115 @@ async def list_projects():
     return {"status": "ok", "base_dir": str(projects_base), "projects": items}
 
 
+# ---------------------------------------------------------------------------
+# 帮助文档：内置于仓库 docs/ 目录，供前端阅读器渲染
+# ---------------------------------------------------------------------------
+DOCS_ROOT = Path(__file__).resolve().parent.parent / "docs" / "docs-main" / "docs"
+DOCS_DIR_ORDER = {"overview": 0, "basics": 1, "guides": 2, "reference": 3}
+
+
+def _strip_docs_frontmatter(text: str) -> str:
+    """去掉 docs 页面开头的 YAML frontmatter（--- ... --- 块）。"""
+    if not text.startswith("---"):
+        return text
+    lines = text.splitlines()
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "\n".join(lines[index + 1:]).lstrip("\n")
+    return text
+
+
+def _docs_title(raw_text: str, fallback: str) -> str:
+    """取文档标题：正文第一个 # 标题，否则回退文件名。"""
+    for line in _strip_docs_frontmatter(raw_text).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+    return fallback
+
+
+def _docs_subtree(directory: Path) -> list[dict]:
+    """递归构建 docs 目录树，只收 .md 文件；目录按固定顺序、文件按名称排序。"""
+    nodes: list[dict] = []
+    try:
+        entries = sorted(
+            directory.iterdir(),
+            key=lambda p: (
+                0 if p.is_dir() else 1,
+                DOCS_DIR_ORDER.get(p.name, 99) if p.is_dir() else 0,
+                p.name,
+            ),
+        )
+    except OSError:
+        return nodes
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name == "assets":
+            continue
+        if entry.is_dir():
+            children = _docs_subtree(entry)
+            if children:
+                nodes.append({"name": entry.name, "type": "dir", "children": children})
+        elif entry.suffix == ".md":
+            rel = entry.relative_to(DOCS_ROOT).as_posix()
+            try:
+                raw = entry.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            nodes.append({
+                "name": entry.stem,
+                "title": _docs_title(raw, entry.stem),
+                "type": "file",
+                "path": rel,
+            })
+    return nodes
+
+
+@app.get("/api/docs/tree")
+def docs_tree():
+    """返回内置帮助文档的目录树。"""
+    if not DOCS_ROOT.is_dir():
+        return JSONResponse({"error": "文档目录不存在"}, status_code=500)
+    return {"status": "ok", "root": str(DOCS_ROOT), "tree": _docs_subtree(DOCS_ROOT)}
+
+
+@app.get("/api/docs/content")
+def docs_content(path: str):
+    """返回一篇文档的正文（已去 frontmatter）。路径必须落在 docs 根内。"""
+    if not path or ".." in path.split("/") or path.startswith("/"):
+        return JSONResponse({"error": "非法路径"}, status_code=400)
+    target = (DOCS_ROOT / path).resolve()
+    try:
+        target.relative_to(DOCS_ROOT.resolve())
+    except ValueError:
+        return JSONResponse({"error": "非法路径"}, status_code=400)
+    if target.suffix != ".md" or not target.is_file():
+        return JSONResponse({"error": "文档不存在"}, status_code=404)
+    try:
+        raw = target.read_text(encoding="utf-8")
+    except OSError as e:
+        return JSONResponse({"error": f"读取文档失败: {e}"}, status_code=500)
+    return {
+        "status": "ok",
+        "path": path,
+        "title": _docs_title(raw, target.stem),
+        "content": _strip_docs_frontmatter(raw),
+    }
+
+
 @app.get("/api/projects/chat")
-async def project_chat_history(project_name: str):
-    """Return display chat history for one project session."""
+async def project_chat_history(project_name: str, subdir: str = ""):
+    """Return display chat history for one project session (project root or a dataset subdir)."""
     try:
         safe_project_name, project_dir, _ = project_workspace(project_name)
+        messages = _read_chat_history(safe_project_name, subdir)
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     return {
         "status": "ok",
         "project_name": safe_project_name,
         "project_dir": str(project_dir),
-        "messages": _read_chat_history(safe_project_name),
+        "subdir": (subdir or "").strip().strip("/"),
+        "messages": messages,
     }
 
 
@@ -1423,11 +1671,11 @@ async def append_project_chat(req: ProjectChatAppendRequest):
     """Append a display message to one project session history."""
     try:
         safe_project_name, _, _ = project_workspace(req.project_name)
+        role = "ai" if req.role == "ai" else "user"
+        _append_chat_history(safe_project_name, role, req.content, (req.subdir or "").strip())
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
-    role = "ai" if req.role == "ai" else "user"
-    _append_chat_history(safe_project_name, role, req.content)
-    return {"status": "ok", "project_name": safe_project_name}
+    return {"status": "ok", "project_name": safe_project_name, "subdir": (req.subdir or "").strip()}
 
 
 @app.post("/api/projects")
@@ -1453,6 +1701,161 @@ def create_project(req: ProjectCreateRequest):
         "conda_created": workspace.conda_created,
         "notes_path": str(notes_path),
     }
+
+
+@app.post("/api/projects/subdirs")
+def create_project_subdir(req: SubdirCreateRequest):
+    """在项目下新建一个数据集小文件夹；名称为空时自动取名 数据集N。"""
+    try:
+        safe_project_name, project_dir, _ = project_workspace(req.project_name)
+        subdirs = _project_subdirs(project_dir)
+        if (req.name or "").strip():
+            name = _validate_subdir_name(req.name)
+        else:
+            # 自动取名：数据集N，N 递增直到不重名
+            index = len(subdirs) + 1
+            while f"数据集{index}" in subdirs or (project_dir / f"数据集{index}").exists():
+                index += 1
+            name = f"数据集{index}"
+        target = project_dir / name
+        if target.exists():
+            raise FileTransferError(f"小文件夹已存在: {name}")
+        target.mkdir(parents=True)
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("新建小文件夹失败")
+        return JSONResponse({"error": f"新建小文件夹失败: {e}"}, status_code=500)
+    return {
+        "status": "ok",
+        "project_name": safe_project_name,
+        "subdir": name,
+        "subdirs": _project_subdirs(project_dir),
+    }
+
+
+@app.post("/api/projects/subdirs/rename")
+def rename_project_subdir(req: SubdirRenameRequest):
+    """重命名项目内的数据集小文件夹（连同其会话记录）。"""
+    try:
+        safe_project_name, project_dir, _ = project_workspace(req.project_name)
+        old_name = _validate_subdir_name(req.subdir)
+        new_name = _validate_subdir_name(req.new_name)
+        src = project_dir / old_name
+        dst = project_dir / new_name
+        if not src.is_dir():
+            raise FileTransferError(f"小文件夹不存在: {old_name}")
+        if dst.exists():
+            raise FileTransferError(f"目标名称已存在: {new_name}")
+        src.rename(dst)
+        # 会话记录文件一并改名，保持会话与文件夹同步
+        old_session = _subdir_session_path(project_dir, old_name)
+        if old_session.exists():
+            old_session.rename(_subdir_session_path(project_dir, new_name))
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("重命名小文件夹失败")
+        return JSONResponse({"error": f"重命名小文件夹失败: {e}"}, status_code=500)
+    return {
+        "status": "ok",
+        "project_name": safe_project_name,
+        "subdir": new_name,
+        "subdirs": _project_subdirs(project_dir),
+    }
+
+
+@app.post("/api/projects/subdirs/delete")
+def delete_project_subdir(req: SubdirDeleteRequest):
+    """递归删除项目内的数据集小文件夹及其会话记录（不可恢复）。"""
+    try:
+        safe_project_name, project_dir, _ = project_workspace(req.project_name)
+        name = _validate_subdir_name(req.subdir)
+        target = project_dir / name
+        if not target.is_dir():
+            raise FileTransferError(f"小文件夹不存在: {name}")
+        shutil.rmtree(target)
+        _subdir_session_path(project_dir, name).unlink(missing_ok=True)
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("删除小文件夹失败")
+        return JSONResponse({"error": f"删除小文件夹失败: {e}"}, status_code=500)
+    return {
+        "status": "ok",
+        "project_name": safe_project_name,
+        "subdir": name,
+        "subdirs": _project_subdirs(project_dir),
+    }
+
+
+def _job_templates_dir() -> Path:
+    """作业脚本模板的固定存储目录（项目之外、跨项目共享）：~/.slurm-agent/templates/。"""
+    templates_dir = Path.home() / ".slurm-agent" / "templates"
+    templates_dir.mkdir(parents=True, exist_ok=True)
+    return templates_dir
+
+
+@app.get("/api/job-templates")
+def list_job_templates():
+    """列出已保存的作业脚本模板（内容随列表一并返回，模板即完整 .sh 脚本）。"""
+    try:
+        templates = []
+        for path in _job_templates_dir().glob("*.sh"):
+            stat = path.stat()
+            templates.append({
+                "name": path.stem,
+                "size": stat.st_size,
+                "mtime": int(stat.st_mtime),
+                "content": path.read_text(encoding="utf-8"),
+            })
+        templates.sort(key=lambda t: t["mtime"], reverse=True)
+    except Exception as e:
+        logger.exception("读取作业模板列表失败")
+        return JSONResponse({"error": f"读取作业模板列表失败: {e}"}, status_code=500)
+    return {"status": "ok", "templates": templates}
+
+
+@app.post("/api/job-templates")
+def save_job_template(req: JobTemplateSaveRequest):
+    """把提交弹窗拼好的完整 sbatch 脚本保存为模板（项目之外固定目录，同名覆盖）。"""
+    try:
+        name = _validate_subdir_name(req.name, "模板")
+        if not (req.content or "").strip():
+            raise FileTransferError("脚本内容不能为空")
+        if len(req.content) > 512 * 1024:
+            raise FileTransferError("脚本内容过大（最多 512KB）")
+        path = _job_templates_dir() / f"{name}.sh"
+        overwritten = path.exists()
+        path.write_text(req.content, encoding="utf-8")
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("保存作业模板失败")
+        return JSONResponse({"error": f"保存作业模板失败: {e}"}, status_code=500)
+    return {
+        "status": "ok",
+        "name": name,
+        "overwritten": overwritten,
+        "path": str(path),
+    }
+
+
+@app.post("/api/job-templates/delete")
+def delete_job_template(req: JobTemplateDeleteRequest):
+    """删除一个作业脚本模板。"""
+    try:
+        name = _validate_subdir_name(req.name, "模板")
+        path = _job_templates_dir() / f"{name}.sh"
+        if not path.is_file():
+            raise FileTransferError(f"模板不存在: {name}")
+        path.unlink()
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("删除作业模板失败")
+        return JSONResponse({"error": f"删除作业模板失败: {e}"}, status_code=500)
+    return {"status": "ok", "name": name}
 
 
 @app.post("/api/projects/report")
@@ -1979,13 +2382,14 @@ def install_project_dependencies(req: ProjectInstallRequest):
 
 
 @app.get("/api/projects/job-skeleton")
-def project_job_skeleton(project_name: str):
+def project_job_skeleton(project_name: str, subdir: str = ""):
     """
-    下发作业脚本“锁定区”的权威值：真实项目目录、conda 环境路径、
-    conda.sh 绝对路径与固定激活前导。前端只展示不可改。
+    下发作业脚本“锁定区”的权威值：真实运行目录（项目根或某个小文件夹）、
+    conda 环境路径、conda.sh 绝对路径与固定激活前导。前端只展示不可改。
     """
     try:
         workspace = _light_workspace(project_name)
+        run_dir = _resolve_run_dir(workspace.project_dir, subdir)
         conda_sh = _conda_sh_path()
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
@@ -1996,12 +2400,12 @@ def project_job_skeleton(project_name: str):
     prelude = "\n".join([
         "set -euo pipefail",
         "# 运行目录",
-        f"cd {shlex.quote(str(workspace.project_dir))}",
+        f"cd {shlex.quote(str(run_dir))}",
         "mkdir -p logs runs",
         "",
         "# 激活项目 Conda 环境",
         "set +u",
-        # conda_sh 由服务端解析：真实绝对路径，或 $(conda info --base) 兜底。
+        # conda_sh 由服务端解析：真实绝对路径，或 $(conda info --base) 兑底。
         # 后者绝不能 shlex.quote——单引号会禁用 $() 命令替换导致 source 失败
         f"source {conda_sh}",
         f"conda activate {shlex.quote(str(workspace.conda_env_dir))}",
@@ -2011,6 +2415,8 @@ def project_job_skeleton(project_name: str):
         "status": "ok",
         "project_name": workspace.project_name,
         "project_dir": str(workspace.project_dir),
+        "run_dir": str(run_dir),
+        "subdir": (subdir or "").strip().strip("/"),
         "conda_env_dir": str(workspace.conda_env_dir),
         "conda_sh": conda_sh,
         "prelude": prelude,
@@ -2022,7 +2428,8 @@ def project_job_body(req: JobBodyRequest):
     """一次 LLM 调用生成作业命令正文；#SBATCH 头与目录/环境激活由锁定区负责。"""
     try:
         workspace = _light_workspace(req.name)
-        prompt = _build_job_body_prompt(workspace, req.form)
+        run_dir = _resolve_run_dir(workspace.project_dir, (req.subdir or "").strip())
+        prompt = _build_job_body_prompt(workspace, req.form, run_dir)
         llm = LLMProvider()
         response = llm.chat(
             messages=[
@@ -2069,8 +2476,13 @@ def submit_project_job(req: JobSubmitRequest):
 
     try:
         workspace = ensure_project_workspace(req.project_name)
+        run_dir = _resolve_run_dir(workspace.project_dir, (req.subdir or "").strip())
         safe_name = re.sub(r"[^A-Za-z0-9_.-]", "", job_name).strip(".-") or "job"
-        script_path = workspace.project_dir / f"job-{safe_name}.sh"
+        # 脚本与 .out/.err 日志同目录：run_dir/logs（顺带确保 logs 存在，
+        # 否则 %x-%j.out 无处落地）
+        logs_dir = run_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        script_path = logs_dir / f"job-{safe_name}.sh"
         script_path.write_text(script, encoding="utf-8")
 
         client = SlurmClient()
@@ -2081,8 +2493,8 @@ def submit_project_job(req: JobSubmitRequest):
             nodes=max(1, int(req.nodes or 1)),
             time_limit=max(1, int(req.time_limit or 240)),
             extra_job_params={
-                # 日志/相对路径以项目目录为基准，而不是服务进程的 cwd
-                "current_working_directory": str(workspace.project_dir),
+                # 日志/相对路径以运行目录（项目根或小文件夹）为基准，而不是服务进程的 cwd
+                "current_working_directory": str(run_dir),
             },
         )
     except FileTransferError as e:
@@ -2102,6 +2514,8 @@ def submit_project_job(req: JobSubmitRequest):
         "status": "ok",
         "project_name": workspace.project_name,
         "project_dir": str(workspace.project_dir),
+        "run_dir": str(run_dir),
+        "subdir": (req.subdir or "").strip().strip("/"),
         "conda_env_dir": str(workspace.conda_env_dir),
         "script_path": str(script_path),
         "job_id": job_id,
@@ -2113,10 +2527,12 @@ def submit_project_job(req: JobSubmitRequest):
 async def files_upload(
     project_name: str = Form(...),
     files: list[UploadFile] = File(...),
+    subdir: str = Form(""),
 ):
     """
-    Receive browser-selected files, package them, store them on the server,
-    and verify SHA256 before extracting.
+    Receive browser-selected files, stage them into a temp directory, and copy
+    them straight into the project directory or one of its dataset subdirs
+    (merge-overwrite semantics).
 
     The backend deliberately accepts file streams only; it does not take local
     filesystem paths from the browser.
@@ -2150,9 +2566,9 @@ async def files_upload(
                         out.write(chunk)
                 file_count += 1
 
-            # 打包/落盘/解压/建环境都是阻塞操作，丢到线程池执行，避免冻结事件循环
+            # 拷贝落盘/建环境都是阻塞操作，丢到线程池执行，避免冻结事件循环
             result = await asyncio.to_thread(
-                package_and_upload, staging_dir, file_count, project_name
+                copy_files_to_project, staging_dir, file_count, project_name, (subdir or "").strip()
             )
 
     except FileTransferError as e:
@@ -2169,9 +2585,7 @@ async def files_upload(
         "upload_id": result.upload_id,
         "project_name": result.project_name,
         "file_count": result.file_count,
-        "archive_name": result.archive_name,
-        "archive_size": result.archive_size,
-        "local_sha256": result.local_sha256,
+        "total_bytes": result.total_bytes,
         "remote_project_dir": result.remote_project_dir,
         "conda_env_dir": result.conda_env_dir,
         "conda_created": result.conda_created,
