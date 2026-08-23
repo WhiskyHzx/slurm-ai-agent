@@ -321,6 +321,15 @@ class SlurmClient:
         name: str = "api-job",
         nodes: int = 1,
         time_limit: int = 60,
+        *,
+        account: str = "",
+        qos: str = "",
+        cpus_per_task: int = 1,
+        gpus_per_node: int = 0,
+        memory_mb: Optional[int] = None,
+        working_directory: Optional[str] = None,
+        standard_output: Optional[str] = None,
+        standard_error: Optional[str] = None,
         extra_job_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -332,7 +341,13 @@ class SlurmClient:
             name:          作业名称
             nodes:         申请节点数
             time_limit:    运行时间上限（分钟）
-            extra_job_params: 额外的 job 参数字典，会合并到请求体中
+            account/qos:   计费账户与 QoS
+            cpus_per_task: 每个任务申请的 CPU 核数
+            gpus_per_node: 每个节点申请的 GPU 数
+            memory_mb:     每个节点申请的内存（MB）；None 表示使用平台默认值
+            working_directory: 作业运行目录
+            standard_output/standard_error: 标准输出与错误日志路径
+            extra_job_params: 兼容旧调用的额外参数；受控提交入口不使用它
 
         返回:
             提交结果 JSON，通常包含 job_id。
@@ -351,19 +366,36 @@ class SlurmClient:
         if not safe_name:
             safe_name = "api-job"
 
+        nodes = max(1, int(nodes))
+        cpus_per_task = max(1, int(cpus_per_task))
+        gpus_per_node = max(0, int(gpus_per_node))
         job_spec: Dict[str, Any] = {
             "name": safe_name,
-            "partition": partition,
+            "partition": str(partition or "").strip(),
             "nodes": str(nodes),          # OpenAPI 要求 string 类型
-            "time_limit": time_limit,     # 字段名是 time_limit，不是 time
-            "current_working_directory": os.getcwd(),
-            "standard_output": f"{safe_name}-%j.out",
-            "standard_error": f"{safe_name}-%j.err",
-            # Slurm 25.11 要求必须提供 environment，否则报 I/O error
+            "minimum_nodes": nodes,
+            "tasks": 1,
+            "cpus_per_task": cpus_per_task,
+            "minimum_cpus": nodes * cpus_per_task,
+            "time_limit": max(1, int(time_limit)),
+            "current_working_directory": working_directory or os.getcwd(),
+            "standard_output": standard_output or f"{safe_name}-%j.out",
+            "standard_error": standard_error or f"{safe_name}-%j.err",
+            # 当前平台的 data_parser 接受键值映射；缺少 environment 会报 I/O error。
             "environment": {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             },
         }
+        if account:
+            job_spec["account"] = str(account).strip()
+        if qos:
+            job_spec["qos"] = str(qos).strip()
+        if gpus_per_node:
+            # Slurm OpenAPI 对应 --tres-per-node=gres/gpu:N。
+            # GPU 必须进入 REST job description，不能只依赖脚本中的 #SBATCH。
+            job_spec["tres_per_node"] = f"gres/gpu:{gpus_per_node}"
+        if memory_mb is not None:
+            job_spec["memory_per_node"] = max(1, int(memory_mb))
         if extra_job_params:
             job_spec.update(extra_job_params)
 

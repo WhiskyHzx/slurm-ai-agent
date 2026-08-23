@@ -140,22 +140,34 @@ def _append_chat_history(project_name: str, role: str, content: str, subdir: str
     _write_chat_history(project_name, history, subdir)
 
 
-def _agent_from_history(project_name: str) -> AgentLoop:
-    ag = AgentLoop()
-    for item in _read_chat_history(project_name)[-40:]:
+def _agent_from_history(project_name: str, subdir: str = "") -> AgentLoop:
+    safe_project_name, _, _ = project_workspace(project_name)
+    safe_subdir = (subdir or "").strip().strip("/")
+    executor = ToolExecutor(
+        submit_handler=_submit_controlled_job,
+        submission_context={
+            "project_name": safe_project_name,
+            "subdir": safe_subdir,
+        },
+    )
+    ag = AgentLoop(executor=executor)
+    for item in _read_chat_history(safe_project_name, safe_subdir)[-40:]:
         role = "assistant" if item["role"] == "ai" else "user"
         ag.messages.append({"role": role, "content": item["content"]})
     return ag
 
 
-def get_agent(project_name: str = "") -> AgentLoop:
-    """获取或懒初始化 AgentLoop 实例。"""
+def get_agent(project_name: str = "", subdir: str = "") -> AgentLoop:
+    """获取或懒初始化 AgentLoop；每个项目/小文件夹绑定独立受控提交上下文。"""
     global agent
     if project_name:
-        safe_project_name, _, _ = project_workspace(project_name)
-        if safe_project_name not in project_agents:
-            project_agents[safe_project_name] = _agent_from_history(safe_project_name)
-        return project_agents[safe_project_name]
+        safe_project_name, project_dir, _ = project_workspace(project_name)
+        safe_subdir = (subdir or "").strip().strip("/")
+        _resolve_run_dir(project_dir, safe_subdir)
+        cache_key = f"{safe_project_name}/{safe_subdir}" if safe_subdir else safe_project_name
+        if cache_key not in project_agents:
+            project_agents[cache_key] = _agent_from_history(safe_project_name, safe_subdir)
+        return project_agents[cache_key]
     if agent is None:
         agent = AgentLoop()
     return agent
@@ -167,6 +179,7 @@ def get_agent(project_name: str = "") -> AgentLoop:
 class ChatRequest(BaseModel):
     message: str
     project_name: str = ""
+    subdir: str = ""
 
 
 class ResetResponse(BaseModel):
@@ -205,10 +218,15 @@ class ProjectChatAppendRequest(BaseModel):
 
 class JobSubmitRequest(BaseModel):
     project_name: str
-    script: str
+    command: str
     job_name: str
     partition: str
+    account: str
+    qos: str
     nodes: int = 1
+    cpus_per_task: int = 1
+    gpus_per_node: int = 0
+    memory_mb: int = 16384
     time_limit: int = 240  # 分钟
     subdir: str = ""
 
@@ -235,7 +253,21 @@ class SubdirDeleteRequest(BaseModel):
 
 class JobTemplateSaveRequest(BaseModel):
     name: str
-    content: str
+    # 兼容旧客户端直接提交完整脚本；新客户端只提交结构化草稿，
+    # 完整模板脚本由服务端按受控提交规则生成。
+    content: str = ""
+    project_name: str = ""
+    subdir: str = ""
+    command: str = ""
+    job_name: str = ""
+    partition: str = ""
+    account: str = ""
+    qos: str = ""
+    nodes: int = 1
+    cpus_per_task: int = 1
+    gpus_per_node: int = 0
+    memory_mb: int = 16384
+    time_limit: int = 240
 
 
 class JobTemplateDeleteRequest(BaseModel):
@@ -771,13 +803,13 @@ def _build_ai_dependency_json_prompt(
 {notes_text}
 </用户输入记录>
 
-<项目目录摘要>
-{_project_tree(workspace.project_dir)}
-</项目目录摘要>
+<当前运行目录树（根目录就是命令执行位置）>
+{_project_tree(run_dir)}
+</当前运行目录树>
 
-<可直接阅读的文本文件内容>
-{_collect_readable_text_files(workspace.project_dir)}
-</可直接阅读的文本文件内容>
+<当前运行目录内可直接阅读的文本文件内容>
+{_collect_readable_text_files(run_dir)}
+</当前运行目录内可直接阅读的文本文件内容>
 """
     return _trim_text(context, MAX_CONTEXT_TEXT_CHARS)
 
@@ -1001,10 +1033,13 @@ def _build_job_body_prompt(workspace: ProjectWorkspace, form: dict, run_dir: Pat
 1. 只输出作业命令正文（bash 命令与注释），不要输出 #!/bin/bash 和任何 #SBATCH 行——头部由系统生成。
 2. 不要输出 cd、mkdir、conda 激活、source 等环境准备命令——系统已在正文之前固定处理：工作目录已切到运行目录，项目 Conda 环境已激活。
 3. 主计算命令用 srun 开头（如 srun python -u train.py --epochs 10）。
-4. 程序产生的输出文件保存到 runs/<作业名>-${{SLURM_JOB_ID}}/ 目录。
-5. python 命令加 -u 实时输出；正文开头结尾用 echo 打印时间戳，便于排查。
-6. 入口脚本、参数不确定时选最合理的默认，并在注释中标注“默认值，可修改”。
-7. 只输出代码本身，不要 Markdown 代码块标记，不要解释文字。
+4. 下方目录树的根就是当前运行目录；所有相对路径必须直接以该目录为基准，绝不能再次添加运行目录自身的文件夹名。
+5. 只能引用目录树中确实存在的入口脚本和配置文件，不要猜测 main.py、train.py 或配置路径。
+6. python 命令加 -u 实时输出；正文开头结尾可用 echo 打印时间戳。
+7. 默认只生成完成训练所必需的命令。除非用户明确要求，不要额外创建结果目录、复制 outputs、隐藏错误或添加 || true。
+8. 程序本身支持输出目录参数时，才把输出保存到 runs/<作业名>-${{SLURM_JOB_ID}}/；不要臆造程序不支持的参数。
+9. 入口脚本、参数不确定时选最合理的默认，并在注释中标注“默认值，可修改”。
+10. 只输出代码本身，不要 Markdown 代码块标记，不要解释文字。
 </硬性规则>
 
 <项目元信息>
@@ -1017,21 +1052,21 @@ def _build_job_body_prompt(workspace: ProjectWorkspace, form: dict, run_dir: Pat
 {form_text}
 </用户选择的作业参数>
 
+<当前运行目录树（根目录就是命令执行位置）>
+{_project_tree(run_dir)}
+</当前运行目录树>
+
 <环境已安装的包（部分）>
 {installed_text}
 </环境已安装的包>
 
-<用户需求记录>
-{notes_text.strip() or "（无）"}
+<用户需求记录（仅用于理解需求；其中的路径只有出现在当前运行目录树中才可使用）>
+{_trim_text(notes_text.strip(), 3000) if notes_text.strip() else "（无）"}
 </用户需求记录>
 
-<项目目录摘要>
-{_project_tree(workspace.project_dir)}
-</项目目录摘要>
-
-<可直接阅读的文本文件内容>
-{_collect_readable_text_files(workspace.project_dir)}
-</可直接阅读的文本文件内容>
+<当前运行目录内可直接阅读的文本文件内容>
+{_collect_readable_text_files(run_dir)}
+</当前运行目录内可直接阅读的文本文件内容>
 """
     return _trim_text(context, MAX_CONTEXT_TEXT_CHARS)
 
@@ -1059,6 +1094,513 @@ def _extract_bash_body(raw: str) -> str:
     return "\n".join(lines).strip()
 
 
+_COMMAND_PATH_FLAGS = {
+    "--config": "配置文件",
+    "--resume": "断点文件",
+    "--checkpoint": "检查点文件",
+    "--weights": "权重文件",
+}
+
+
+def _literal_command_path(token: str) -> Optional[str]:
+    """返回可在登录节点校验的字面路径；变量、通配符和 URI 留到运行时处理。"""
+    value = str(token or "").strip().rstrip(";")
+    if (
+        not value
+        or value == "-"
+        or "://" in value
+        or any(char in value for char in "$*?[]{}")
+    ):
+        return None
+    return value
+
+
+def _logical_shell_lines(command: str):
+    """合并 Bash 的反斜杠续行，并保留每条逻辑命令的起始物理行号。"""
+    current = ""
+    start_line = 1
+    continuing = False
+    for line_no, line in enumerate(str(command or "").splitlines(), start=1):
+        if not continuing:
+            current = line
+            start_line = line_no
+        else:
+            current += line
+
+        trailing_backslashes = len(current) - len(current.rstrip("\\"))
+        if trailing_backslashes % 2 == 1:
+            current = current[:-1]
+            continuing = True
+            continue
+
+        yield start_line, current
+        current = ""
+        continuing = False
+
+    if continuing:
+        # 保留未闭合的反斜杠，让 shlex 给出真实语法错误。
+        yield start_line, current + "\\"
+
+
+def _command_path_errors(command: str, run_dir: Path) -> list[str]:
+    """检查命令正文中的入口脚本和关键输入文件是否基于 run_dir 存在。"""
+    errors: list[str] = []
+
+    def add_path(path_text: str, label: str, line_no: int) -> None:
+        literal = _literal_command_path(path_text)
+        if literal is None:
+            return
+        path = Path(literal)
+        resolved = path if path.is_absolute() else run_dir / path
+        if resolved.exists():
+            return
+
+        normalized = literal.replace("\\", "/")
+        duplicate_prefix = f"{run_dir.name}/"
+        if not path.is_absolute() and normalized.startswith(duplicate_prefix):
+            shorter = normalized[len(duplicate_prefix):]
+            if shorter and (run_dir / shorter).exists():
+                errors.append(
+                    f"第 {line_no} 行的{label} {literal!r} 重复包含运行目录名；"
+                    f"应改为 {shorter!r}"
+                )
+                return
+        errors.append(
+            f"第 {line_no} 行的{label} {literal!r} 在运行目录 {run_dir} 下不存在"
+        )
+
+    for line_no, line in _logical_shell_lines(command):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            tokens = shlex.split(stripped, comments=True, posix=True)
+        except ValueError as exc:
+            errors.append(f"第 {line_no} 行 shell 语法无法解析：{exc}")
+            continue
+        if not tokens:
+            continue
+
+        # 检查所有路径 token 是否错误地再次带上了当前运行目录名。
+        prefix = f"{run_dir.name}/"
+        for token in tokens:
+            literal = _literal_command_path(token)
+            if literal is None or Path(literal).is_absolute():
+                continue
+            normalized = literal.replace("\\", "/")
+            if normalized.startswith(prefix):
+                shorter = normalized[len(prefix):]
+                if shorter and not (run_dir / normalized).exists() and (run_dir / shorter).exists():
+                    message = (
+                        f"第 {line_no} 行路径 {literal!r} 重复包含运行目录名；"
+                        f"应改为 {shorter!r}"
+                    )
+                    if message not in errors:
+                        errors.append(message)
+
+        # Python 的第一个非解释器选项参数是入口脚本；python -m/-c 不按文件校验。
+        python_index = next(
+            (
+                index
+                for index, token in enumerate(tokens)
+                if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(token).name)
+            ),
+            None,
+        )
+        if python_index is not None:
+            index = python_index + 1
+            while index < len(tokens):
+                token = tokens[index]
+                if token in {"-m", "-c"}:
+                    break
+                if token in {"-W", "-X"}:
+                    index += 2
+                    continue
+                if token == "--" and index + 1 < len(tokens):
+                    add_path(tokens[index + 1], "Python 入口脚本", line_no)
+                    break
+                if token.startswith("-"):
+                    index += 1
+                    continue
+                add_path(token, "Python 入口脚本", line_no)
+                break
+
+        # bash/sh 脚本入口也必须存在。
+        shell_index = next(
+            (
+                index
+                for index, token in enumerate(tokens)
+                if Path(token).name in {"bash", "sh"}
+            ),
+            None,
+        )
+        if shell_index is not None:
+            index = shell_index + 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                index += 1
+            if index < len(tokens):
+                add_path(tokens[index], "Shell 入口脚本", line_no)
+
+        # 配置、权重和断点属于运行前必须存在的输入。
+        for index, token in enumerate(tokens):
+            for flag, label in _COMMAND_PATH_FLAGS.items():
+                if token == flag and index + 1 < len(tokens):
+                    add_path(tokens[index + 1], label, line_no)
+                elif token.startswith(flag + "="):
+                    add_path(token.split("=", 1)[1], label, line_no)
+
+    deduplicated: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for message in errors:
+        match = re.search(r"第\s*(\d+)\s*行.*?('.*?')", message)
+        key = (match.group(1), match.group(2)) if match else ("", message)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(message)
+    return deduplicated
+
+
+def _build_job_prelude(workspace: ProjectWorkspace, run_dir: Path) -> str:
+    """生成服务端锁定的工作目录与 Conda 前导。"""
+    conda_sh = _conda_sh_path()
+    return "\n".join([
+        "set -euo pipefail",
+        "# 运行目录（服务端锁定）",
+        f"cd {shlex.quote(str(run_dir))}",
+        "mkdir -p logs runs",
+        "",
+        "# 激活项目 Conda 环境（服务端锁定）",
+        "set +u",
+        f"source {conda_sh}",
+        f"conda activate {shlex.quote(str(workspace.conda_env_dir))}",
+        "set -u",
+    ])
+
+
+def _validated_job_draft(raw: dict) -> dict:
+    """校验 Web/Agent 共用的结构化作业草稿和 Slurm 授权。"""
+    project_name = str(raw.get("project_name") or "").strip()
+    command = str(raw.get("command") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    job_name = str(raw.get("job_name") or raw.get("name") or "").strip()
+    partition = str(raw.get("partition") or "").strip()
+    account = str(raw.get("account") or "").strip()
+    qos = str(raw.get("qos") or "").strip()
+    subdir = str(raw.get("subdir") or "").strip().strip("/")
+
+    if not project_name:
+        raise FileTransferError("必须在一个项目中提交作业")
+    if not command:
+        raise FileTransferError("作业命令不能为空")
+    if len(command) > 100_000:
+        raise FileTransferError("作业命令过长（最多 100000 字符）")
+    if any(
+        line.strip().startswith(("#!", "#SBATCH"))
+        for line in command.splitlines()
+    ):
+        raise FileTransferError(
+            "命令正文不能包含 #! 或 #SBATCH；作业头、目录、环境和日志由受控后端生成"
+        )
+    if not job_name or not partition or not account or not qos:
+        raise FileTransferError("作业名、计费账户、分区和 QoS 均不能为空")
+
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "", job_name).strip(".-")
+    if not safe_name:
+        raise FileTransferError("作业名只能包含字母、数字、点、下划线和短横线")
+
+    try:
+        nodes = int(raw.get("nodes", 1))
+        cpus_per_task = int(raw.get("cpus_per_task", 1))
+        gpus_per_node = int(raw.get("gpus_per_node", 0))
+        memory_mb = int(raw.get("memory_mb", 16384))
+        time_limit = int(raw.get("time_limit", 240))
+    except (TypeError, ValueError):
+        raise FileTransferError("节点、CPU、GPU、内存和时限必须是整数")
+
+    if not 1 <= nodes <= 64:
+        raise FileTransferError("节点数必须在 1 到 64 之间")
+    if not 1 <= cpus_per_task <= 512:
+        raise FileTransferError("每任务 CPU 核数必须在 1 到 512 之间")
+    if not 0 <= gpus_per_node <= 16:
+        raise FileTransferError("每节点 GPU 数必须在 0 到 16 之间")
+    if not 128 <= memory_mb <= 8 * 1024 * 1024:
+        raise FileTransferError("每节点内存必须在 128 MB 到 8 TB 之间")
+    if not 1 <= time_limit <= 30 * 24 * 60:
+        raise FileTransferError("作业时限必须在 1 分钟到 30 天之间")
+    if gpus_per_node and partition.startswith("CPU-"):
+        raise FileTransferError(f"CPU 分区 {partition} 不能申请 GPU")
+
+    accounts, user_qos = _user_slurm_accounts()
+    if account not in accounts:
+        raise FileTransferError(f"当前用户未获授权使用计费账户 {account}")
+    partition_entry = next(
+        (item for item in _partition_permissions() if item["partition"] == partition),
+        None,
+    )
+    if partition_entry is None:
+        raise FileTransferError(f"分区不存在或当前无法读取：{partition}")
+    if partition_entry["accounts"] and account not in partition_entry["accounts"]:
+        raise FileTransferError(f"账户 {account} 无权使用分区 {partition}")
+    if qos not in user_qos:
+        raise FileTransferError(f"当前用户未获授权使用 QoS {qos}")
+    if partition_entry["qos"] and qos not in partition_entry["qos"]:
+        raise FileTransferError(f"分区 {partition} 不允许 QoS {qos}")
+    max_nodes = partition_entry.get("max_nodes")
+    if max_nodes is not None and nodes > max_nodes:
+        raise FileTransferError(f"分区 {partition} 最多允许 {max_nodes} 个节点")
+
+    try:
+        qos_limits = _qos_limits_from_rest()
+    except Exception:
+        logger.exception("提交前读取 QoS 上限失败，使用静态表")
+        qos_limits = {}
+    limits = qos_limits.get(qos) or STATIC_QOS_LIMITS.get(qos) or {}
+    requested_cpu = nodes * cpus_per_task
+    requested_gpu = nodes * gpus_per_node
+    requested_memory = nodes * memory_mb
+    if limits.get("cpu") is not None and requested_cpu > int(limits["cpu"]):
+        raise FileTransferError(f"CPU 申请 {requested_cpu} 核超过 QoS 上限 {limits['cpu']} 核")
+    if limits.get("gpu") is not None and requested_gpu > int(limits["gpu"]):
+        raise FileTransferError(f"GPU 申请 {requested_gpu} 卡超过 QoS 上限 {limits['gpu']} 卡")
+    if limits.get("mem_mb") is not None and requested_memory > int(limits["mem_mb"]):
+        raise FileTransferError(
+            f"内存申请 {requested_memory} MB 超过 QoS 上限 {limits['mem_mb']} MB"
+        )
+    if limits.get("wall_minutes") is not None and time_limit > int(limits["wall_minutes"]):
+        raise FileTransferError(
+            f"时限 {time_limit} 分钟超过 QoS 上限 {limits['wall_minutes']} 分钟"
+        )
+
+    return {
+        "project_name": project_name,
+        "subdir": subdir,
+        "command": command,
+        "job_name": safe_name,
+        "partition": partition,
+        "account": account,
+        "qos": qos,
+        "nodes": nodes,
+        "cpus_per_task": cpus_per_task,
+        "gpus_per_node": gpus_per_node,
+        "memory_mb": memory_mb,
+        "time_limit": time_limit,
+        "source": str(raw.get("source") or "web"),
+    }
+
+
+def _job_id_from_response(result: dict):
+    if not isinstance(result, dict):
+        return None
+    for key in ("job_id", "jobid", "id"):
+        if result.get(key) is not None:
+            return result[key]
+    nested = result.get("result")
+    if isinstance(nested, dict):
+        return _job_id_from_response(nested)
+    return None
+
+
+def _tres_evidence(value, parent_key: str = "") -> list[str]:
+    """只收集 TRES/GRES 相关字段，避免普通 GPU 文本造成误判。"""
+    evidence: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if "tres" in key_text or "gres" in key_text:
+                evidence.append(f"{key}={item}")
+            evidence.extend(_tres_evidence(item, key_text))
+    elif isinstance(value, list):
+        for item in value:
+            evidence.extend(_tres_evidence(item, parent_key))
+    return evidence
+
+
+def _requested_gpu_counts(value, inside_requested: bool = False) -> list[int]:
+    """兼容 job.tres.requested 列表与 tres_per_node 字符串两种响应。"""
+    counts: list[int] = []
+    if isinstance(value, dict):
+        if inside_requested:
+            tres_type = str(value.get("type") or "").lower()
+            tres_name = str(value.get("name") or "").lower()
+            if tres_type == "gres" and tres_name == "gpu":
+                try:
+                    counts.append(int(value.get("count")))
+                except (TypeError, ValueError):
+                    pass
+        for key, item in value.items():
+            key_text = str(key).lower()
+            child_requested = inside_requested or key_text == "requested"
+            if key_text == "tres_per_node" and isinstance(item, str):
+                match = re.search(r"gres/gpu\s*[:=]\s*(\d+)", item.lower())
+                if match:
+                    counts.append(int(match.group(1)))
+            counts.extend(_requested_gpu_counts(item, child_requested))
+    elif isinstance(value, list):
+        for item in value:
+            counts.extend(_requested_gpu_counts(item, inside_requested))
+    return counts
+
+
+def _verify_submitted_resources(
+    client: SlurmClient,
+    job_id,
+    gpus_per_node: int,
+    nodes: int,
+) -> dict:
+    if not gpus_per_node:
+        return {
+            "status": "verified",
+            "gpu_requested": 0,
+            "message": "已按结构化 REST 字段提交 CPU 作业",
+        }
+    if job_id is None:
+        return {
+            "status": "pending",
+            "gpu_requested": gpus_per_node,
+            "message": "作业已提交，但未返回 job_id，GPU 资源尚无法核验",
+        }
+    try:
+        job_data = client.get_job(int(job_id))
+    except Exception as exc:
+        logger.warning("作业 %s 提交后资源核验暂不可用: %s", job_id, exc)
+        return {
+            "status": "pending",
+            "gpu_requested": gpus_per_node,
+            "message": "作业已提交，但 Slurm 暂未返回详情，不能确认 GPU 已分配",
+        }
+
+    evidence = _tres_evidence(job_data)
+    gpu_counts = _requested_gpu_counts(job_data)
+    requested_total = gpus_per_node * nodes
+    if any(count in {gpus_per_node, requested_total} for count in gpu_counts):
+        return {
+            "status": "verified",
+            "gpu_requested": gpus_per_node,
+            "message": f"Slurm 已确认每节点申请 {gpus_per_node} 张 GPU",
+            "evidence": evidence[:8],
+        }
+    return {
+        "status": "mismatch",
+        "gpu_requested": gpus_per_node,
+        "message": "作业已提交，但 Slurm 返回的请求资源中没有匹配的 GPU；请勿按 GPU 作业运行",
+        "evidence": evidence[:8],
+    }
+
+
+def _build_controlled_job_script(
+    draft: dict, workspace: ProjectWorkspace, run_dir: Path
+) -> str:
+    """按受控提交规则生成完整脚本；提交和模板保存共用此实现。"""
+    path_errors = _command_path_errors(draft["command"], run_dir)
+    if path_errors:
+        raise FileTransferError(
+            "命令路径校验失败：" + "；".join(path_errors[:6])
+        )
+
+    header = [
+        "#!/bin/bash",
+        f"#SBATCH --job-name={draft['job_name']}",
+        f"#SBATCH --partition={draft['partition']}",
+        f"#SBATCH --account={draft['account']}",
+        f"#SBATCH --qos={draft['qos']}",
+        f"#SBATCH --nodes={draft['nodes']}",
+        f"#SBATCH --cpus-per-task={draft['cpus_per_task']}",
+        f"#SBATCH --mem={draft['memory_mb']}M",
+        f"#SBATCH --time={draft['time_limit']}",
+        "#SBATCH --output=logs/%x-%j.out",
+        "#SBATCH --error=logs/%x-%j.err",
+    ]
+    if draft["gpus_per_node"]:
+        header.append(f"#SBATCH --gres=gpu:{draft['gpus_per_node']}")
+
+    sections = [
+        "\n".join(header),
+        _build_job_prelude(workspace, run_dir),
+    ]
+    if draft["gpus_per_node"]:
+        sections.append("\n".join([
+            "# GPU 资源预检（由服务端注入）",
+            'echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"',
+            'srun --nodes=1 --ntasks=1 bash -c \'test -n "${CUDA_VISIBLE_DEVICES:-}" || { echo "GPU requested but CUDA_VISIBLE_DEVICES is empty" >&2; exit 1; }\'',
+            "srun --nodes=1 --ntasks=1 nvidia-smi -L",
+        ]))
+    sections.append("\n".join([
+        "# --- SLURM-AGENT COMMAND BEGIN ---",
+        draft["command"],
+        "# --- SLURM-AGENT COMMAND END ---",
+    ]))
+    return "\n\n".join(sections).rstrip() + "\n"
+
+
+def _submit_controlled_job(raw_draft: dict) -> dict:
+    """Web 与 Agent 唯一的项目作业提交实现。"""
+    draft = _validated_job_draft(raw_draft)
+    workspace = ensure_project_workspace(draft["project_name"])
+    run_dir = _resolve_run_dir(workspace.project_dir, draft["subdir"])
+    script = _build_controlled_job_script(draft, workspace, run_dir)
+    logs_dir = run_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    script_path = logs_dir / f"job-{draft['job_name']}.sh"
+    script_path.write_text(script, encoding="utf-8")
+
+    stdout_path = str(logs_dir / f"{draft['job_name']}-%j.out")
+    stderr_path = str(logs_dir / f"{draft['job_name']}-%j.err")
+    client = SlurmClient()
+    result = client.submit_job(
+        script=script,
+        partition=draft["partition"],
+        name=draft["job_name"],
+        nodes=draft["nodes"],
+        time_limit=draft["time_limit"],
+        account=draft["account"],
+        qos=draft["qos"],
+        cpus_per_task=draft["cpus_per_task"],
+        gpus_per_node=draft["gpus_per_node"],
+        memory_mb=draft["memory_mb"],
+        working_directory=str(run_dir),
+        standard_output=stdout_path,
+        standard_error=stderr_path,
+    )
+    job_id = _job_id_from_response(result)
+
+    # 登记作业供心跳监控：完成/失败时前端会收到右下角通知（Web 与 Agent 共用此路径）
+    if job_id is not None:
+        try:
+            _register_watched_job(
+                job_id, draft["job_name"], workspace.project_name,
+                draft["subdir"], logs_dir,
+            )
+        except Exception:
+            logger.exception("登记作业监控失败（不影响提交结果）")
+
+    verification = _verify_submitted_resources(
+        client, job_id, draft["gpus_per_node"], draft["nodes"]
+    )
+    return {
+        "status": "ok",
+        "source": draft["source"],
+        "project_name": workspace.project_name,
+        "project_dir": str(workspace.project_dir),
+        "run_dir": str(run_dir),
+        "subdir": draft["subdir"],
+        "conda_env_dir": str(workspace.conda_env_dir),
+        "script_path": str(script_path),
+        "job_id": job_id,
+        "requested_resources": {
+            "account": draft["account"],
+            "qos": draft["qos"],
+            "partition": draft["partition"],
+            "nodes": draft["nodes"],
+            "cpus_per_task": draft["cpus_per_task"],
+            "gpus_per_node": draft["gpus_per_node"],
+            "memory_mb_per_node": draft["memory_mb"],
+            "time_limit_minutes": draft["time_limit"],
+        },
+        "resource_verification": verification,
+        "slurm_response": result,
+    }
+
+
 # ---------------------------------------------------------------------------
 # API 端点
 # ---------------------------------------------------------------------------
@@ -1080,16 +1622,18 @@ async def chat(req: ChatRequest):
     if not user_message:
         return JSONResponse({"error": "消息不能为空"}, status_code=400)
     project_name = ""
+    subdir = (req.subdir or "").strip().strip("/")
     if req.project_name.strip():
         try:
-            project_name, _, _ = project_workspace(req.project_name)
+            project_name, project_dir, _ = project_workspace(req.project_name)
+            _resolve_run_dir(project_dir, subdir)
         except FileTransferError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        _append_chat_history(project_name, "user", user_message)
+        _append_chat_history(project_name, "user", user_message, subdir)
 
     async def event_stream():
         try:
-            ag = get_agent(project_name)
+            ag = get_agent(project_name, subdir)
             ag.messages.append({"role": "user", "content": user_message})
             final_reply = ""
 
@@ -1108,7 +1652,7 @@ async def chat(req: ChatRequest):
                 except Exception as e:
                     error_text = f"LLM调用失败: {e}"
                     if project_name:
-                        _append_chat_history(project_name, "ai", error_text)
+                        _append_chat_history(project_name, "ai", error_text, subdir)
                     yield f"data: {json.dumps({'type': 'error', 'content': error_text}, ensure_ascii=False)}\n\n"
                     return
 
@@ -1177,20 +1721,20 @@ async def chat(req: ChatRequest):
 
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 if project_name:
-                    _append_chat_history(project_name, "ai", final_reply)
+                    _append_chat_history(project_name, "ai", final_reply, subdir)
                 return
 
             # 超过最大轮数
             error_text = "超过最大工具调用轮数，请简化问题后重试。"
             if project_name:
-                _append_chat_history(project_name, "ai", error_text)
+                _append_chat_history(project_name, "ai", error_text, subdir)
             yield f"data: {json.dumps({'type': 'error', 'content': error_text}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             logger.exception("处理请求异常")
             error_text = f"服务异常: {e}"
             if project_name:
-                _append_chat_history(project_name, "ai", error_text)
+                _append_chat_history(project_name, "ai", error_text, subdir)
             yield f"data: {json.dumps({'type': 'error', 'content': error_text}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
@@ -1209,16 +1753,21 @@ async def reset(req: Request):
     """重置对话历史。"""
     global agent
     project_name = ""
+    subdir = ""
     try:
         body = await req.json()
         project_name = str(body.get("project_name") or "").strip()
+        subdir = str(body.get("subdir") or "").strip().strip("/")
     except Exception:
         project_name = ""
+        subdir = ""
 
     if project_name:
-        safe_project_name, _, _ = project_workspace(project_name)
-        project_agents[safe_project_name] = AgentLoop()
-        _write_chat_history(safe_project_name, [])
+        safe_project_name, project_dir, _ = project_workspace(project_name)
+        _resolve_run_dir(project_dir, subdir)
+        cache_key = f"{safe_project_name}/{subdir}" if subdir else safe_project_name
+        project_agents.pop(cache_key, None)
+        _write_chat_history(safe_project_name, [], subdir)
         return ResetResponse(status="ok")
 
     if agent:
@@ -1818,16 +2367,45 @@ def list_job_templates():
 
 @app.post("/api/job-templates")
 def save_job_template(req: JobTemplateSaveRequest):
-    """把提交弹窗拼好的完整 sbatch 脚本保存为模板（项目之外固定目录，同名覆盖）。"""
+    """保存作业模板；新客户端提交结构化草稿，由服务端生成完整脚本。"""
     try:
         name = _validate_subdir_name(req.name, "模板")
-        if not (req.content or "").strip():
+        content = req.content or ""
+        if req.project_name.strip():
+            workspace = ensure_project_workspace(req.project_name)
+            subdir = (req.subdir or "").strip().strip("/")
+            run_dir = _resolve_run_dir(workspace.project_dir, subdir)
+            job_name = re.sub(
+                r"[^A-Za-z0-9_.-]", "", req.job_name or name
+            ).strip(".-")
+            if not job_name:
+                raise FileTransferError(
+                    "作业名只能包含字母、数字、点、下划线和短横线"
+                )
+            if len(req.command) > 100_000:
+                raise FileTransferError("作业命令过长（最多 100000 字符）")
+            draft = {
+                "command": (req.command or "").replace("\r\n", "\n").replace("\r", "\n").strip(),
+                "job_name": job_name,
+                "partition": req.partition,
+                "account": req.account,
+                "qos": req.qos,
+                "nodes": req.nodes,
+                "cpus_per_task": req.cpus_per_task,
+                "gpus_per_node": req.gpus_per_node,
+                "memory_mb": req.memory_mb,
+                "time_limit": req.time_limit,
+            }
+            if not all((draft["partition"], draft["account"], draft["qos"])):
+                raise FileTransferError("分区、计费账户和 QoS 均不能为空")
+            content = _build_controlled_job_script(draft, workspace, run_dir)
+        if not content.strip():
             raise FileTransferError("脚本内容不能为空")
-        if len(req.content) > 512 * 1024:
+        if len(content) > 512 * 1024:
             raise FileTransferError("脚本内容过大（最多 512KB）")
         path = _job_templates_dir() / f"{name}.sh"
         overwritten = path.exists()
-        path.write_text(req.content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8")
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2397,20 +2975,7 @@ def project_job_skeleton(project_name: str, subdir: str = ""):
         logger.exception("获取作业脚本骨架失败")
         return JSONResponse({"error": f"获取作业脚本骨架失败: {e}"}, status_code=500)
 
-    prelude = "\n".join([
-        "set -euo pipefail",
-        "# 运行目录",
-        f"cd {shlex.quote(str(run_dir))}",
-        "mkdir -p logs runs",
-        "",
-        "# 激活项目 Conda 环境",
-        "set +u",
-        # conda_sh 由服务端解析：真实绝对路径，或 $(conda info --base) 兑底。
-        # 后者绝不能 shlex.quote——单引号会禁用 $() 命令替换导致 source 失败
-        f"source {conda_sh}",
-        f"conda activate {shlex.quote(str(workspace.conda_env_dir))}",
-        "set -u",
-    ])
+    prelude = _build_job_prelude(workspace, run_dir)
     return {
         "status": "ok",
         "project_name": workspace.project_name,
@@ -2451,86 +3016,40 @@ def project_job_body(req: JobBodyRequest):
 
     if not body:
         return JSONResponse({"error": "模型未返回有效命令，请在正文区手动填写"}, status_code=500)
+    path_errors = _command_path_errors(body, run_dir)
     return {
         "status": "ok",
         "project_name": workspace.project_name,
+        "run_dir": str(run_dir),
         "body": body,
+        "path_errors": path_errors,
     }
 
 
 @app.post("/api/jobs/submit")
 def submit_project_job(req: JobSubmitRequest):
-    """Save the reviewed sbatch script into the project and submit it via Slurm REST."""
-    script = (req.script or "").strip()
-    job_name = (req.job_name or "").strip()
-    partition = (req.partition or "").strip()
-    if not script:
-        return JSONResponse({"error": "作业脚本不能为空"}, status_code=400)
-    if not job_name:
-        return JSONResponse({"error": "作业名不能为空"}, status_code=400)
-    if not partition:
-        return JSONResponse({"error": "分区不能为空"}, status_code=400)
-
-    # 统一换行为 LF，避免 Windows CRLF 导致集群解析脚本失败
-    script = script.replace("\r\n", "\n").replace("\r", "\n")
-
+    """Web 提交入口：只接收结构化草稿，复用 Agent 的同一受控后端。"""
     try:
-        workspace = ensure_project_workspace(req.project_name)
-        run_dir = _resolve_run_dir(workspace.project_dir, (req.subdir or "").strip())
-        safe_name = re.sub(r"[^A-Za-z0-9_.-]", "", job_name).strip(".-") or "job"
-        # 脚本与 .out/.err 日志同目录：run_dir/logs（顺带确保 logs 存在，
-        # 否则 %x-%j.out 无处落地）
-        logs_dir = run_dir / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        script_path = logs_dir / f"job-{safe_name}.sh"
-        script_path.write_text(script, encoding="utf-8")
-
-        client = SlurmClient()
-        result = client.submit_job(
-            script=script,
-            partition=partition,
-            name=job_name,
-            nodes=max(1, int(req.nodes or 1)),
-            time_limit=max(1, int(req.time_limit or 240)),
-            extra_job_params={
-                # 日志/相对路径以运行目录（项目根或小文件夹）为基准，而不是服务进程的 cwd
-                "current_working_directory": str(run_dir),
-            },
-        )
+        return _submit_controlled_job({
+            "source": "web",
+            "project_name": req.project_name,
+            "subdir": req.subdir,
+            "command": req.command,
+            "job_name": req.job_name,
+            "partition": req.partition,
+            "account": req.account,
+            "qos": req.qos,
+            "nodes": req.nodes,
+            "cpus_per_task": req.cpus_per_task,
+            "gpus_per_node": req.gpus_per_node,
+            "memory_mb": req.memory_mb,
+            "time_limit": req.time_limit,
+        })
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         logger.exception("提交作业失败")
         return JSONResponse({"error": f"提交作业失败: {e}"}, status_code=500)
-
-    job_id = None
-    if isinstance(result, dict):
-        for key in ("job_id", "jobid", "id"):
-            if result.get(key) is not None:
-                job_id = result.get(key)
-                break
-
-    # 登记作业供心跳监控：完成/失败时前端会收到右下角通知
-    if job_id is not None:
-        try:
-            _register_watched_job(
-                job_id, job_name, workspace.project_name,
-                (req.subdir or "").strip().strip("/"), logs_dir,
-            )
-        except Exception:
-            logger.exception("登记作业监控失败（不影响提交结果）")
-
-    return {
-        "status": "ok",
-        "project_name": workspace.project_name,
-        "project_dir": str(workspace.project_dir),
-        "run_dir": str(run_dir),
-        "subdir": (req.subdir or "").strip().strip("/"),
-        "conda_env_dir": str(workspace.conda_env_dir),
-        "script_path": str(script_path),
-        "job_id": job_id,
-        "slurm_response": result,
-    }
 
 
 # ---------------------------------------------------------------------------

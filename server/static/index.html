@@ -2258,7 +2258,7 @@
   <div class="modal" onclick="event.stopPropagation()">
     <div class="modal-head" id="subdirModalTitle">新建小文件夹</div>
     <div class="modal-body">
-      <label for="subdirNameInput">文件夹名称</label>
+      <label id="subdirNameLabel" for="subdirNameInput">文件夹名称</label>
       <input id="subdirNameInput" type="text" placeholder="如 数据集1" onkeydown="if(event.key==='Enter'){event.preventDefault(); confirmSubdirModal()}">
     </div>
     <div class="modal-actions">
@@ -2387,8 +2387,12 @@
             <input id="submitGpus" type="number" min="0" max="4" value="1" oninput="onSubmitFieldChange()">
           </div>
           <div class="submit-field">
-            <label for="submitCpus">CPU 核数</label>
+            <label for="submitCpus">每任务 CPU 核数</label>
             <input id="submitCpus" type="number" min="1" max="48" value="4" oninput="onSubmitFieldChange()">
+          </div>
+          <div class="submit-field">
+            <label for="submitMemoryGb">每节点内存（GB）</label>
+            <input id="submitMemoryGb" type="number" min="0.125" max="8192" step="0.125" value="16" oninput="onSubmitFieldChange()">
           </div>
           <div class="submit-field">
             <label for="submitHours">时限（小时）</label>
@@ -3003,22 +3007,24 @@ function subdirEditRowHtml(value, placeholder) {
   </div>`;
 }
 
+function expandOnlyProject(projectName) {
+  expandedProjects.clear();
+  if (projectName) expandedProjects.add(projectName);
+}
+
 function renderProjects(projects) {
   if (!projectsList) return;
   if (!projects || !projects.length) {
     projectsList.innerHTML = '<div class="empty">暂无作业目录</div>';
     return;
   }
-  // 当前选中的项目若有小文件夹则默认展开
-  if (selectedProjectName) {
-    const current = projects.find(p => p.name === selectedProjectName);
-    if (current && (current.subdirs || []).length) expandedProjects.add(selectedProjectName);
-  }
   projectsList.innerHTML = projects.map((project, projectIndex) => {
     const active = project.name === selectedProjectName ? ' active' : '';
     const meta = project.has_chat ? '有会话记录' : (project.has_notes ? '有需求记录' : '未开始会话');
     const subdirs = project.subdirs || [];
     const editing = subdirEditing && subdirEditing.projectIndex === projectIndex ? subdirEditing : null;
+    const creatingHere = editing && editing.mode === 'create';
+    const expanded = expandedProjects.has(project.name);
     let html = `<button class="project-item${active}" onclick="selectProjectByIndex(${projectIndex})" title="${escapeHtml(project.path)}"
       ondragover="onSubdirRowDragOver(event, ${projectIndex}, -1)" ondragleave="onSubdirRowDragLeave(event)" ondrop="onSubdirRowDrop(event, ${projectIndex}, -1)">
       <span class="project-name">${escapeHtml(project.name)}</span>
@@ -3027,8 +3033,7 @@ function renderProjects(projects) {
         <span class="subdir-op" title="新建小文件夹" onclick="event.stopPropagation(); startSubdirCreate(${projectIndex})">＋</span>
       </span>
     </button>`;
-    const creatingHere = editing && editing.mode === 'create';
-    if ((subdirs.length || creatingHere) && expandedProjects.has(project.name)) {
+    if ((subdirs.length || creatingHere) && expanded) {
       // 新建行置顶，其余小文件夹按修改时间倒序（后端已排序）
       if (creatingHere) {
         html += subdirEditRowHtml('', '输入名称，回车创建');
@@ -3072,8 +3077,9 @@ function selectProjectByIndex(projectIndex, subIndex = -1) {
 // ---------------------------------------------------------------------------
 let subdirModalAction = null;
 
-function openSubdirModal({ title, value = '', placeholder = '', confirmText = '确定', onConfirm }) {
+function openSubdirModal({ title, label = '文件夹名称', value = '', placeholder = '', confirmText = '确定', onConfirm }) {
   document.getElementById('subdirModalTitle').textContent = title;
+  document.getElementById('subdirNameLabel').textContent = label;
   const input = document.getElementById('subdirNameInput');
   input.value = value;
   input.placeholder = placeholder || '';
@@ -3100,7 +3106,7 @@ function startSubdirCreate(projectIndex) {
   // 行内新建：项目下最顶部出现输入框，回车创建（新建后按修改时间倒序自然置顶）
   const project = projectsCache[projectIndex];
   if (!project) return;
-  expandedProjects.add(project.name);
+  expandOnlyProject(project.name);
   subdirEditing = { projectIndex, subIndex: -1, mode: 'create' };
   renderProjects(projectsCache);
 }
@@ -3109,6 +3115,7 @@ function startSubdirRename(projectIndex, subIndex) {
   // 行内重命名：把该行名称换成输入框（原名全选），回车/失焦确认，Esc 取消
   const project = projectsCache[projectIndex];
   if (!project || !(project.subdirs || [])[subIndex]) return;
+  expandOnlyProject(project.name);
   subdirEditing = { projectIndex, subIndex, mode: 'rename' };
   renderProjects(projectsCache);
 }
@@ -3153,7 +3160,7 @@ async function confirmSubdirEdit() {
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || '新建失败');
-      expandedProjects.add(project.name);
+      expandOnlyProject(project.name);
       await loadProjects(false);
       addNotice(`小文件夹已创建：${project.name}/${data.subdir}，可拖拽文件/文件夹上传到其中`);
     } else {
@@ -3285,7 +3292,7 @@ async function uploadCollectedFiles(projectName, subdir, collected) {
       addNotice(data.error || '文件上传失败', 'error');
       return;
     }
-    if (projectsCache.some(p => p.name === projectName)) expandedProjects.add(projectName);
+    if (projectsCache.some(p => p.name === projectName)) expandOnlyProject(projectName);
     await loadProjects(false);
     addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.total_bytes)} → ${data.remote_project_dir}`);
     addChatMessage(`### 文件上传完成
@@ -3303,27 +3310,42 @@ async function uploadCollectedFiles(projectName, subdir, collected) {
 }
 
 // ---------------------------------------------------------------------------
-// 作业脚本模板：提交弹窗里拼好的完整 .sh 脚本保存/加载/删除
+// 作业模板：浏览器只传结构化草稿，完整 .sh 由受控后端生成
 // ---------------------------------------------------------------------------
 let jobTemplatesCache = [];
 
 function openSaveJobTemplate() {
-  // 默认模板名取当前作业名，空则回退到时间戳
   const jobName = (document.getElementById('submitJobName').value || '').trim();
   openSubdirModal({
     title: '保存为作业模板',
+    label: '模板名称',
     value: jobName,
     placeholder: '模板名称（如 gromacs-md）',
     confirmText: '保存',
-      onConfirm: async (name) => {
-      if (!name) { addNotice('模板名称不能为空', 'error'); return; }
-      const content = assembleSubmitScript();
-      if (!submitScriptInput.value.trim() && !window.confirm('作业命令还是空的，仍要保存模板？')) return;
+    onConfirm: async (name) => {
       try {
+        if (!name) throw new Error('模板名称不能为空');
+        const command = submitScriptInput.value.trim();
+        if (!command && !window.confirm('作业命令还是空的，仍要保存模板？')) return;
+        const form = readSubmitForm();
         const resp = await fetch('/api/job-templates', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, content }),
+          body: JSON.stringify({
+            name,
+            project_name: currentProjectName(),
+            subdir: (document.getElementById('submitRunDir')?.value || '').trim(),
+            command,
+            job_name: form.jobName,
+            partition: form.partition,
+            account: form.account,
+            qos: form.qos,
+            nodes: form.nodes,
+            cpus_per_task: form.cpus,
+            gpus_per_node: form.gpus,
+            memory_mb: Math.round(form.memoryGb * 1024),
+            time_limit: Math.round(form.hours * 60),
+          }),
         });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || '保存失败');
@@ -3369,32 +3391,52 @@ function renderJobTemplateList(templates) {
     </div>`).join('');
 }
 
-function isPreludeLine(line) {
-  // 锁定前导的特征行：cd / source conda.sh / conda activate，加载时跳过（以当前骨架为准重新生成）
+function isLockedTemplatePrefixLine(line) {
   const t = line.trim();
-  return /^cd\s/.test(t) || /^source\s+\S*conda\.sh/.test(t) || /^conda\s+activate/.test(t);
+  return t === ''
+    || t === 'set -euo pipefail'
+    || t === 'set +u'
+    || t === 'set -u'
+    || /^#\s*(运行目录|激活项目 Conda 环境|GPU 资源预检)/.test(t)
+    || /^cd\s/.test(t)
+    || /^mkdir\s+-p\s+logs\s+runs\b/.test(t)
+    || /^source\s+.*conda\.sh/.test(t)
+    || /^conda\s+activate\b/.test(t)
+    || /^echo\s+["']?CUDA_VISIBLE_DEVICES=/.test(t)
+    || /^srun\s+--nodes=1\s+--ntasks=1\s+bash\s+-c\s+.*GPU requested/.test(t)
+    || /^srun\s+--nodes=1\s+--ntasks=1\s+nvidia-smi\s+-L\s*$/.test(t);
 }
 
 function parseSbatchScript(content) {
-  // 解析完整 .sh：#SBATCH 参数 → 表单；跳过前导；剩余为作业命令正文
+  // 新模板用明确边界提取正文；旧模板则剥离全部头部和已知锁定前导。
   const form = {};
-  const lines = content.split('\n');
-  let i = 0;
-  for (; i < lines.length; i++) {
-    const t = lines[i].trim();
-    if (t.startsWith('#!')) continue;
+  const lines = String(content || '').replace(/^\uFEFF/, '').split(/\r?\n/);
+  for (const line of lines) {
+    const t = line.trim();
     const m = t.match(/^#SBATCH\s+--([\w-]+)(?:=(.*))?/);
-    if (m) { form[m[1]] = (m[2] || '').trim(); continue; }
-    if (t === '') continue;
-    break;
+    if (m) form[m[1]] = (m[2] || '').trim();
   }
-  // 跳过锁定前导（cd / source / conda activate）与空行
-  while (i < lines.length) {
-    const t = lines[i].trim();
-    if (t === '' || isPreludeLine(t)) { i++; continue; }
-    break;
+
+  const begin = lines.findIndex(line => line.trim() === '# --- SLURM-AGENT COMMAND BEGIN ---');
+  const end = lines.findIndex((line, index) =>
+    index > begin && line.trim() === '# --- SLURM-AGENT COMMAND END ---');
+  if (begin >= 0) {
+    const bodyLines = lines.slice(begin + 1, end >= 0 ? end : undefined);
+    return { form, body: bodyLines.join('\n').replace(/^\n+|\n+$/g, '') };
   }
-  const body = lines.slice(i).join('\n').replace(/^\n+/, '');
+
+  const withoutHeader = lines.filter(line => {
+    const t = line.trim();
+    return !t.startsWith('#!') && !t.startsWith('#SBATCH');
+  });
+  let bodyStart = 0;
+  while (
+    bodyStart < withoutHeader.length
+    && isLockedTemplatePrefixLine(withoutHeader[bodyStart])
+  ) {
+    bodyStart++;
+  }
+  const body = withoutHeader.slice(bodyStart).join('\n').replace(/^\n+|\n+$/g, '');
   return { form, body };
 }
 
@@ -3413,8 +3455,20 @@ function applyJobTemplate(index) {
   setIfOption('submitQos', form.qos);
   if (form.nodes) document.getElementById('submitNodes').value = form.nodes;
   if (form['cpus-per-task']) document.getElementById('submitCpus').value = form['cpus-per-task'];
+  if (form.mem) {
+    const mem = form.mem.match(/^([\d.]+)\s*([KMGT]?)B?$/i);
+    if (mem) {
+      const value = Number(mem[1]);
+      const unit = mem[2].toUpperCase();
+      const gb = unit === 'T' ? value * 1024
+        : unit === 'G' ? value
+        : unit === 'K' ? value / 1024 / 1024
+        : value / 1024;
+      if (Number.isFinite(gb) && gb > 0) document.getElementById('submitMemoryGb').value = gb;
+    }
+  }
   const gres = (form.gres || '').match(/gpu:(\d+)/);
-  if (gres) document.getElementById('submitGpus').value = gres[1];
+  document.getElementById('submitGpus').value = gres ? gres[1] : 0;
   if (form.time) {
     // --time 为分钟数（buildSbatchHeader 生成格式），兼容 HH:MM:SS
     let minutes = 0;
@@ -3472,6 +3526,9 @@ async function loadProjects(selectStored = true) {
 }
 
 async function selectProject(name, subdir = '') {
+  const project = projectsCache.find(item => item.name === name);
+  const hasSubdirs = project && (project.subdirs || []).length > 0;
+  expandOnlyProject(hasSubdirs ? name : '');
   syncProjectName(name, subdir);
   lastProjectReport = '';
   lastProjectDir = '';
@@ -4365,7 +4422,7 @@ async function uploadSelectedFiles(input) {
       return;
     }
     syncProjectName(data.project_name, selectedSubdir);
-    if (selectedSubdir) expandedProjects.add(projectName);
+    if (selectedSubdir) expandOnlyProject(projectName);
     await loadProjects(false);
     renderProjects(projectsCache);
     addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.total_bytes)}，目录 ${data.remote_project_dir}；项目 Conda 环境${data.conda_created ? '已创建' : '已存在'}：${data.conda_env_dir}`);
@@ -4769,6 +4826,7 @@ function readSubmitForm() {
     nodes: Math.max(1, parseInt(document.getElementById('submitNodes').value, 10) || 1),
     gpus: Math.max(0, parseInt(document.getElementById('submitGpus').value, 10) || 0),
     cpus: Math.max(1, parseInt(document.getElementById('submitCpus').value, 10) || 1),
+    memoryGb: Math.max(0.125, parseFloat(document.getElementById('submitMemoryGb').value) || 16),
     hours: Math.max(0.25, parseFloat(document.getElementById('submitHours').value) || 4),
   };
 }
@@ -4828,10 +4886,11 @@ function onSubmitQosChange() {
 }
 
 function applyQosLimits() {
-  // 每个 QoS 对应一个最高资源方案：按实时上限限制节点/GPU/CPU/时限输入框，超限自动回缩
+  // QoS 上限是作业总量；表单填写的是每任务/每节点资源，需按节点数换算。
   const nodesEl = document.getElementById('submitNodes');
   const gpusEl = document.getElementById('submitGpus');
   const cpusEl = document.getElementById('submitCpus');
+  const memoryEl = document.getElementById('submitMemoryGb');
   const hoursEl = document.getElementById('submitHours');
   const hintEl = document.getElementById('qosLimitHint');
   const clamps = [];
@@ -4844,28 +4903,35 @@ function applyQosLimits() {
       clamps.push(`节点数已按分区上限调整为 ${combo.max_nodes}`);
     }
   }
-
+  const nodeCount = Math.max(1, Number(nodesEl.value) || 1);
   const limit = submitOptionsData && submitOptionsData.qos_limits
     ? submitOptionsData.qos_limits[document.getElementById('submitQos').value]
     : null;
   if (limit) {
     if (limit.cpu != null) {
-      cpusEl.max = limit.cpu;
-      if (Number(cpusEl.value) > limit.cpu) {
-        cpusEl.value = limit.cpu;
-        clamps.push(`CPU 已按 QoS 上限调整为 ${limit.cpu} 核`);
+      const perTaskCpuMax = Math.max(1, Math.floor(limit.cpu / nodeCount));
+      cpusEl.max = perTaskCpuMax;
+      if (Number(cpusEl.value) > perTaskCpuMax) {
+        cpusEl.value = perTaskCpuMax;
+        clamps.push(`每任务 CPU 已按 QoS 总量调整为 ${perTaskCpuMax} 核`);
       }
     }
     if (limit.gpu != null) {
-      gpusEl.max = limit.gpu;
-      if (limit.gpu === 0) {
-        if (Number(gpusEl.value) !== 0) {
-          gpusEl.value = 0;
-          clamps.push('当前 QoS 不含 GPU，GPU 数已置 0');
-        }
-      } else if (Number(gpusEl.value) > limit.gpu) {
-        gpusEl.value = limit.gpu;
-        clamps.push(`GPU 已按 QoS 上限调整为 ${limit.gpu} 卡`);
+      const perNodeGpuMax = Math.max(0, Math.floor(limit.gpu / nodeCount));
+      gpusEl.max = perNodeGpuMax;
+      if (Number(gpusEl.value) > perNodeGpuMax) {
+        gpusEl.value = perNodeGpuMax;
+        clamps.push(perNodeGpuMax === 0
+          ? '当前节点数与 QoS 不允许再申请 GPU，GPU 数已置 0'
+          : `每节点 GPU 已按 QoS 总量调整为 ${perNodeGpuMax} 卡`);
+      }
+    }
+    if (limit.mem_mb != null) {
+      const perNodeMemoryGbMax = Math.max(0.125, limit.mem_mb / 1024 / nodeCount);
+      memoryEl.max = perNodeMemoryGbMax;
+      if (Number(memoryEl.value) > perNodeMemoryGbMax) {
+        memoryEl.value = Number(perNodeMemoryGbMax.toFixed(3));
+        clamps.push(`每节点内存已按 QoS 总量调整为 ${memoryEl.value} GB`);
       }
     }
     if (limit.wall_minutes != null) {
@@ -4880,9 +4946,9 @@ function applyQosLimits() {
     const cpuText = limit.cpu != null ? `${limit.cpu} 核` : '不限';
     const gpuText = limit.gpu != null ? `${limit.gpu} 卡` : '不限';
     const wallText = limit.wall_minutes != null ? `${limit.wall_minutes / 60} 小时` : '不限';
-    hintEl.textContent = `当前 QoS 上限：CPU ${cpuText} / GPU ${gpuText} / 内存 ${memText} / 最长 ${wallText}`;
+    hintEl.textContent = `当前 QoS 作业总量上限：CPU ${cpuText} / GPU ${gpuText} / 内存 ${memText} / 最长 ${wallText}`;
   } else {
-    hintEl.textContent = '未获取到当前 QoS 的资源上限，请按实际方案填写。';
+    hintEl.textContent = '未获取到当前 QoS 的资源上限，服务端仍会在提交前校验。';
   }
 
   if (clamps.length) addNotice(clamps.join('；'));
@@ -4898,8 +4964,8 @@ function buildSbatchHeader(form) {
   if (form.qos) lines.push(`#SBATCH --qos=${form.qos}`);
   lines.push(`#SBATCH --nodes=${form.nodes}`);
   lines.push(`#SBATCH --cpus-per-task=${form.cpus}`);
-  // 显式写出 gpu:0，与平台默认脚本一致：纯 CPU 作业明确不占用 GPU 配额
-  lines.push(`#SBATCH --gres=gpu:${form.gpus}`);
+  lines.push(`#SBATCH --mem=${Math.round(form.memoryGb * 1024)}M`);
+  if (form.gpus > 0) lines.push(`#SBATCH --gres=gpu:${form.gpus}`);
   lines.push(
     `#SBATCH --time=${Math.round(form.hours * 60)}`,
     '#SBATCH --output=logs/%x-%j.out',
@@ -4910,6 +4976,7 @@ function buildSbatchHeader(form) {
 
 let submitSkeleton = null; // 服务端下发的锁定区骨架：project_dir/conda_env_dir/conda_sh/prelude
 let jobBodyGenerating = false;
+let jobBodyGenerationVersion = 0;
 
 function fallbackSubmitPrelude() {
   // 骨架接口失败时的回退：按约定路径拼前导，保证弹窗可用
@@ -4937,23 +5004,16 @@ function renderSubmitLockedPreviews() {
   lockedEl.textContent = `${header}\n\n${prelude}`;
 }
 
-function assembleSubmitScript() {
-  // 提交时才拼完整脚本：锁定头部 + 服务端前导 + 用户可编辑正文
-  const header = buildSbatchHeader(readSubmitForm());
-  const prelude = (submitSkeleton && submitSkeleton.prelude) || fallbackSubmitPrelude();
-  const body = submitScriptInput.value.trimEnd();
-  return `${header}\n\n${prelude}\n\n${body}\n`;
-}
-
 async function generateJobBody() {
-  if (jobBodyGenerating) return;
   const projectName = currentProjectName();
   if (!projectName) return;
+  const generationVersion = ++jobBodyGenerationVersion;
+  const requestedSubdir = (document.getElementById('submitRunDir')?.value || '').trim();
   jobBodyGenerating = true;
   const regenBtn = document.getElementById('regenJobBodyBtn');
   if (regenBtn) regenBtn.disabled = true;
   submitScriptInput.value = '';
-  submitScriptInput.placeholder = '正在根据项目内容生成作业命令...';
+  submitScriptInput.placeholder = '正在根据所选运行目录生成作业命令...';
   try {
     const resp = await fetch('/api/projects/job-body', {
       method: 'POST',
@@ -4961,24 +5021,33 @@ async function generateJobBody() {
       body: JSON.stringify({
         name: projectName,
         form: readSubmitForm(),
-        subdir: (document.getElementById('submitRunDir')?.value || '').trim(),
+        subdir: requestedSubdir,
       }),
     });
     const data = await resp.json();
+    if (generationVersion !== jobBodyGenerationVersion) return;
     if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
     submitScriptInput.value = data.body || '';
+    if (Array.isArray(data.path_errors) && data.path_errors.length) {
+      addNotice(
+        '生成的命令存在路径问题：' + data.path_errors.join('；') + '。修改后才能提交。',
+        'error',
+      );
+    }
   } catch (e) {
+    if (generationVersion !== jobBodyGenerationVersion) return;
     submitScriptInput.value = '# AI 生成失败，请手动填写作业命令\n# 示例：srun python -u main.py\n';
     addNotice('生成作业命令失败：' + e.message, 'error');
   } finally {
-    submitScriptInput.placeholder = '作业命令（可修改）';
-    jobBodyGenerating = false;
-    if (regenBtn) regenBtn.disabled = false;
+    if (generationVersion === jobBodyGenerationVersion) {
+      submitScriptInput.placeholder = '作业命令（可修改）';
+      jobBodyGenerating = false;
+      if (regenBtn) regenBtn.disabled = false;
+    }
   }
 }
 
 function regenerateJobBody() {
-  if (jobBodyGenerating) return;
   generateJobBody();
 }
 
@@ -5043,10 +5112,11 @@ async function fetchSubmitSkeleton() {
 }
 
 async function onSubmitRunDirChange() {
-  // 切换运行目录：先即时刷新回退前导（cd 路径马上变化），再拉权威骨架
+  // run_dir 是命令路径基准；切换后同步刷新骨架和模型可见的目录树。
   renderSubmitLockedPreviews();
-  await fetchSubmitSkeleton();
   onSubmitFieldChange();
+  await fetchSubmitSkeleton();
+  await generateJobBody();
 }
 
 function closeJobSubmitModal(event) {
@@ -5087,9 +5157,7 @@ async function submitJobFromModal() {
     submitScriptInput.focus();
     return;
   }
-  // 完整脚本 = 锁定头部 + 服务端前导 + 用户可编辑正文，提交时组装
-  const script = assembleSubmitScript();
-
+  // 浏览器只提交命令正文与结构化资源；完整脚本由服务端锁定生成。
   isProcessing = true;
   submitJobBtn.disabled = true;
   submitJobBtn.textContent = '提交中...';
@@ -5100,10 +5168,15 @@ async function submitJobFromModal() {
       body: JSON.stringify({
         project_name: projectName,
         subdir: (document.getElementById('submitRunDir')?.value || '').trim(),
-        script,
+        command: bodyText,
         job_name: form.jobName,
         partition: form.partition,
+        account: form.account,
+        qos: form.qos,
         nodes: form.nodes,
+        cpus_per_task: form.cpus,
+        gpus_per_node: form.gpus,
+        memory_mb: Math.round(form.memoryGb * 1024),
         time_limit: Math.round(form.hours * 60),
       }),
     });
@@ -5114,16 +5187,23 @@ async function submitJobFromModal() {
     }
     closeJobSubmitModal();
     const jobId = data.job_id == null ? '未知' : data.job_id;
-    addNotice(`作业已提交，作业 ID：${jobId}`);
+    const verification = data.resource_verification || {};
+    const verified = verification.status === 'verified';
+    addNotice(
+      `作业已提交，作业 ID：${jobId}；${verification.message || '资源字段等待 Slurm 确认'}`,
+      verified ? 'info' : 'error',
+    );
     const content = `### 作业已提交
 
 - 作业 ID：\`${jobId}\`
-- 作业名：\`${form.jobName}\`（分区 \`${form.partition}\`，账户 \`${form.account}\`）
+- 作业名：\`${form.jobName}\`
+- 资源：分区 \`${form.partition}\` / 账户 \`${form.account}\` / QoS \`${form.qos}\` / 每节点 GPU \`${form.gpus}\` / 每任务 CPU \`${form.cpus}\` / 每节点内存 \`${form.memoryGb} GB\`
+- Slurm 资源核验：${verification.message || '等待确认'}
 - 运行目录：\`${data.run_dir || data.project_dir}\`
-- 脚本已保存：\`${data.script_path}\`
+- 服务端生成脚本：\`${data.script_path}\`
 - 日志文件：\`${data.run_dir || data.project_dir}/logs/${form.jobName}-${jobId}.out\` 与 \`.err\`
 
-Conda 环境为整个项目共享，无需重复安装。可以在右侧「作业情况」面板跟踪状态，或直接问我“作业 ${jobId} 运行得怎么样了”。`;
+${verified ? '资源字段已通过当前核验。' : '当前不能确认 GPU 已正确分配，请先查看作业资源详情再开始依赖 GPU 的训练。'} Conda 环境为整个项目共享。可以在右侧「作业情况」面板跟踪状态。`;
     addChatMessage(content, 'ai', true);
   } catch (e) {
     addNotice('提交作业失败: ' + e.message, 'error');
@@ -5262,7 +5342,11 @@ ${text}`;
     const resp = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: messageText, project_name: currentProjectName() }),
+      body: JSON.stringify({
+        message: messageText,
+        project_name: currentProjectName(),
+        subdir: selectedSubdir || '',
+      }),
     });
     if (!resp.ok) {
       const err = await resp.json();
@@ -5311,7 +5395,10 @@ async function resetChat() {
     await fetch('/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_name: currentProjectName() }),
+      body: JSON.stringify({
+        project_name: currentProjectName(),
+        subdir: selectedSubdir || '',
+      }),
     });
     messagesEl.innerHTML = '<div class="message ai">对话已重置。可以继续查询资源、生成脚本或准备提交命令。</div>';
     lastProjectReport = '';
