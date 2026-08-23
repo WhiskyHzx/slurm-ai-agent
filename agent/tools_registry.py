@@ -11,7 +11,7 @@ Function Calling tool 定义，并提供统一的执行调度入口。
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 
 from core.slurm_client import SlurmClient
 
@@ -70,23 +70,28 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "function": {
             "name": "submit_job",
             "description": (
-                "向算力平台提交一个作业。"
-                "当用户说'提交作业''帮我跑一个任务''生成并提交脚本'时调用。"
-                "需要提供作业脚本内容和目标分区等信息。"
+                "通过受控后端向当前项目提交作业。模型只提供命令正文和结构化资源，"
+                "不要生成 shebang、#SBATCH、cd、日志路径或 Conda 激活命令；"
+                "这些内容由后端根据当前项目锁定生成。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "script": {
+                    "command": {
                         "type": "string",
-                        "description": (
-                            "作业脚本内容，必须是完整的 bash 脚本，"
-                            "以 #!/bin/bash 开头，包含 srun 或 其他命令。"
-                        ),
+                        "description": "作业命令正文，例如 srun python -u train.py；不得包含 #SBATCH。",
                     },
                     "partition": {
                         "type": "string",
-                        "description": "目标分区名，默认 P107-RTX5090",
+                        "description": "目标分区名，如 P107-RTX5090",
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "计费账户，如 competition",
+                    },
+                    "qos": {
+                        "type": "string",
+                        "description": "QoS，如 qos_p107-rtx5090",
                     },
                     "name": {
                         "type": "string",
@@ -96,12 +101,24 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                         "type": "integer",
                         "description": "申请节点数，默认 1",
                     },
+                    "cpus_per_task": {
+                        "type": "integer",
+                        "description": "每个任务的 CPU 核数，默认 1",
+                    },
+                    "gpus_per_node": {
+                        "type": "integer",
+                        "description": "每个节点的 GPU 数；需要 GPU 时必须明确大于 0",
+                    },
+                    "memory_mb": {
+                        "type": "integer",
+                        "description": "每个节点内存（MB），默认 16384",
+                    },
                     "time_limit": {
                         "type": "integer",
                         "description": "运行时间上限（分钟），默认 60",
                     },
                 },
-                "required": ["script"],
+                "required": ["command", "partition", "account", "qos"],
             },
         },
     },
@@ -502,8 +519,15 @@ TOOL_DESCRIPTIONS = {
 class ToolExecutor:
     """工具执行器：根据工具名和参数调用对应的 slurm_client 函数。"""
 
-    def __init__(self, client: Optional[SlurmClient] = None):
+    def __init__(
+        self,
+        client: Optional[SlurmClient] = None,
+        submit_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        submission_context: Optional[Dict[str, Any]] = None,
+    ):
         self.client = client or SlurmClient()
+        self.submit_handler = submit_handler
+        self.submission_context = dict(submission_context or {})
 
     def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """
@@ -532,16 +556,31 @@ class ToolExecutor:
                 return self._format_json(result)
 
             elif tool_name == "submit_job":
-                result = self.client.submit_job(
-                    script=arguments["script"],
-                    partition=arguments.get("partition", "P107-RTX5090"),
-                    name=arguments.get("name", "api-job"),
-                    nodes=arguments.get("nodes", 1),
-                    time_limit=arguments.get("time_limit", 60),
-                )
-                job_id = result.get("job_id") or result.get("result", {}).get("job_id")
+                if self.submit_handler is None:
+                    return (
+                        "提交被拒绝：当前会话没有绑定项目级受控提交后端。"
+                        "请在 Web 中选择项目后再提交作业。"
+                    )
+                draft = dict(self.submission_context)
+                draft.update({
+                    "command": arguments.get("command", ""),
+                    "partition": arguments.get("partition", ""),
+                    "account": arguments.get("account", ""),
+                    "qos": arguments.get("qos", ""),
+                    "job_name": arguments.get("name", "api-job"),
+                    "nodes": arguments.get("nodes", 1),
+                    "cpus_per_task": arguments.get("cpus_per_task", 1),
+                    "gpus_per_node": arguments.get("gpus_per_node", 0),
+                    "memory_mb": arguments.get("memory_mb", 16384),
+                    "time_limit": arguments.get("time_limit", 60),
+                    "source": "agent",
+                })
+                result = self.submit_handler(draft)
+                job_id = result.get("job_id")
+                verification = result.get("resource_verification") or {}
+                verification_text = verification.get("message") or "资源字段等待 Slurm 确认"
                 return (
-                    f"作业提交成功！job_id={job_id}。"
+                    f"作业已提交，job_id={job_id}。{verification_text}。"
                     f"可以使用 get_job({job_id}) 查看详情，"
                     f"或 cancel_job({job_id}) 取消。"
                 )
