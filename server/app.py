@@ -41,6 +41,8 @@ from core.file_transfer import (
     FileTransferError,
     ProjectWorkspace,
     copy_files_to_project,
+    ensure_conda_room,
+    ensure_project_directory,
     ensure_project_workspace,
     find_conda_executable,
     get_max_upload_bytes,
@@ -80,6 +82,84 @@ app = FastAPI(title="算力平台智能助手", version="1.0")
 # ---------------------------------------------------------------------------
 agent: Optional[AgentLoop] = None
 project_agents: dict[str, AgentLoop] = {}
+conda_init_jobs: dict[str, dict] = {}
+conda_init_jobs_lock = threading.Lock()
+
+
+def _conda_env_ready(conda_env_dir: Path) -> bool:
+    return (conda_env_dir / "conda-meta" / "history").exists()
+
+
+def _conda_status_for(project_name: str) -> dict:
+    safe_project_name, project_dir, conda_env_dir = project_workspace(project_name)
+    key = safe_project_name
+    if _conda_env_ready(conda_env_dir):
+        return {
+            "status": "ready",
+            "project_name": safe_project_name,
+            "project_dir": str(project_dir),
+            "conda_env_dir": str(conda_env_dir),
+            "message": "项目 Conda 环境已就绪",
+        }
+    with conda_init_jobs_lock:
+        job = conda_init_jobs.get(key)
+        if job and job.get("status") in {"initializing", "failed"}:
+            return {
+                "project_name": safe_project_name,
+                "project_dir": str(project_dir),
+                "conda_env_dir": str(conda_env_dir),
+                **job,
+            }
+    return {
+        "status": "missing",
+        "project_name": safe_project_name,
+        "project_dir": str(project_dir),
+        "conda_env_dir": str(conda_env_dir),
+        "message": "项目 Conda 环境尚未初始化",
+    }
+
+
+def _start_conda_init(project_name: str) -> dict:
+    safe_project_name, project_dir, conda_env_dir = project_workspace(project_name)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".slurm-agent").mkdir(parents=True, exist_ok=True)
+    if _conda_env_ready(conda_env_dir):
+        return _conda_status_for(safe_project_name)
+
+    with conda_init_jobs_lock:
+        current = conda_init_jobs.get(safe_project_name)
+        if current and current.get("status") == "initializing":
+            return _conda_status_for(safe_project_name)
+        conda_init_jobs[safe_project_name] = {
+            "status": "initializing",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "message": "项目 Conda 环境正在后台初始化",
+        }
+
+    def worker() -> None:
+        try:
+            created = ensure_conda_room(conda_env_dir)
+            with conda_init_jobs_lock:
+                conda_init_jobs[safe_project_name] = {
+                    "status": "ready",
+                    "started_at": conda_init_jobs.get(safe_project_name, {}).get("started_at"),
+                    "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    "created": created,
+                    "message": "项目 Conda 环境已就绪",
+                }
+        except Exception as e:
+            logger.exception("后台初始化项目 Conda 环境失败")
+            with conda_init_jobs_lock:
+                conda_init_jobs[safe_project_name] = {
+                    "status": "failed",
+                    "started_at": conda_init_jobs.get(safe_project_name, {}).get("started_at"),
+                    "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    "error": str(e),
+                    "message": f"项目 Conda 环境初始化失败: {e}",
+                }
+
+    threading.Thread(target=worker, daemon=True).start()
+    return _conda_status_for(safe_project_name)
 
 
 def _history_path(project_name: str, subdir: str = "", create: bool = False) -> Path:
@@ -1687,16 +1767,10 @@ async def chat(req: ChatRequest):
                         except json.JSONDecodeError:
                             arguments = {}
 
-                        # 发送 tool_start 事件
-                        yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': arguments}, ensure_ascii=False)}\n\n"
-
                         try:
                             result_str = ag.executor.execute(tool_name, arguments)
                         except Exception as e:
                             result_str = f"工具执行出错: {e}"
-
-                        # 发送 tool_end 事件
-                        yield f"data: {json.dumps({'type': 'tool_end', 'tool': tool_name, 'result': result_str[:500]}, ensure_ascii=False)}\n\n"
 
                         # 追加 tool 结果消息
                         ag.messages.append({
@@ -2229,14 +2303,15 @@ async def append_project_chat(req: ProjectChatAppendRequest):
 
 @app.post("/api/projects")
 def create_project(req: ProjectCreateRequest):
-    """Create a project directory and its per-project conda environment."""
+    """Create a project directory immediately; initialize conda in the background."""
     try:
-        workspace = ensure_project_workspace(req.name)
+        workspace = ensure_project_directory(req.name)
         notes_path = _append_project_notes(
             workspace.project_dir,
             environment_requirements=req.environment_requirements,
             compute_requirements=req.compute_requirements,
         )
+        conda_status = _start_conda_init(workspace.project_name)
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2247,8 +2322,37 @@ def create_project(req: ProjectCreateRequest):
         "project_name": workspace.project_name,
         "project_dir": str(workspace.project_dir),
         "conda_env_dir": str(workspace.conda_env_dir),
-        "conda_created": workspace.conda_created,
+        "conda_created": False,
+        "conda_status": conda_status.get("status"),
+        "conda_message": conda_status.get("message"),
         "notes_path": str(notes_path),
+    }
+
+
+@app.get("/api/projects/conda-status")
+def project_conda_status(project_name: str, start: bool = True):
+    """Return per-project conda initialization status; optionally start it."""
+    try:
+        if start:
+            status = _start_conda_init(project_name)
+        else:
+            status = _conda_status_for(project_name)
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("读取项目 Conda 环境状态失败")
+        return JSONResponse({"error": f"读取项目 Conda 环境状态失败: {e}"}, status_code=500)
+    return {
+        "status": "ok",
+        "conda_status": status.get("status"),
+        "project_name": status.get("project_name"),
+        "project_dir": status.get("project_dir"),
+        "conda_env_dir": status.get("conda_env_dir"),
+        "message": status.get("message"),
+        "error": status.get("error"),
+        "started_at": status.get("started_at"),
+        "finished_at": status.get("finished_at"),
+        "created": status.get("created"),
     }
 
 
@@ -2440,6 +2544,15 @@ def delete_job_template(req: JobTemplateDeleteRequest):
 def project_report(req: ProjectReportRequest):
     """Generate a dependency/environment plan before installing dependencies."""
     try:
+        conda_status = _conda_status_for(req.name)
+        if conda_status.get("status") != "ready":
+            if conda_status.get("status") in {"missing", "failed"}:
+                conda_status = _start_conda_init(req.name)
+            return JSONResponse({
+                "error": conda_status.get("message") or "项目 Conda 环境尚未就绪",
+                "conda_status": conda_status.get("status"),
+                "conda_env_dir": conda_status.get("conda_env_dir"),
+            }, status_code=409)
         workspace = ensure_project_workspace(req.name)
         notes_path = _append_project_notes(
             workspace.project_dir,
@@ -2793,6 +2906,15 @@ def install_project_dependencies(req: ProjectInstallRequest):
     try:
         # 先确保工作区就绪（可能触发 conda create，内部自会加项目锁）；
         # 之后再拿锁执行安装，避免嵌套拿锁死锁
+        conda_status = _conda_status_for(req.name)
+        if conda_status.get("status") != "ready":
+            if conda_status.get("status") in {"missing", "failed"}:
+                conda_status = _start_conda_init(req.name)
+            return JSONResponse({
+                "error": conda_status.get("message") or "项目 Conda 环境尚未就绪",
+                "conda_status": conda_status.get("status"),
+                "conda_env_dir": conda_status.get("conda_env_dir"),
+            }, status_code=409)
         workspace = ensure_project_workspace(req.name)
         selected_items = req.selected_items or []
         commands = _commands_from_selected_items(selected_items) or _extract_install_commands(req.plan)

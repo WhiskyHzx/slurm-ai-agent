@@ -217,6 +217,19 @@ def ensure_project_workspace(project_name: str) -> ProjectWorkspace:
     )
 
 
+def ensure_project_directory(project_name: str) -> ProjectWorkspace:
+    """Create only the project directory and metadata directory; do not create conda."""
+    safe_project_name, project_dir, conda_env_dir = project_workspace(project_name)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".slurm-agent").mkdir(parents=True, exist_ok=True)
+    return ProjectWorkspace(
+        project_name=safe_project_name,
+        project_dir=project_dir,
+        conda_env_dir=conda_env_dir,
+        conda_created=False,
+    )
+
+
 def ensure_conda_room(conda_env_dir: Path) -> bool:
     """Create the per-project conda environment if it does not already exist."""
     if (conda_env_dir / "conda-meta" / "history").exists():
@@ -278,7 +291,7 @@ def copy_files_to_project(staging_dir: Path, file_count: int, project_name: str,
     if file_count <= 0:
         raise FileTransferError("没有可上传的文件")
 
-    workspace = ensure_project_workspace(project_name)
+    workspace = ensure_project_directory(project_name)
     subdir = (subdir or "").strip().strip("/")
     if subdir:
         if subdir.startswith(".") or ".." in subdir.split("/") or "/" in subdir:
