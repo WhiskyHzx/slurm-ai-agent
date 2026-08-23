@@ -1115,6 +1115,33 @@ def _literal_command_path(token: str) -> Optional[str]:
     return value
 
 
+def _logical_shell_lines(command: str):
+    """合并 Bash 的反斜杠续行，并保留每条逻辑命令的起始物理行号。"""
+    current = ""
+    start_line = 1
+    continuing = False
+    for line_no, line in enumerate(str(command or "").splitlines(), start=1):
+        if not continuing:
+            current = line
+            start_line = line_no
+        else:
+            current += line
+
+        trailing_backslashes = len(current) - len(current.rstrip("\\"))
+        if trailing_backslashes % 2 == 1:
+            current = current[:-1]
+            continuing = True
+            continue
+
+        yield start_line, current
+        current = ""
+        continuing = False
+
+    if continuing:
+        # 保留未闭合的反斜杠，让 shlex 给出真实语法错误。
+        yield start_line, current + "\\"
+
+
 def _command_path_errors(command: str, run_dir: Path) -> list[str]:
     """检查命令正文中的入口脚本和关键输入文件是否基于 run_dir 存在。"""
     errors: list[str] = []
@@ -1142,7 +1169,7 @@ def _command_path_errors(command: str, run_dir: Path) -> list[str]:
             f"第 {line_no} 行的{label} {literal!r} 在运行目录 {run_dir} 下不存在"
         )
 
-    for line_no, line in enumerate(str(command or "").splitlines(), start=1):
+    for line_no, line in _logical_shell_lines(command):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
