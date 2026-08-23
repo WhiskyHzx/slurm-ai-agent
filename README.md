@@ -147,9 +147,9 @@ PYTHONPATH=. uvicorn server.app:app --host 0.0.0.0 --port 8080
 
 输出路径规范：
 
-- 程序结果：`runs/<作业名>-%j/`
-- Slurm stdout：`runs/<作业名>-%j.out`
-- Slurm stderr：`runs/<作业名>-%j.err`
+- 程序结果：直接写在当前运行目录（项目根或所选子目录）
+- Slurm stdout：`logs/<作业名>-%j.out`
+- Slurm stderr：`logs/<作业名>-%j.err`
 
 ## 终端模式
 

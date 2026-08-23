@@ -3485,7 +3485,7 @@ function isLockedTemplatePrefixLine(line) {
     || t === 'set -u'
     || /^#\s*(运行目录|激活项目 Conda 环境|GPU 资源预检)/.test(t)
     || /^cd\s/.test(t)
-    || /^mkdir\s+-p\s+logs\s+runs\b/.test(t)
+    || /^mkdir\s+-p\s+logs(\s+runs)?\b/.test(t)
     || /^source\s+.*conda\.sh/.test(t)
     || /^conda\s+activate\b/.test(t)
     || /^echo\s+["']?CUDA_VISIBLE_DEVICES=/.test(t)
@@ -5209,7 +5209,7 @@ function fallbackSubmitPrelude() {
     'set -euo pipefail',
     '# 运行目录',
     `cd ${projectDir}`,
-    'mkdir -p logs runs',
+    'mkdir -p logs',
     '',
     '# 激活项目 Conda 环境',
     'set +u',

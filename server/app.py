@@ -358,6 +358,7 @@ class JobTemplateDeleteRequest(BaseModel):
 PROJECT_NOTES_FILENAME = "PROJECT_NOTES.txt"
 
 # 项目内不作为数据集小文件夹展示的目录（服务自身/运行产物）
+# 子目录黑名单：.slurm-agent 服务内部目录；logs 运行产物；runs 历史遗留目录名（继续隐藏旧项目的残留目录）
 SUBDIR_EXCLUDE_NAMES = {".slurm-agent", "logs", "runs"}
 
 
@@ -752,15 +753,14 @@ def _build_project_report_prompt(workspace, extra_notes: str = "") -> str:
 
 <硬性规则>
 1. 不要声称已经安装依赖、写入脚本或提交作业；这里只生成“将要安装什么”的方案和命令草案。
-2. 输出目录必须规范化：程序结果保存到项目目录下 runs/<作业名>-%j/。
-3. Slurm 标准输出和标准错误必须使用 runs/<作业名>-%j.out 与 runs/<作业名>-%j.err。
-4. 必要时在脚本开头 mkdir -p runs "$RUN_DIR"。
-5. 每个项目的 conda 环境已准备在 <conda_env>，依赖安装命令优先使用该环境。
-6. 如果依赖名称、入口命令、数据路径或算力需求不确定，必须列入“需要用户确认的问题”，不能擅自假设。
-7. 如果包管理查询结果不足，请给出可复制的 conda/pip 查询命令。
-8. “将要安装的程序环境列表”必须带版本或版本范围；版本号只能来自项目文件、用户输入或包管理查询结果中的真实版本，其它情况写“需确认”，不要编造。特别禁止把其它集群 module 系统里的版本号（如 gromacs/2019.4-gcc-9.2.0-openmpi 中的 2019.4）直接当作 conda/pip 可安装版本。
-9. “安装命令”只能包含 conda/mamba/pip 安装命令，每行一条，不要写 rm、curl、wget、bash、sh、source、export 或其它 shell 操作。
-10. 输出使用 Markdown，必须严格包含以下标题：
+2. Slurm 标准输出和标准错误由系统统一写入 logs/<作业名>-%j.out 与 logs/<作业名>-%j.err，无需在方案中处理。
+3. 程序结果直接写在当前运行目录（或程序自身输出参数指定的位置），不要创建额外的结果目录。
+4. 每个项目的 conda 环境已准备在 <conda_env>，依赖安装命令优先使用该环境。
+5. 如果依赖名称、入口命令、数据路径或算力需求不确定，必须列入“需要用户确认的问题”，不能擅自假设。
+6. 如果包管理查询结果不足，请给出可复制的 conda/pip 查询命令。
+7. “将要安装的程序环境列表”必须带版本或版本范围；版本号只能来自项目文件、用户输入或包管理查询结果中的真实版本，其它情况写“需确认”，不要编造。特别禁止把其它集群 module 系统里的版本号（如 gromacs/2019.4-gcc-9.2.0-openmpi 中的 2019.4）直接当作 conda/pip 可安装版本。
+8. “安装命令”只能包含 conda/mamba/pip 安装命令，每行一条，不要写 rm、curl、wget、bash、sh、source、export 或其它 shell 操作。
+9. 输出使用 Markdown，必须严格包含以下标题：
    - ## 1. 项目理解
    - ## 2. 将要安装的程序环境列表
    - ## 3. 安装命令
@@ -1118,7 +1118,7 @@ def _build_job_body_prompt(workspace: ProjectWorkspace, form: dict, run_dir: Pat
 5. 只能引用目录树中确实存在的入口脚本和配置文件，不要猜测 main.py、train.py 或配置路径。
 6. python 命令加 -u 实时输出；正文开头结尾可用 echo 打印时间戳。
 7. 默认只生成完成训练所必需的命令。除非用户明确要求，不要额外创建结果目录、复制 outputs、隐藏错误或添加 || true。
-8. 程序本身支持输出目录参数时，才把输出保存到 runs/<作业名>-${{SLURM_JOB_ID}}/；不要臆造程序不支持的参数。
+8. 除非用户明确要求，不要创建额外结果目录；程序输出直接写当前运行目录或使用程序自身支持的输出参数，不要臆造程序不支持的参数。
 9. 入口脚本、参数不确定时选最合理的默认，并在注释中标注“默认值，可修改”。
 10. 只输出代码本身，不要 Markdown 代码块标记，不要解释文字。
 </硬性规则>
@@ -1349,7 +1349,7 @@ def _build_job_prelude(workspace: ProjectWorkspace, run_dir: Path) -> str:
         "set -euo pipefail",
         "# 运行目录（服务端锁定）",
         f"cd {shlex.quote(str(run_dir))}",
-        "mkdir -p logs runs",
+        "mkdir -p logs",
         "",
         "# 激活项目 Conda 环境（服务端锁定）",
         "set +u",
