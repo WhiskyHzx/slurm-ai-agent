@@ -27,8 +27,10 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "function": {
             "name": "list_jobs",
             "description": (
-                "查询算力平台上的作业列表，可按分区过滤。"
-                "当用户询问'有哪些作业''查看作业''某分区有什么作业'时调用。"
+                "查询算力平台上当前的实时作业列表快照，可按分区过滤。"
+                "当用户询问'有哪些作业''查看作业'某分区有什么作业'时调用。"
+                "回答'现在有多少作业在运行/排队'必须以本工具返回为准："
+                "逐条统计 job_state 字段（RUNNING/PENDING 等）。"
             ),
             "parameters": {
                 "type": "object",
@@ -148,8 +150,10 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "function": {
             "name": "get_diag",
             "description": (
-                "查看集群整体统计信息，包括运行中作业数、排队作业数、"
-                "节点状态等。当用户询问'集群状态''平台忙不忙''有多少节点'时调用。"
+                "查看集群控制器诊断统计（slurmctld 累计口径，自控制器启动以来的计数）。"
+                "注意：其中 statistics 里的 jobs_pending/jobs_running 是累计统计，"
+                "不是当前队列里的实时数量；回答当前作业数量请改用 list_jobs。"
+                "本工具适合回答'控制器状态''调度器运行情况'类问题。"
             ),
             "parameters": {
                 "type": "object",
@@ -593,7 +597,7 @@ class ToolExecutor:
 
             elif tool_name == "get_diag":
                 result = self.client.get_diag()
-                return self._format_json(result)
+                return self._format_diag_result(result)
 
             elif tool_name == "get_nodes":
                 result = self.client.get_nodes()
@@ -689,6 +693,27 @@ class ToolExecutor:
             return f"工具 {tool_name} 执行出错: {e}"
 
     # ---- 结果格式化 ----
+
+    def _format_diag_result(self, result: Dict[str, Any]) -> str:
+        """get_diag 结果补注：statistics 为控制器累计统计口径，附实时作业统计防混淆。"""
+        try:
+            jobs = self.client.list_jobs().get("jobs", [])
+            counts: Dict[str, int] = {}
+            for job in jobs:
+                # job_state 可能是 "PENDING + REASON" 或 "PENDING+REQUEUE" 等组合，取主状态
+                state = (job.get("job_state") or "UNKNOWN").split()[0].split("+")[0]
+                counts[state] = counts.get(state, 0) + 1
+            enriched = dict(result)
+            enriched["_note"] = (
+                "statistics 字段是 slurmctld 控制器自启动以来的累计统计（sdiag 口径），"
+                "不代表当前队列里的作业数量；回答当前运行/排队作业数"
+                "以下面的 current_jobs_summary 实时统计为准。"
+            )
+            enriched["current_jobs_summary"] = counts
+            return self._format_json(enriched)
+        except Exception as e:
+            logger.warning("补充实时作业统计失败，退回原始 get_diag 结果: %s", e)
+            return self._format_json(result)
 
     @staticmethod
     def _format_json(data: Dict[str, Any]) -> str:
