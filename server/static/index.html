@@ -473,6 +473,62 @@
 
   .docs-file-item:hover { background: var(--surface-soft); }
   .docs-file-item.active { background: var(--focus-soft, rgba(59, 130, 246, .12)); color: var(--blue); font-weight: 650; }
+  /* 报告阅读模式：输出目录树中除报告外的文件锁定不可点 */
+  .docs-file-item.locked { opacity: .45; cursor: default; }
+  .docs-file-item.locked:hover { background: none; }
+
+  /* 作业状态通知：右下角滑入卡片 */
+  .job-alert-stack {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    display: grid;
+    gap: 10px;
+    z-index: 150;
+    width: min(340px, calc(100vw - 36px));
+  }
+
+  .job-alert-card {
+    position: relative;
+    display: grid;
+    gap: 8px;
+    padding: 14px 16px;
+    border: 1px solid var(--glass-line);
+    border-radius: 14px;
+    background: var(--glass);
+    backdrop-filter: blur(24px) saturate(170%);
+    -webkit-backdrop-filter: blur(24px) saturate(170%);
+    box-shadow: var(--modal-shadow);
+    transform: translateX(120%);
+    opacity: 0;
+    transition: transform .45s cubic-bezier(.32, 1.2, .5, 1), opacity .3s ease;
+  }
+
+  .job-alert-card.in { transform: none; opacity: 1; }
+  .job-alert-card.out { transform: translateX(120%); opacity: 0; }
+
+  .job-alert-card .alert-title { font-weight: 750; font-size: 13.5px; padding-right: 22px; }
+  .job-alert-card.ok .alert-title { color: var(--green); }
+  .job-alert-card.fail .alert-title { color: var(--red); }
+  .job-alert-card .alert-body { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  .job-alert-card .alert-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+  .job-alert-card .alert-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 22px;
+    height: 22px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  .job-alert-card .alert-close:hover { background: var(--surface-soft); color: var(--ink); }
 
   .left-sidebar, .right-sidebar {
     background: var(--surface);
@@ -2196,6 +2252,8 @@
 
 <div id="notices" class="toast-stack"></div>
 
+<div id="jobAlertStack" class="job-alert-stack"></div>
+
 <div id="subdirModal" class="modal-backdrop" onclick="closeSubdirModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
     <div class="modal-head" id="subdirModalTitle">新建小文件夹</div>
@@ -2686,6 +2744,8 @@ let docsTreeData = null;
 let docsExpandedDirs = null;
 let activeDocsPath = '';
 let docsRightWasCollapsed = null;
+// 报告阅读模式：非空时文档树换成作业输出目录结构，仅报告文件可点
+let docsTreeOverride = null;
 
 function toggleDocsMode(force) {
   const target = typeof force === 'boolean' ? force : !docsMode;
@@ -2702,15 +2762,26 @@ function toggleDocsMode(force) {
       workspace.classList.add('right-collapsed');
       workspace.classList.remove('right-open');
     }
-    if (!docsTreeData) {
-      loadDocsTree().then(() => renderDocsTree());
+    if (docsTreeOverride) {
+      // 报告阅读：左侧树为输出目录结构，直接渲染报告内容
+      renderDocsTree(false);
+      renderJobReportContent();
     } else {
-      renderDocsTree();
+      if (!docsTreeData) {
+        // 首次加载才播放入场级联动画，之后重绘不再重播（避免闪烁跳动）
+        loadDocsTree().then(() => renderDocsTree(true));
+      } else {
+        renderDocsTree(false);
+      }
+      if (!activeDocsPath) openDocsFile('overview/index.md');
+      else updateDocsTreeActive();
     }
-    if (!activeDocsPath) openDocsFile('overview/index.md');
-  } else if (docsRightWasCollapsed === false) {
-    workspace.classList.remove('right-collapsed');
-    workspace.classList.add('right-open');
+  } else {
+    docsTreeOverride = null;
+    if (docsRightWasCollapsed === false) {
+      workspace.classList.remove('right-collapsed');
+      workspace.classList.add('right-open');
+    }
   }
   localStorage.setItem('slurmDocsMode', String(docsMode));
 }
@@ -2730,41 +2801,54 @@ async function loadDocsTree() {
   }
 }
 
-function docsTreeHtml(nodes, depth) {
+function docsTreeHtml(nodes, depth, animate) {
   return nodes.map(node => {
     if (node.type === 'dir') {
       const open = docsExpandedDirs.has(node.name);
-      const kids = open ? `<div class="docs-dir-children">${docsTreeHtml(node.children || [], depth + 1)}</div>` : '';
-      return `<div class="docs-node cascade" style="--i:${depth}">
+      const kids = open ? `<div class="docs-dir-children">${docsTreeHtml(node.children || [], depth + 1, animate)}</div>` : '';
+      return `<div class="docs-node${animate ? ' cascade' : ''}" style="--i:${depth}">
         <button class="docs-dir-label${open ? ' open' : ''}" onclick="toggleDocsDir('${escapeHtml(node.name)}')">
           <span class="caret">▶</span>${escapeHtml(node.name)}
         </button>${kids}
       </div>`;
     }
-    return `<button class="docs-file-item cascade${node.path === activeDocsPath ? ' active' : ''}"
-      style="--i:${depth + 1}" onclick="openDocsFile('${escapeHtml(node.path)}')" title="${escapeHtml(node.title)}">
+    const isReport = docsTreeOverride && node.path === docsTreeOverride.reportPath;
+    const locked = docsTreeOverride && !isReport;
+    const cls = `docs-file-item${animate ? ' cascade' : ''}${node.path === activeDocsPath || isReport ? ' active' : ''}${locked ? ' locked' : ''}`;
+    const clickAttr = locked ? '' : ` onclick="openDocsFile('${escapeHtml(node.path)}')"`;
+    return `<button class="${cls}" data-path="${escapeHtml(node.path)}"
+      style="--i:${depth + 1}"${clickAttr} title="${escapeHtml(node.title)}">
       ${escapeHtml(node.title)}
     </button>`;
   }).join('');
 }
 
-function renderDocsTree() {
+function renderDocsTree(animate = false) {
   const tree = document.getElementById('docsTree');
-  if (!tree || !docsTreeData) return;
-  tree.innerHTML = docsTreeData.length
-    ? docsTreeHtml(docsTreeData, 0)
+  const data = docsTreeOverride ? docsTreeOverride.tree : docsTreeData;
+  if (!tree || !data) return;
+  tree.innerHTML = data.length
+    ? docsTreeHtml(data, 0, animate)
     : '<div class="empty">文档目录为空</div>';
+}
+
+// 切换文档只更新高亮，不重绘整棵树（避免闪烁跳动）
+function updateDocsTreeActive() {
+  document.querySelectorAll('#docsTree .docs-file-item').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-path') === activeDocsPath);
+  });
 }
 
 function toggleDocsDir(name) {
   if (docsExpandedDirs.has(name)) docsExpandedDirs.delete(name);
   else docsExpandedDirs.add(name);
-  renderDocsTree();
+  renderDocsTree(false);
 }
 
 async function openDocsFile(path) {
+  if (docsTreeOverride) return; // 报告阅读模式下左侧树已锁定
   activeDocsPath = path;
-  renderDocsTree();
+  updateDocsTreeActive();
   try {
     const res = await fetch('/api/docs/content?path=' + encodeURIComponent(path));
     const data = await res.json();
@@ -2777,6 +2861,136 @@ async function openDocsFile(path) {
   } catch (e) {
     addNotice('打开文档失败：' + e.message, 'error');
   }
+}
+
+// ===== 作业状态心跳：发现完成/失败时右下角滑入通知 =====
+const reportedJobEvents = new Set(); // "job_id:state" 双保险去重（后端已去重）
+
+async function watchJobs() {
+  try {
+    const resp = await fetch('/api/jobs/watch');
+    const data = await resp.json();
+    if (!resp.ok || data.status !== 'ok') return;
+    for (const ev of (data.events || [])) {
+      const key = `${ev.job_id}:${ev.state}`;
+      if (reportedJobEvents.has(key)) continue;
+      reportedJobEvents.add(key);
+      if (ev.state === 'COMPLETED') handleJobCompleted(ev);
+      else handleJobFailed(ev);
+    }
+  } catch (e) {
+    // 心跳失败静默，下一轮重试
+  }
+}
+
+function handleJobCompleted(ev) {
+  showJobAlert({
+    kind: 'ok',
+    title: '作业完成',
+    body: `${ev.job_name}（ID ${ev.job_id}）已正常结束，输出已就绪。`,
+    actionText: '下载结果',
+    onAction: () => { window.open(`/api/jobs/${ev.job_id}/results`, '_blank'); },
+  });
+}
+
+function handleJobFailed(ev) {
+  // 1) 先弹纯粹的失败提示
+  showJobAlert({
+    kind: 'fail',
+    title: '作业失败',
+    body: `${ev.job_name}（ID ${ev.job_id}）状态 ${ev.state}，正在生成失败分析报告...`,
+  });
+  // 2) 触发后台 LLM 分析，报告写好后再弹第二个通知
+  fetch(`/api/jobs/${ev.job_id}/analyze-failure`, { method: 'POST' }).catch(() => {});
+  const deadline = Date.now() + 5 * 60 * 1000;
+  const poll = async () => {
+    if (Date.now() > deadline) return;
+    try {
+      const resp = await fetch(`/api/jobs/${ev.job_id}/report`);
+      const data = await resp.json();
+      if (resp.ok && data.status === 'ok') {
+        showJobAlert({
+          kind: 'fail',
+          title: `${ev.job_id}:${ev.job_name}失败`,
+          body: '失败分析报告已生成，点击查看。',
+          actionText: '查看报告',
+          onAction: () => openJobReport(ev.job_id),
+        });
+        return;
+      }
+      if (resp.ok && data.status === 'pending') { setTimeout(poll, 5000); return; }
+      showJobAlert({
+        kind: 'fail',
+        title: `${ev.job_id}:${ev.job_name}失败`,
+        body: data.error || '报告生成失败，可到输出目录查看日志。',
+      });
+    } catch (e) {
+      setTimeout(poll, 5000);
+    }
+  };
+  setTimeout(poll, 4000);
+}
+
+function showJobAlert({ kind, title, body, actionText, onAction }) {
+  const stack = document.getElementById('jobAlertStack');
+  if (!stack) return;
+  const card = document.createElement('div');
+  card.className = `job-alert-card ${kind || ''}`;
+  card.innerHTML = `
+    <button class="alert-close" title="关闭">×</button>
+    <div class="alert-title">${escapeHtml(title)}</div>
+    <div class="alert-body">${escapeHtml(body)}</div>
+    <div class="alert-actions"></div>`;
+  const actions = card.querySelector('.alert-actions');
+  if (actionText && onAction) {
+    const btn = document.createElement('button');
+    btn.className = 'btn primary';
+    btn.textContent = actionText;
+    btn.onclick = () => { onAction(); dismissJobAlert(card); };
+    actions.appendChild(btn);
+  }
+  card.querySelector('.alert-close').onclick = () => dismissJobAlert(card);
+  stack.appendChild(card);
+  requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add('in')));
+  setTimeout(() => dismissJobAlert(card), 120000);
+}
+
+function dismissJobAlert(card) {
+  if (!card || card.classList.contains('out')) return;
+  card.classList.add('out');
+  setTimeout(() => card.remove(), 450);
+}
+
+// 报告阅读：复用文档模式，左侧树为输出目录结构，仅报告可点
+async function openJobReport(jobId) {
+  try {
+    const resp = await fetch(`/api/jobs/${jobId}/report`);
+    const data = await resp.json();
+    if (!resp.ok || data.status !== 'ok') throw new Error(data.error || '报告尚未生成');
+    docsTreeOverride = {
+      tree: data.tree || [],
+      reportPath: data.report_path,
+      title: data.title,
+      content: data.content,
+    };
+    if (!docsMode) toggleDocsMode(true);
+    else {
+      renderDocsTree(false);
+      renderJobReportContent();
+    }
+  } catch (e) {
+    addNotice('打开报告失败：' + e.message, 'error');
+  }
+}
+
+function renderJobReportContent() {
+  const ov = docsTreeOverride;
+  if (!ov) return;
+  const content = document.getElementById('docsContent');
+  const crumb = document.getElementById('docsBreadcrumb');
+  if (content) content.innerHTML = renderMarkdown(ov.content);
+  if (crumb) crumb.textContent = ov.title;
+  if (content) content.scrollTop = 0;
 }
 
 // 行内编辑状态：{projectIndex, subIndex, mode: 'create'|'rename'}，null 表示无编辑
@@ -5114,6 +5328,9 @@ loadModels(false);
 autoResizeComposer();
 refreshDashboard(false);
 refreshTimer = setInterval(() => refreshDashboard(false), 15000);
+// 作业状态心跳：发现完成/失败立刻右下角通知（比看板轮询更早发现）
+setTimeout(watchJobs, 8000);
+setInterval(watchJobs, 15000);
 </script>
 </body>
 </html>

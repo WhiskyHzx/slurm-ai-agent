@@ -2510,6 +2510,16 @@ def submit_project_job(req: JobSubmitRequest):
                 job_id = result.get(key)
                 break
 
+    # 登记作业供心跳监控：完成/失败时前端会收到右下角通知
+    if job_id is not None:
+        try:
+            _register_watched_job(
+                job_id, job_name, workspace.project_name,
+                (req.subdir or "").strip().strip("/"), logs_dir,
+            )
+        except Exception:
+            logger.exception("登记作业监控失败（不影响提交结果）")
+
     return {
         "status": "ok",
         "project_name": workspace.project_name,
@@ -2520,6 +2530,279 @@ def submit_project_job(req: JobSubmitRequest):
         "script_path": str(script_path),
         "job_id": job_id,
         "slurm_response": result,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 作业状态心跳：跟踪本服务提交的作业，发现 COMPLETED/FAILED 时通知前端；
+# 完成可打包下载输出目录，失败由 LLM 阅读日志生成简报
+# ---------------------------------------------------------------------------
+JOB_WATCH_FILE = Path.home() / ".slurm-agent" / "job-watch.json"
+JOB_FAILED_STATES = {"FAILED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY"}
+_job_watch_lock = threading.Lock()
+
+
+def _load_job_watch() -> list[dict]:
+    try:
+        raw = json.loads(JOB_WATCH_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            return raw
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def _save_job_watch(records: list[dict]) -> None:
+    try:
+        JOB_WATCH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOB_WATCH_FILE.write_text(
+            json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        logger.exception("保存作业监控记录失败")
+
+
+def _register_watched_job(job_id, job_name: str, project_name: str, subdir: str, logs_dir: Path) -> None:
+    """提交成功后登记作业，供心跳查询与结果定位。"""
+    if job_id is None:
+        return
+    with _job_watch_lock:
+        records = _load_job_watch()
+        records.append({
+            "job_id": str(job_id),
+            "job_name": job_name,
+            "project_name": project_name,
+            "subdir": subdir,
+            "logs_dir": str(logs_dir),
+            "state": "SUBMITTED",
+            "final_state": "",
+            "report_ready": False,
+            "submitted_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        # 只保留最近 200 条，避免无限增长
+        _save_job_watch(records[-200:])
+
+
+def _sacct_states(job_ids: list[str]) -> dict[str, str]:
+    """sacct 批量查询作业状态，只取主作业行（不带 .batch/.extern 后缀）。"""
+    argv = [
+        "sacct", "-n", "-P", "-j", ",".join(job_ids),
+        "--format=JobID,State", "--starttime", "2025-01-01",
+    ]
+    result = subprocess.run(
+        argv, capture_output=True, text=True, timeout=20, env=_cli_env()
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"sacct 执行异常 rc={result.returncode}: {result.stderr.strip()[:200]}"
+        )
+    states: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("|")
+        if len(parts) < 2:
+            continue
+        jid, state = parts[0].strip(), parts[1].strip().upper()
+        if "." in jid or not jid:
+            continue
+        states[jid] = state
+    return states
+
+
+def _watched_record(job_id: str) -> Optional[dict]:
+    for record in _load_job_watch():
+        if record.get("job_id") == str(job_id):
+            return record
+    return None
+
+
+def _update_watched_record(job_id: str, **fields) -> Optional[dict]:
+    with _job_watch_lock:
+        records = _load_job_watch()
+        for record in records:
+            if record.get("job_id") == str(job_id):
+                record.update(fields)
+                _save_job_watch(records)
+                return record
+    return None
+
+
+@app.get("/api/jobs/watch")
+def jobs_watch():
+    """心跳：查询已登记作业状态，返回新发生的 COMPLETE/FAILED 事件（不重复报）。"""
+    with _job_watch_lock:
+        records = _load_job_watch()
+    pending = [r for r in records if not r.get("final_state")]
+    events: list[dict] = []
+    if pending:
+        try:
+            states = _sacct_states([r["job_id"] for r in pending])
+        except Exception as e:  # sacct 不可用时静默，下轮再试
+            logger.warning("sacct 查询失败: %s", e)
+            return {"status": "ok", "events": []}
+        changed = False
+        for record in pending:
+            state = states.get(record["job_id"])
+            if not state:
+                continue
+            record["state"] = state
+            if state.startswith("CANCELLED"):
+                record["final_state"] = state  # 主动取消：忽略，不产生事件
+                changed = True
+            elif state == "COMPLETED" or state in JOB_FAILED_STATES:
+                record["final_state"] = state
+                changed = True
+                events.append({
+                    "job_id": record["job_id"],
+                    "job_name": record.get("job_name", ""),
+                    "state": state,
+                    "project_name": record.get("project_name", ""),
+                    "subdir": record.get("subdir", ""),
+                    "logs_dir": record.get("logs_dir", ""),
+                })
+        if changed:
+            with _job_watch_lock:
+                _save_job_watch(records)
+    return {"status": "ok", "events": events}
+
+
+@app.get("/api/jobs/{job_id}/results")
+def job_results(job_id: str):
+    """打包下载作业输出目录（logs/，含 .out/.err/脚本及产出）。"""
+    record = _watched_record(job_id)
+    if not record:
+        return JSONResponse({"error": "未找到该作业的记录"}, status_code=404)
+    logs_dir = Path(record["logs_dir"])
+    if not logs_dir.is_dir():
+        return JSONResponse({"error": "输出目录不存在"}, status_code=404)
+
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in sorted(logs_dir.rglob("*")):
+            if file.is_file():
+                zf.write(file, file.relative_to(logs_dir.parent))
+    buffer.seek(0)
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "", record.get("job_name", "job")) or "job"
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="results-{safe_name}-{job_id}.zip"'
+        },
+    )
+
+
+def _run_failure_analysis(record: dict) -> None:
+    """后台线程：读 .err/.out/脚本，调 LLM 生成失败简报写到输出目录。"""
+    job_id = record["job_id"]
+    try:
+        logs_dir = Path(record["logs_dir"])
+        err_files = sorted(logs_dir.glob("*.err"), key=lambda p: p.stat().st_mtime, reverse=True)
+        out_files = sorted(logs_dir.glob("*.out"), key=lambda p: p.stat().st_mtime, reverse=True)
+        script_files = sorted(logs_dir.glob("*.sh"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+        err_text = err_files[0].read_text(encoding="utf-8", errors="ignore")[-8000:] if err_files else "（未找到 .err 文件）"
+        out_text = out_files[0].read_text(encoding="utf-8", errors="ignore")[-2500:] if out_files else "（未找到 .out 文件）"
+        script_text = script_files[0].read_text(encoding="utf-8", errors="ignore")[:4000] if script_files else "（未找到脚本）"
+
+        llm = LLMProvider()
+        response = llm.chat([
+            {
+                "role": "system",
+                "content": (
+                    "你是 HPC 集群的 Slurm 作业诊断专家。请根据作业的 stderr/stdout 与提交脚本，"
+                    "用中文写一份简洁的 markdown 失败分析简报，结构：\n"
+                    "# 作业失败分析：<作业名>\n"
+                    "## 失败状态\n（一句话）\n"
+                    "## 关键错误\n（引用最重要的原始错误行，代码块）\n"
+                    "## 原因分析\n（2-4 条要点）\n"
+                    "## 修复建议\n（可操作的具体步骤）\n"
+                    "只输出简报正文。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"作业 ID: {job_id}\n作业名: {record.get('job_name', '')}\n"
+                    f"项目: {record.get('project_name', '')}\n最终状态: {record.get('final_state', '')}\n\n"
+                    "## stderr（尾部）\n```\n" + err_text + "\n```\n\n"
+                    "## stdout（尾部）\n```\n" + out_text + "\n```\n\n"
+                    "## 提交脚本\n```bash\n" + script_text + "\n```"
+                ),
+            },
+        ])
+        report = (response.choices[0].message.content or "").strip()
+        if not report:
+            raise RuntimeError("LLM 返回空内容")
+        report_path = logs_dir / f"failure-report-{job_id}.md"
+        report_path.write_text(report + "\n", encoding="utf-8")
+        _update_watched_record(job_id, report_ready=True, report_error="")
+        logger.info("作业 %s 失败简报已生成: %s", job_id, report_path)
+    except Exception as e:
+        logger.exception("作业 %s 失败分析失败", job_id)
+        _update_watched_record(job_id, report_ready=False, report_error=str(e)[:300])
+
+
+@app.post("/api/jobs/{job_id}/analyze-failure")
+def job_analyze_failure(job_id: str):
+    """触发后台 LLM 失败分析（不阻塞），前端轮询 /report 获取结果。"""
+    record = _watched_record(job_id)
+    if not record:
+        return JSONResponse({"error": "未找到该作业的记录"}, status_code=404)
+    if record.get("report_ready"):
+        return {"status": "ok", "ready": True}
+    if record.get("analyzing"):
+        return {"status": "ok", "ready": False}
+    _update_watched_record(job_id, analyzing=True)
+    threading.Thread(target=_run_failure_analysis, args=(record,), daemon=True).start()
+    return {"status": "ok", "ready": False}
+
+
+def _fs_tree(root: Path, base: Optional[Path] = None) -> list[dict]:
+    """通用目录树（docs 树同构）：目录优先、文件按名排序，供报告阅读器左侧展示。"""
+    base = base or root
+    nodes: list[dict] = []
+    try:
+        entries = sorted(root.iterdir(), key=lambda p: (0 if p.is_dir() else 1, p.name))
+    except OSError:
+        return nodes
+    for entry in entries:
+        if entry.name.startswith("."):
+            continue
+        rel = entry.relative_to(base).as_posix()
+        if entry.is_dir():
+            children = _fs_tree(entry, base)
+            if children:
+                nodes.append({"name": entry.name, "title": entry.name, "type": "dir", "path": rel, "children": children})
+        else:
+            nodes.append({"name": entry.stem, "title": entry.name, "type": "file", "path": rel})
+    return nodes
+
+
+@app.get("/api/jobs/{job_id}/report")
+def job_report(job_id: str):
+    """返回失败分析简报内容与输出目录树（报告就绪前返回 pending）。"""
+    record = _watched_record(job_id)
+    if not record:
+        return JSONResponse({"error": "未找到该作业的记录"}, status_code=404)
+    if record.get("analyzing") and not record.get("report_ready"):
+        return {"status": "pending"}
+    logs_dir = Path(record["logs_dir"])
+    report_path = logs_dir / f"failure-report-{job_id}.md"
+    if not report_path.is_file():
+        return {"status": "pending"}
+    if record.get("report_ready") is False and record.get("report_error"):
+        return JSONResponse({"error": f"分析失败: {record['report_error']}"}, status_code=500)
+    return {
+        "status": "ok",
+        "job_id": job_id,
+        "job_name": record.get("job_name", ""),
+        "title": f"失败分析 · {record.get('job_name', job_id)} ({job_id})",
+        "report_path": report_path.relative_to(logs_dir).as_posix(),
+        "content": report_path.read_text(encoding="utf-8", errors="ignore"),
+        "tree": _fs_tree(logs_dir),
     }
 
 
