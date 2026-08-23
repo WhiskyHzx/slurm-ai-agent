@@ -2523,6 +2523,8 @@ let depsState = 'unknown'; // unknown=未检查 checked=清单已确认未安装
 let lastCondaEnvDir = '';
 let condaInitPollTimer = null;
 let condaInitMessage = null;
+let pendingCondaAction = null;
+const condaReadyAnnouncedProjects = new Set();
 const depsWarningModal = document.getElementById('depsWarningModal');
 const jobSubmitModal = document.getElementById('jobSubmitModal');
 const submitScriptInput = document.getElementById('submitScriptInput');
@@ -4115,6 +4117,17 @@ function stopCondaPolling() {
   }
 }
 
+async function runPendingCondaAction(projectName) {
+  if (!pendingCondaAction || pendingCondaAction.projectName !== projectName) return;
+  const action = pendingCondaAction.action;
+  pendingCondaAction = null;
+  if (action === 'check-deps') {
+    await generateProjectReport();
+  } else if (action === 'install-deps') {
+    await installProjectDependencies({ keepModalOpen: true });
+  }
+}
+
 function startCondaPolling(projectName, messageEl = null) {
   stopCondaPolling();
   condaInitMessage = messageEl || condaInitMessage;
@@ -4126,8 +4139,13 @@ function startCondaPolling(projectName, messageEl = null) {
         if (condaInitMessage) {
           setMessageContent(condaInitMessage, `### 项目 Conda 环境已就绪\n\n- 环境目录：\`${data.conda_env_dir}\`\n\n现在可以检查依赖、安装依赖或布置作业。`, 'ai');
         }
+        if (!condaReadyAnnouncedProjects.has(projectName)) {
+          condaReadyAnnouncedProjects.add(projectName);
+          addChatMessage(`### 项目 Conda 环境已就绪\n\n- 环境目录：\`${data.conda_env_dir}\`\n\n现在可以继续刚才的检查、安装或布置作业。`, 'ai', true);
+        }
         addNotice('项目 Conda 环境已就绪');
         stopCondaPolling();
+        await runPendingCondaAction(projectName);
         return;
       }
       if (data.conda_status === 'failed') {
@@ -4135,6 +4153,7 @@ function startCondaPolling(projectName, messageEl = null) {
         if (condaInitMessage) {
           setMessageContent(condaInitMessage, `### 项目 Conda 环境初始化失败\n\n${text}`, 'ai');
         }
+        pendingCondaAction = null;
         addNotice(text, 'error');
         stopCondaPolling();
         return;
@@ -4153,7 +4172,7 @@ function startCondaPolling(projectName, messageEl = null) {
   poll();
 }
 
-async function ensureCondaReadyForAction(projectName) {
+async function ensureCondaReadyForAction(projectName, action = '') {
   const data = await getCondaStatus(projectName, true);
   lastCondaEnvDir = data.conda_env_dir || lastCondaEnvDir;
   if (data.conda_status === 'ready') return true;
@@ -4161,7 +4180,8 @@ async function ensureCondaReadyForAction(projectName) {
     addNotice(data.error || data.message || '项目 Conda 环境初始化失败', 'error');
     return false;
   }
-  addNotice('项目 Conda 环境仍在后台初始化，可以先上传文件，稍后再检查依赖');
+  if (action) pendingCondaAction = { projectName, action };
+  addNotice(action ? '项目 Conda 环境仍在后台初始化，完成后会继续刚才的操作' : '项目 Conda 环境仍在后台初始化，可以先上传文件，稍后再检查依赖');
   if (!condaInitPollTimer) {
     condaInitMessage = addChatMessage('### 项目 Conda 环境后台初始化中\n\n正在检查状态...', 'ai', true);
     startCondaPolling(projectName, condaInitMessage);
@@ -4617,7 +4637,7 @@ async function generateProjectReport() {
   }
   if (isProcessing) return;
   try {
-    const ready = await ensureCondaReadyForAction(projectName);
+    const ready = await ensureCondaReadyForAction(projectName, 'check-deps');
     if (!ready) return;
   } catch (e) {
     addNotice('读取 Conda 环境状态失败: ' + e.message, 'error');
@@ -4652,6 +4672,7 @@ async function generateProjectReport() {
       if (data.conda_status && data.conda_status !== 'ready') {
         setMessageContent(pending, data.error || '项目 Conda 环境仍在初始化', 'ai');
         addNotice(data.error || '项目 Conda 环境仍在初始化');
+        pendingCondaAction = { projectName, action: 'check-deps' };
         if (!condaInitPollTimer) {
           condaInitMessage = pending;
           startCondaPolling(projectName, condaInitMessage);
@@ -4820,6 +4841,21 @@ async function installProjectDependencies(options = {}) {
     return;
   }
   if (isProcessing) return;
+  try {
+    const ready = await ensureCondaReadyForAction(projectName, 'install-deps');
+    if (!ready) {
+      dependencyReviewMode = 'review';
+      if (dependencyConfirmBtn) {
+        dependencyConfirmBtn.disabled = true;
+        dependencyConfirmBtn.textContent = '等待环境';
+      }
+      addChatMessage('### 等待项目 Conda 环境就绪\n\n环境初始化完成后会继续安装已勾选的依赖。', 'ai', true);
+      return;
+    }
+  } catch (e) {
+    addNotice('读取 Conda 环境状态失败: ' + e.message, 'error');
+    return;
+  }
 
   isProcessing = true;
   userInput.disabled = true;
@@ -4854,6 +4890,7 @@ async function installProjectDependencies(options = {}) {
       if (!resp.ok && data.conda_status && data.conda_status !== 'ready') {
         setMessageContent(pending, data.error || '项目 Conda 环境仍在初始化', 'ai');
         addNotice(data.error || '项目 Conda 环境仍在初始化');
+        pendingCondaAction = { projectName, action: 'install-deps' };
         dependencyReviewMode = 'review';
         renderDependencyReview();
         startCondaPolling(projectName, condaInitMessage);

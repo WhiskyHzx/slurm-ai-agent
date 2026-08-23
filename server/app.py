@@ -60,6 +60,7 @@ from core.dependency_planner import (
     parse_ai_dependency_items,
     precheck_dependencies,
     scan_project_dependencies,
+    scan_user_dependency_notes,
     search_package_versions,
     serialize_items,
 )
@@ -2558,7 +2559,11 @@ def project_report(req: ProjectReportRequest):
             workspace.project_dir,
             extra_notes=req.extra_notes,
         )
-        scanned_items = scan_project_dependencies(workspace.project_dir)
+        notes_text = notes_path.read_text(encoding="utf-8", errors="ignore") if notes_path.exists() else req.extra_notes
+        scanned_items = merge_dependency_items(
+            scan_project_dependencies(workspace.project_dir)
+            + scan_user_dependency_notes(notes_text)
+        )
         # 先对静态扫描结果做版本感知预检，把真实可用版本/构建喂给 LLM，
         # 避免 LLM 凭旧知识（或其它集群的 module 版本号）指定不存在的版本
         scanned_items = precheck_dependencies(scanned_items, workspace.conda_env_dir)
@@ -2571,7 +2576,7 @@ def project_report(req: ProjectReportRequest):
                         "role": "system",
                         "content": "你是谨慎的依赖识别助手，只返回严格 JSON 数组。",
                     },
-                    {"role": "user", "content": _build_ai_dependency_json_prompt(workspace, scanned_items, req.extra_notes)},
+                    {"role": "user", "content": _build_ai_dependency_json_prompt(workspace, scanned_items, req.extra_notes, notes_text)},
                 ],
                 temperature=0.1,
                 max_tokens=1400,
@@ -3224,28 +3229,53 @@ def _register_watched_job(job_id, job_name: str, project_name: str, subdir: str,
         _save_job_watch(records[-200:])
 
 
-def _sacct_states(job_ids: list[str]) -> dict[str, str]:
-    """sacct 批量查询作业状态，只取主作业行（不带 .batch/.extern 后缀）。"""
-    argv = [
-        "sacct", "-n", "-P", "-j", ",".join(job_ids),
-        "--format=JobID,State", "--starttime", "2025-01-01",
-    ]
-    result = subprocess.run(
-        argv, capture_output=True, text=True, timeout=20, env=_cli_env()
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"sacct 执行异常 rc={result.returncode}: {result.stderr.strip()[:200]}"
-        )
+def _job_state_text(raw) -> str:
+    """统一 REST 返回的状态字段：['FAILED'] / 'FAILED' / {'current': [...]} → 大写字符串。"""
+    if isinstance(raw, list) and raw:
+        return "+".join(str(s).upper() for s in raw)
+    if isinstance(raw, str) and raw:
+        return raw.upper()
+    return ""
+
+
+def _watched_job_states(job_ids: list[str]) -> dict[str, str]:
+    """REST 查询已登记作业的当前状态，返回 {job_id: STATE}。
+
+    本平台 sacct 对普通用户零返回（实测无输出、无报错），心跳一律走 REST：
+    - slurmctld /jobs 实时快照：覆盖运行中与刚结束（尚未被控制器清除）的作业；
+    - slurmdbd /jobs 历史（job_id 过滤）：补上已被清除出控制器的终态作业。
+    单个查询失败只记日志，不影响其他作业，下一轮心跳重试。
+    """
+    client = SlurmClient()
+    wanted = {str(j) for j in job_ids}
     states: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        parts = line.split("|")
-        if len(parts) < 2:
-            continue
-        jid, state = parts[0].strip(), parts[1].strip().upper()
-        if "." in jid or not jid:
-            continue
-        states[jid] = state
+    # 1) slurmctld 实时列表
+    try:
+        for job in client.list_jobs().get("jobs") or []:
+            jid = str(job.get("job_id") or "")
+            if jid not in wanted:
+                continue
+            state = _job_state_text(job.get("job_state"))
+            if state:
+                states[jid] = state
+    except Exception as e:
+        logger.warning("list_jobs 查询失败: %s", e)
+    # 2) 已清除出控制器的，逐个查 slurmdbd 历史
+    for jid in wanted - set(states):
+        try:
+            for job in client.get_jobs_history(params={"job_id": jid}).get("jobs") or []:
+                if str(job.get("job_id")) != jid:
+                    continue
+                state = job.get("state")
+                if isinstance(state, dict):
+                    state = _job_state_text(state.get("current"))
+                else:
+                    state = _job_state_text(state)
+                if state:
+                    states[jid] = state
+                break
+        except Exception as e:
+            logger.warning("slurmdbd 历史查询失败 job=%s: %s", jid, e)
     return states
 
 
@@ -3276,9 +3306,9 @@ def jobs_watch():
     events: list[dict] = []
     if pending:
         try:
-            states = _sacct_states([r["job_id"] for r in pending])
-        except Exception as e:  # sacct 不可用时静默，下轮再试
-            logger.warning("sacct 查询失败: %s", e)
+            states = _watched_job_states([r["job_id"] for r in pending])
+        except Exception as e:  # REST 整体不可用时静默，下轮再试
+            logger.warning("作业状态查询失败: %s", e)
             return {"status": "ok", "events": []}
         changed = False
         for record in pending:

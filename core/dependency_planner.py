@@ -39,6 +39,26 @@ PIP_INDEX_TIMEOUT = 20
 SEARCH_CACHE_TTL_SECONDS = 600
 _SEARCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
+USER_DEPENDENCY_ALIASES = {
+    "gromacs": ("gromacs", "conda"),
+    "gmx": ("gromacs", "conda"),
+    "lammps": ("lammps", "conda"),
+    "cp2k": ("cp2k", "conda"),
+    "openmpi": ("openmpi", "conda"),
+    "mpi": ("openmpi", "conda"),
+    "pytorch": ("pytorch", "conda"),
+    "torch": ("pytorch", "conda"),
+    "tensorflow": ("tensorflow", "conda"),
+    "cuda": ("cuda-toolkit", "conda"),
+    "cudatoolkit": ("cudatoolkit", "conda"),
+    "numpy": ("numpy", "pip"),
+    "scipy": ("scipy", "pip"),
+    "pandas": ("pandas", "pip"),
+    "matplotlib": ("matplotlib", "pip"),
+    "scikit-learn": ("scikit-learn", "pip"),
+    "sklearn": ("scikit-learn", "pip"),
+}
+
 
 @dataclass
 class DependencyItem:
@@ -373,6 +393,49 @@ def scan_project_dependencies(project_dir: Path) -> list[DependencyItem]:
         except OSError:
             continue
     items.extend(_scan_python_imports(project_dir))
+    return _dedupe(items)
+
+
+def _version_near_token(text: str, token: str) -> str:
+    pattern = rf"\b{re.escape(token)}\b\s*(?:==|=|版本|version)?\s*([0-9][A-Za-z0-9.*_+!-]*(?:=[A-Za-z0-9.*_+!-]+)?)"
+    match = re.search(pattern, text, flags=re.I)
+    return match.group(1).strip() if match else ""
+
+
+def scan_user_dependency_notes(text: str) -> list[DependencyItem]:
+    """Parse explicit dependency names from user-written requirements.
+
+    This is intentionally deterministic: if the user types "需要 gromacs",
+    the dependency should not depend on LLM inference.
+    """
+    lowered = str(text or "").lower()
+    items: list[DependencyItem] = []
+
+    command_pattern = re.compile(
+        r"(?:python\s+-m\s+pip|pip|conda|mamba)\s+install\s+([A-Za-z0-9_.=-]+(?:\s+[A-Za-z0-9_.=-]+){0,12})",
+        flags=re.I,
+    )
+    for match in command_pattern.finditer(text or ""):
+        command = match.group(0).lower()
+        manager = "pip" if "pip" in command else "conda"
+        for raw_spec in shlex.split(match.group(1)):
+            if raw_spec.startswith("-"):
+                continue
+            name, version = _split_requirement(raw_spec)
+            item = _make_item(name, version, manager, "用户输入", "trusted", "high", "来自用户明确输入的安装需求")
+            if item:
+                item.selected = True
+                items.append(item)
+
+    for token, (package, manager) in USER_DEPENDENCY_ALIASES.items():
+        if not re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(token)}(?![A-Za-z0-9_.-])", lowered):
+            continue
+        version = _version_near_token(lowered, token)
+        item = _make_item(package, version, manager, "用户输入", "trusted", "high", "来自用户明确输入的依赖需求")
+        if item:
+            item.selected = True
+            items.append(item)
+
     return _dedupe(items)
 
 
