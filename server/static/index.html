@@ -1118,15 +1118,29 @@
   }
 
   .dependency-check {
-    width: 22px;
-    height: 22px;
+    width: 18px;
+    height: 18px;
     appearance: none;
-    border: 1px solid var(--line);
-    border-radius: 999px;
+    -webkit-appearance: none;
+    margin: 0;
+    border: 1.5px solid var(--line);
+    border-radius: 5px;
     background: var(--surface);
     cursor: pointer;
     display: inline-grid;
     place-items: center;
+    flex: none;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .dependency-check:hover:not(:disabled) {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--focus-ring);
+  }
+
+  .dependency-check:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
   }
 
   .dependency-check:checked {
@@ -1136,11 +1150,52 @@
 
   .dependency-check:checked::after {
     content: "";
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--primary-ink);
+    width: 4.5px;
+    height: 8.5px;
+    border: solid var(--primary-ink);
+    border-width: 0 2px 2px 0;
+    border-radius: 1px;
+    transform: rotate(45deg) translateY(-1px);
   }
+
+  /* 选择列 + 行悬停：让勾选状态一目了然 */
+  #dependencyReviewTable td:first-child { width: 44px; text-align: center; }
+  #dependencyReviewTable tbody tr:hover td { background: var(--surface-soft); }
+
+  /* 安装中：弹窗顶部的整体进度横幅（真实 SSE 百分比） */
+  .install-progress-banner {
+    padding: 12px 14px 2px;
+  }
+
+  .install-progress-info {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 7px;
+  }
+
+  .install-progress-percent {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--blue);
+    font-variant-numeric: tabular-nums;
+    min-width: 40px;
+  }
+
+  .install-progress-percent.done { color: var(--green); }
+  .install-progress-percent.failed { color: var(--red); }
+
+  .install-progress-stage {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .install-progress-track { height: 8px; }
 
   .dependency-name {
     font-weight: 700;
@@ -2344,6 +2399,13 @@
 <div id="dependencyModal" class="modal-backdrop" onclick="closeDependencyModal(event)">
   <div class="modal wide" onclick="event.stopPropagation()">
     <div class="modal-body dependency-review">
+    <div id="dependencyInstallProgress" class="install-progress-banner" hidden>
+      <div class="install-progress-info">
+        <span id="installProgressPercent" class="install-progress-percent">0%</span>
+        <span id="installProgressStage" class="install-progress-stage">正在准备安装...</span>
+      </div>
+      <div class="progress-track install-progress-track"><div id="installProgressFill" class="progress-fill" style="width:0%"></div></div>
+    </div>
       <div class="dependency-table-wrap">
         <table id="dependencyReviewTable" class="dependency-table">
           <thead id="dependencyReviewHead">
@@ -2485,6 +2547,10 @@ const dependencyReviewHead = document.getElementById('dependencyReviewHead');
 const dependencyReviewBody = document.getElementById('dependencyReviewBody');
 const dependencyCancelBtn = document.getElementById('dependencyCancelBtn');
 const dependencyConfirmBtn = document.getElementById('dependencyConfirmBtn');
+const installProgressBanner = document.getElementById('dependencyInstallProgress');
+const installProgressPercent = document.getElementById('installProgressPercent');
+const installProgressStage = document.getElementById('installProgressStage');
+const installProgressFill = document.getElementById('installProgressFill');
 const noticesEl = document.getElementById('notices');
 const messagesEl = document.getElementById('messages');
 const userInput = document.getElementById('userInput');
@@ -4754,6 +4820,40 @@ function updateInstallProgress(pending, evt) {
   if (bar) lines.push('', bar);
   if (stage) lines.push('', stage + '...');
   setMessageContent(pending, lines.join('\n'), 'ai');
+  updateDependencyInstallProgress(evt);
+}
+
+// 把后端 SSE 的真实进度同步到依赖弹窗顶部的整体进度横幅
+function updateDependencyInstallProgress(evt) {
+  if (!installProgressBanner) return;
+  installProgressBanner.hidden = false;
+  if (typeof evt.percent === 'number') {
+    const pct = Math.max(0, Math.min(100, evt.percent));
+    if (installProgressPercent) {
+      installProgressPercent.textContent = `${Math.floor(pct)}%`;
+      installProgressPercent.className = 'install-progress-percent';
+    }
+    if (installProgressFill) {
+      installProgressFill.className = 'progress-fill';
+      installProgressFill.style.width = `${pct}%`;
+    }
+  }
+  if (evt.stage && installProgressStage) installProgressStage.textContent = evt.stage;
+}
+
+function finishDependencyInstallProgress(ok) {
+  if (!installProgressBanner || installProgressBanner.hidden) return;
+  if (installProgressFill) {
+    installProgressFill.className = `progress-fill ${ok ? 'done' : 'failed'}`;
+    installProgressFill.style.width = '100%';
+  }
+  if (installProgressPercent) {
+    installProgressPercent.textContent = ok ? '100%' : '失败';
+    installProgressPercent.className = `install-progress-percent ${ok ? 'done' : 'failed'}`;
+  }
+  if (installProgressStage) installProgressStage.textContent = ok ? '安装完成' : '安装失败';
+  // 收尾后自动收起，避免下次打开弹窗时残留旧进度
+  setTimeout(() => { if (installProgressBanner) installProgressBanner.hidden = true; }, 4000);
 }
 
 function handleAutoFixEvent(evt) {
@@ -4774,6 +4874,7 @@ function handleInstallFailure(pending, data) {
     : '';
   setMessageContent(pending, (data.error || '依赖安装失败') + detail + autoFixText, 'ai');
   setDependencyInstallState('failed', data.error || '依赖安装失败');
+  finishDependencyInstallProgress(false);
   dependencyReviewMode = 'installed';
   if (dependencyConfirmBtn) {
     dependencyConfirmBtn.disabled = false;
@@ -4872,6 +4973,8 @@ async function installProjectDependencies(options = {}) {
   }
   if (options.keepModalOpen) dependencyModal.classList.add('open');
   setDependencyInstallState('installing', '正在执行安装命令');
+  // 重置并展示弹窗顶部的真实进度横幅（后续由 SSE 事件驱动）
+  updateDependencyInstallProgress({ percent: 0, stage: '正在准备安装...' });
   const pending = addChatMessage('正在安装依赖到当前项目 Conda 环境...', 'ai');
   try {
     const resp = await fetch('/api/projects/install-deps', {
@@ -4907,6 +5010,7 @@ async function installProjectDependencies(options = {}) {
     }
     const data = finalEvent.payload || {};
     setDependencyInstallState('validating', '安装完成，正在查验环境');
+    updateDependencyInstallProgress({ percent: 100, stage: '安装完成，正在查验环境' });
     applyDependencyValidationResults(data.validation_results || []);
     const content = `### 依赖安装完成
 
@@ -4937,11 +5041,13 @@ ${formatValidationResults(data.validation_results || [])}
       dependencyCancelBtn.disabled = false;
       dependencyCancelBtn.textContent = '关闭';
     }
+    finishDependencyInstallProgress(true);
     renderDependencyReview();
   } catch (e) {
     depsState = 'failed';
     setMessageContent(pending, '依赖安装失败: ' + e.message, 'ai');
     setDependencyInstallState('failed', e.message);
+    finishDependencyInstallProgress(false);
     dependencyReviewMode = 'installed';
     if (dependencyConfirmBtn) {
       dependencyConfirmBtn.disabled = false;

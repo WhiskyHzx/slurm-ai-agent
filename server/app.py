@@ -865,8 +865,9 @@ def _build_ai_dependency_json_prompt(
 3. **版本号只能来自 <包管理查询结果> 中的真实版本、项目文件或用户输入**；不确定就留空，禁止凭记忆编造。特别禁止把其它集群 module 系统的版本号（如 gromacs/2019.4-gcc-9.2.0-openmpi）当作可安装版本。
 4. 涉及 GPU 的包：根据 <集群硬件上下文> 在查询结果的构建变体（build，如 nompi_cuda、cuda126、mpi_openmpi）里选择满足目标 GPU CUDA 要求的，并把构建写进 version（conda 三段式语法，如 "2026.3=nompi_cuda"）；查不到满足要求的构建就留空并在 reason 里说明。
 5. 不要返回 python、pip、setuptools、wheel。
-6. CUDA/PyTorch/TensorFlow 相关项要保守，版本不确定时写空。
-7. 最多返回 20 项。
+6. 安装命令里的 `-c <名称>` / `--channel <名称>`（如 `-c bioconda`）指定的是软件源 channel，不是依赖包，绝不要把 channel 名当成依赖返回。
+7. CUDA/PyTorch/TensorFlow 相关项要保守，版本不确定时写空。
+8. 最多返回 20 项。
 
 <已扫描依赖（含预检的真实版本信息）>
 {scanned_json}

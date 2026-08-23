@@ -21,6 +21,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     tomllib = None
 
 
+# 永远不是依赖包名的词：包管理器自带项 + 常见软件源 channel 名。
+# conda install -c bioconda gromacs 里的 "bioconda" 是 channel，不是包。
+PACKAGE_NAME_BLOCKLIST = {"python", "pip", "setuptools", "wheel", "conda-forge", "bioconda", "defaults", "pypi"}
+
 TRUSTED_SOURCE_FILES = {
     "requirements.txt",
     "environment.yml",
@@ -106,7 +110,7 @@ def _make_item(
     reason: str,
 ) -> DependencyItem | None:
     clean = _clean_name(name)
-    if not clean or clean.lower() in {"python", "pip", "setuptools", "wheel"}:
+    if not clean or clean.lower() in PACKAGE_NAME_BLOCKLIST:
         return None
     selected = source_kind == "trusted"
     command = _install_command(clean, version, manager)
@@ -418,11 +422,32 @@ def scan_user_dependency_notes(text: str) -> list[DependencyItem]:
     for match in command_pattern.finditer(text or ""):
         command = match.group(0).lower()
         manager = "pip" if "pip" in command else "conda"
+        channels: list[str] = []
+        # 记录上一个 token 是否为“带值选项”（-c/--channel 的值是软件源名，
+        # -p/-n/-r 的值是路径/环境名，都不是包名，不能当成依赖）
+        pending_option: str | None = None
         for raw_spec in shlex.split(match.group(1)):
+            if pending_option is not None:
+                if pending_option == "channel":
+                    channels.append(raw_spec)
+                pending_option = None
+                continue
+            if raw_spec in {"-c", "--channel"}:
+                pending_option = "channel"
+                continue
+            if raw_spec in {"-p", "--prefix", "-n", "--name", "-r", "--requirement"}:
+                pending_option = "value"
+                continue
+            if raw_spec.startswith("--channel="):
+                channels.append(raw_spec.split("=", 1)[1])
+                continue
             if raw_spec.startswith("-"):
                 continue
             name, version = _split_requirement(raw_spec)
-            item = _make_item(name, version, manager, "用户输入", "trusted", "high", "来自用户明确输入的安装需求")
+            reason = "来自用户明确输入的安装需求"
+            if channels:
+                reason += f"（用户指定 channel：{'、'.join(dict.fromkeys(channels))}）"
+            item = _make_item(name, version, manager, "用户输入", "trusted", "high", reason)
             if item:
                 item.selected = True
                 items.append(item)
