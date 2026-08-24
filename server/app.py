@@ -316,6 +316,17 @@ class ModelSelectRequest(BaseModel):
     model: str
 
 
+class ManagedFileSaveRequest(BaseModel):
+    path: str
+    content: str
+
+
+class ManagedEntryCreateRequest(BaseModel):
+    parent_path: str = ""
+    name: str
+    entry_type: str
+
+
 class SubdirCreateRequest(BaseModel):
     project_name: str
     name: str = ""  # 空 = 自动取名 数据集N
@@ -3476,6 +3487,260 @@ def job_report(job_id: str):
         "content": report_path.read_text(encoding="utf-8", errors="ignore"),
         "tree": _fs_tree(logs_dir),
     }
+
+
+MANAGED_FILES_ROOT = Path.home().resolve()
+MANAGED_MAX_TEXT_BYTES = int(os.environ.get("SLURM_FILE_MANAGER_MAX_TEXT_BYTES", str(1024 * 1024)))
+MANAGED_TEXT_SUFFIXES = READABLE_TEXT_SUFFIXES | {
+    ".awk", ".bat", ".bib", ".cl", ".conf", ".css", ".csv", ".cu", ".cuh",
+    ".env", ".fish", ".gitconfig", ".gitignore", ".gmx", ".gro", ".htm",
+    ".html", ".ipynb", ".less", ".list", ".lua", ".m4", ".map", ".module",
+    ".patch", ".pbs", ".pl", ".profile", ".ps1", ".rb", ".rc", ".sed",
+    ".slurm", ".sql", ".sshconfig", ".tex", ".tsv", ".vim", ".xml", ".zsh",
+}
+MANAGED_TEXT_NAMES = {
+    ".bash_profile", ".bashrc", ".condarc", ".env", ".gitignore", ".profile",
+    ".zprofile", ".zshrc", "dockerfile", "makefile", "rakefile",
+}
+
+
+def _looks_decodable_text(path: Path) -> bool:
+    try:
+        data = path.read_bytes()[:32768]
+    except OSError:
+        return False
+    if not data:
+        return True
+    text = data.decode("utf-8", errors="replace")
+    replacement_ratio = text.count("\ufffd") / max(1, len(text))
+    return replacement_ratio < 0.01
+
+
+def _managed_path(path: str = "") -> Path:
+    rel = (path or "").strip().strip("/")
+    if rel.startswith(".") or ".." in rel.split("/"):
+        raise FileTransferError("非法路径")
+    target = (MANAGED_FILES_ROOT / rel).resolve()
+    try:
+        target.relative_to(MANAGED_FILES_ROOT)
+    except ValueError:
+        raise FileTransferError("路径不在允许访问的用户目录内")
+    return target
+
+
+def _managed_rel(path: Path) -> str:
+    return path.resolve().relative_to(MANAGED_FILES_ROOT).as_posix()
+
+
+def _is_editable_managed_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        if path.stat().st_size > MANAGED_MAX_TEXT_BYTES:
+            return False
+    except OSError:
+        return False
+    name_lower = path.name.lower()
+    if name_lower in MANAGED_TEXT_NAMES:
+        return _is_probably_text(path) and _looks_decodable_text(path)
+    if path.suffix.lower() in MANAGED_TEXT_SUFFIXES:
+        return _is_probably_text(path) and _looks_decodable_text(path)
+    suffix = path.suffix.lower()
+    if suffix in DATA_OR_SPECIAL_SUFFIXES and suffix not in {".pdb", ".gro"}:
+        return False
+    if _is_probably_text(path) and _looks_decodable_text(path):
+        try:
+            head = path.read_text(encoding="utf-8", errors="ignore")[:256]
+        except OSError:
+            return False
+        if not suffix:
+            return head.startswith("#!") or "=" in head or "\n" in head
+        return True
+    return False
+
+
+def _managed_tree_node(path: Path) -> dict:
+    is_dir = path.is_dir()
+    item = {
+        "name": path.name or str(MANAGED_FILES_ROOT),
+        "path": _managed_rel(path) if path != MANAGED_FILES_ROOT else "",
+        "type": "dir" if is_dir else "file",
+    }
+    if is_dir:
+        item["has_children"] = True
+    else:
+        item["editable"] = _is_editable_managed_file(path)
+        try:
+            item["size"] = path.stat().st_size
+        except OSError:
+            item["size"] = 0
+    return item
+
+
+@app.get("/api/files/tree")
+def managed_files_tree(path: str = ""):
+    """List one directory level under /home/scc/<user> for the file manager."""
+    try:
+        root = _managed_path(path)
+        if not root.is_dir():
+            return JSONResponse({"error": "路径不是文件夹"}, status_code=400)
+        children = []
+        for entry in sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if entry.name in {".cache", ".conda", ".local", ".vscode-server", "__pycache__"}:
+                continue
+            if entry.name.startswith(".") and entry.name not in {".gitignore", ".env"}:
+                continue
+            children.append(_managed_tree_node(entry))
+            if len(children) >= 300:
+                break
+        return {
+            "status": "ok",
+            "root": str(MANAGED_FILES_ROOT),
+            "path": _managed_rel(root) if root != MANAGED_FILES_ROOT else "",
+            "children": children,
+        }
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("读取文件目录失败")
+        return JSONResponse({"error": f"读取文件目录失败: {e}"}, status_code=500)
+
+
+@app.get("/api/files/content")
+def managed_file_content(path: str):
+    """Read an editable text file under the managed home directory."""
+    try:
+        target = _managed_path(path)
+        if not _is_editable_managed_file(target):
+            return JSONResponse({"error": "该文件不是可编辑文本，或文件过大"}, status_code=400)
+        content = target.read_text(encoding="utf-8", errors="replace")
+        return {
+            "status": "ok",
+            "root": str(MANAGED_FILES_ROOT),
+            "path": _managed_rel(target),
+            "name": target.name,
+            "content": content,
+            "size": target.stat().st_size,
+        }
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("读取文件失败")
+        return JSONResponse({"error": f"读取文件失败: {e}"}, status_code=500)
+
+
+@app.post("/api/files/content")
+def managed_file_save(req: ManagedFileSaveRequest):
+    """Save an editable text file under the managed home directory."""
+    try:
+        target = _managed_path(req.path)
+        if not _is_editable_managed_file(target):
+            return JSONResponse({"error": "该文件不是可编辑文本，或文件过大"}, status_code=400)
+        target.write_text(req.content, encoding="utf-8")
+        stat = target.stat()
+        return {
+            "status": "ok",
+            "path": _managed_rel(target),
+            "size": stat.st_size,
+            "updated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+        }
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("保存文件失败")
+        return JSONResponse({"error": f"保存文件失败: {e}"}, status_code=500)
+
+
+@app.post("/api/files/entries")
+def managed_entry_create(req: ManagedEntryCreateRequest):
+    """Create one file or directory under the managed user home."""
+    try:
+        parent = _managed_path(req.parent_path)
+        if not parent.is_dir():
+            raise FileTransferError("新建位置不是文件夹")
+        name = (req.name or "").strip()
+        if not name or name in {".", ".."}:
+            raise FileTransferError("请输入有效名称")
+        if "/" in name or "\\" in name or "\x00" in name:
+            raise FileTransferError("名称不能包含路径分隔符")
+        if len(name) > 255:
+            raise FileTransferError("名称不能超过 255 个字符")
+        if req.entry_type not in {"file", "dir"}:
+            raise FileTransferError("不支持的新建类型")
+
+        target = (parent / name).resolve()
+        try:
+            target.relative_to(MANAGED_FILES_ROOT)
+        except ValueError:
+            raise FileTransferError("新建位置不在允许访问的用户目录内")
+        if target.exists():
+            raise FileTransferError(f"同名文件或文件夹已存在: {name}")
+
+        if req.entry_type == "dir":
+            target.mkdir()
+        else:
+            target.touch(exist_ok=False)
+        return {
+            "status": "ok",
+            "parent_path": _managed_rel(parent) if parent != MANAGED_FILES_ROOT else "",
+            "entry": _managed_tree_node(target),
+        }
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        logger.exception("新建文件系统项目失败")
+        return JSONResponse({"error": f"新建失败: {e}"}, status_code=500)
+
+
+@app.post("/api/files/managed-upload")
+async def managed_files_upload(
+    target_path: str = Form(""),
+    files: list[UploadFile] = File(...),
+):
+    """Upload browser-selected files into a selected directory under the user's home."""
+    if not files:
+        return JSONResponse({"error": "请选择至少一个文件"}, status_code=400)
+    max_bytes = get_max_upload_bytes()
+    total_bytes = 0
+    try:
+        target_dir = _managed_path(target_path)
+        if target_dir.is_file():
+            target_dir = target_dir.parent
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_count = 0
+        for upload in files:
+            relative_path = safe_relative_path(upload.filename or "uploaded-file")
+            target = (target_dir / relative_path).resolve()
+            try:
+                target.relative_to(MANAGED_FILES_ROOT)
+            except ValueError:
+                raise FileTransferError("上传目标不在允许访问的用户目录内")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as out:
+                while True:
+                    chunk = await upload.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > max_bytes:
+                        raise FileTransferError(f"上传总大小超过限制：{max_bytes} bytes")
+                    out.write(chunk)
+            file_count += 1
+        return {
+            "status": "ok",
+            "target_dir": _managed_rel(target_dir),
+            "absolute_target_dir": str(target_dir),
+            "file_count": file_count,
+            "total_bytes": total_bytes,
+        }
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("文件管理上传失败")
+        return JSONResponse({"error": f"文件管理上传失败: {e}"}, status_code=500)
+    finally:
+        for upload in files:
+            await upload.close()
 
 
 @app.post("/api/files/upload")
