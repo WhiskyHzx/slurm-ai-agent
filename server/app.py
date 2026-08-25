@@ -130,11 +130,21 @@ def _start_conda_init(project_name: str) -> dict:
     with conda_init_jobs_lock:
         current = conda_init_jobs.get(safe_project_name)
         if current and current.get("status") == "initializing":
-            return _conda_status_for(safe_project_name)
-        conda_init_jobs[safe_project_name] = {
-            "status": "initializing",
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "message": "项目 Conda 环境正在后台初始化",
+            current_snapshot = dict(current)
+        else:
+            current_snapshot = None
+            conda_init_jobs[safe_project_name] = {
+                "status": "initializing",
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "message": "项目 Conda 环境正在后台初始化",
+            }
+
+    if current_snapshot is not None:
+        return {
+            "project_name": safe_project_name,
+            "project_dir": str(project_dir),
+            "conda_env_dir": str(conda_env_dir),
+            **current_snapshot,
         }
 
     def worker() -> None:

@@ -2978,7 +2978,7 @@
     </div>
   </div>
 </div>
-<div id="dependencyModal" class="modal-backdrop" onclick="closeDependencyModal(event)">
+<div id="dependencyModal" class="modal-backdrop">
   <div class="modal wide" onclick="event.stopPropagation()">
     <div class="modal-body dependency-review">
     <div id="dependencyInstallProgress" class="install-progress-banner" hidden>
@@ -3038,7 +3038,7 @@
   </div>
 </div>
 
-<div id="jobSubmitModal" class="modal-backdrop" onclick="closeJobSubmitModal(event)">
+<div id="jobSubmitModal" class="modal-backdrop">
   <div class="modal wide" onclick="event.stopPropagation()">
     <div class="modal-body dependency-review">
       <div class="submit-layout">
@@ -4577,6 +4577,7 @@ function applyJobTemplate(index) {
   const template = jobTemplatesCache[index];
   if (!template) return;
   const { form, body } = parseSbatchScript(template.content || '');
+  markJobBodyUserEdited(false);
   const setIfOption = (selectId, value) => {
     const sel = document.getElementById(selectId);
     if (!sel || !value) return;
@@ -6428,6 +6429,31 @@ function buildSbatchHeader(form) {
 let submitSkeleton = null; // 服务端下发的锁定区骨架：project_dir/conda_env_dir/conda_sh/prelude
 let jobBodyGenerating = false;
 let jobBodyGenerationVersion = 0;
+let jobBodyUserEdited = false;
+
+function cancelJobBodyGeneration() {
+  const wasGenerating = jobBodyGenerating;
+  jobBodyGenerationVersion += 1;
+  jobBodyGenerating = false;
+  const regenBtn = document.getElementById('regenJobBodyBtn');
+  if (regenBtn) regenBtn.disabled = false;
+  if (wasGenerating) {
+    submitScriptInput.placeholder = '作业命令（可修改）';
+  }
+  return wasGenerating;
+}
+
+function markJobBodyUserEdited(notify = true) {
+  jobBodyUserEdited = true;
+  const wasGenerating = cancelJobBodyGeneration();
+  if (wasGenerating && notify) {
+    addNotice('检测到手动修改，已停止 AI 自动填充并保留当前作业命令');
+  }
+}
+
+submitScriptInput.addEventListener('input', () => {
+  markJobBodyUserEdited(true);
+});
 
 function fallbackSubmitPrelude() {
   // 骨架接口失败时的回退：按约定路径拼前导，保证弹窗可用
@@ -6455,9 +6481,11 @@ function renderSubmitLockedPreviews() {
   lockedEl.textContent = `${header}\n\n${prelude}`;
 }
 
-async function generateJobBody() {
+async function generateJobBody(force = false) {
   const projectName = currentProjectName();
   if (!projectName) return;
+  if (jobBodyUserEdited && !force) return;
+  if (force) jobBodyUserEdited = false;
   const generationVersion = ++jobBodyGenerationVersion;
   const requestedSubdir = (document.getElementById('submitRunDir')?.value || '').trim();
   jobBodyGenerating = true;
@@ -6499,7 +6527,7 @@ async function generateJobBody() {
 }
 
 function regenerateJobBody() {
-  generateJobBody();
+  generateJobBody(true);
 }
 
 function syncScriptHeader() {
@@ -6508,6 +6536,8 @@ function syncScriptHeader() {
 }
 
 async function openJobSubmitModal() {
+  cancelJobBodyGeneration();
+  jobBodyUserEdited = false;
   // 账户/分区/QoS 菜单由 Slurm 实时数据填充，获取失败不打开弹窗
   if (!submitOptionsData) {
     addNotice('正在获取集群的 账户/分区/QoS 授权...');
@@ -6564,6 +6594,7 @@ async function fetchSubmitSkeleton() {
 
 async function onSubmitRunDirChange() {
   // run_dir 是命令路径基准；切换后同步刷新骨架和模型可见的目录树。
+  cancelJobBodyGeneration();
   renderSubmitLockedPreviews();
   onSubmitFieldChange();
   await fetchSubmitSkeleton();
@@ -6572,6 +6603,7 @@ async function onSubmitRunDirChange() {
 
 function closeJobSubmitModal(event) {
   if (event && event.target !== jobSubmitModal) return;
+  cancelJobBodyGeneration();
   jobSubmitModal.classList.remove('open');
 }
 
