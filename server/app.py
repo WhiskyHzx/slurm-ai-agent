@@ -7,8 +7,9 @@ server/app.py — FastAPI 后端入口。
   - POST /reset    重置对话
   - GET  /         返回前端页面
 
-启动方式：
-  uvicorn server.app:app --host 0.0.0.0 --port 8080
+启动方式（Unix Domain Socket，不监听 TCP 端口，详见 start-server.sh）：
+  uvicorn server.app:app --uds "$PWD/server.sock" && chmod 600 server.sock
+  # 禁止用 --host 启动：共享登录节点上 TCP 端口无属主，任何用户可直连
 """
 
 import asyncio

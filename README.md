@@ -117,16 +117,42 @@ export SLURM_UPLOAD_MAX_BYTES="2147483648"
 
 ## 启动 Web 控制台
 
+服务以 **Unix Domain Socket 模式**启动：不监听任何 TCP 端口，只绑定项目目录内的
+`server.sock`。共享登录节点上其他用户既扫不到端口，也无法穿越 700 权限的家目录
+连接 socket——访问控制由文件系统权限在内核层强制执行。
+
 ```bash
 cd slurm-ai-agent
-source .venv/bin/activate
-PYTHONPATH=. uvicorn server.app:app --host 0.0.0.0 --port 8080
+./start-server.sh   # 自动选择 .venv/miniconda 解释器，后台常驻运行
 
-# 或不激活 venv，直接用其解释器启动：
-# .venv/bin/python -m uvicorn server.app:app --host 0.0.0.0 --port 8080
+# 等价的手动启动方式：
+# source .venv/bin/activate
+# PYTHONPATH=. uvicorn server.app:app --uds "$PWD/server.sock"
+# chmod 600 server.sock   # uvicorn 默认建 666，必须收紧
 ```
 
-在 VS Code Remote SSH 中使用时，通常可以通过端口转发访问本地浏览器里的 `http://localhost:8080`。
+启动后约需 40 秒初始化，验证健康：
+
+```bash
+curl --unix-socket server.sock http://localhost/api/dashboard
+```
+
+### 本地浏览器访问（SSH 隧道）
+
+浏览器不能直接访问 Unix socket，需在本地 `~/.ssh/config` 中配置转发：
+
+```
+Host 107.ustc.edu.cn
+  LocalForward 8080 /home/<user>/slurm-ai-agent/server.sock
+```
+
+之后浏览器访问 `http://localhost:8080`。VS Code Remote-SSH 会自动执行该转发
+规则；注意修改 config 后需先 `ssh -O exit 107.ustc.edu.cn` 断开旧主连接
+（若启用了 ControlPersist），再重连才能生效。
+
+> 历史版本曾用 `--host 0.0.0.0` / `--host 127.0.0.1` 监听 TCP 8080，在多用户
+> 共享的登录节点上存在被同节点其他用户直接访问的风险（回环地址全机共享，
+> TCP 端口无属主概念），已废弃。禁止再用任何 `--host` 方式启动。
 
 ## Web 工作流
 

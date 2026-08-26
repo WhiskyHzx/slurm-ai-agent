@@ -8,6 +8,8 @@ config/model_config.json
 # Slurm 作业输出文件（测试残留）
 *.out
 *.err
+server.sock
+*.sock
 runs/
 *.log
 
