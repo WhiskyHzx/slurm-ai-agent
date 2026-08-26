@@ -135,6 +135,7 @@ project_agents: dict[str, AgentLoop] = {}
 standalone_agents: dict[str, AgentLoop] = {}
 conda_init_jobs: dict[str, dict] = {}
 conda_init_jobs_lock = threading.Lock()
+chat_history_lock = threading.Lock()
 
 
 def _conda_env_ready(conda_env_dir: Path) -> bool:
@@ -180,11 +181,21 @@ def _start_conda_init(project_name: str) -> dict:
     with conda_init_jobs_lock:
         current = conda_init_jobs.get(safe_project_name)
         if current and current.get("status") == "initializing":
-            return _conda_status_for(safe_project_name)
-        conda_init_jobs[safe_project_name] = {
-            "status": "initializing",
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "message": "项目 Conda 环境正在后台初始化",
+            current_snapshot = dict(current)
+        else:
+            current_snapshot = None
+            conda_init_jobs[safe_project_name] = {
+                "status": "initializing",
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "message": "项目 Conda 环境正在后台初始化",
+            }
+
+    if current_snapshot is not None:
+        return {
+            "project_name": safe_project_name,
+            "project_dir": str(project_dir),
+            "conda_env_dir": str(conda_env_dir),
+            **current_snapshot,
         }
 
     def worker() -> None:
@@ -262,13 +273,16 @@ def _write_chat_history(project_name: str, history: list[dict], subdir: str = ""
 def _append_chat_history(project_name: str, role: str, content: str, subdir: str = "") -> None:
     if role not in {"user", "ai"} or not content.strip():
         return
-    history = _read_chat_history(project_name, subdir)
-    history.append({
-        "role": role,
-        "content": content,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-    })
-    _write_chat_history(project_name, history, subdir)
+    # 作业分析线程可能同时完成，读-改-写必须作为一个原子操作，
+    # 否则同一会话中后写入的作业消息会覆盖先写入的消息。
+    with chat_history_lock:
+        history = _read_chat_history(project_name, subdir)
+        history.append({
+            "role": role,
+            "content": content,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        _write_chat_history(project_name, history, subdir)
 
 
 def _agent_from_history(project_name: str, subdir: str = "") -> AgentLoop:
@@ -279,6 +293,7 @@ def _agent_from_history(project_name: str, subdir: str = "") -> AgentLoop:
         submission_context={
             "project_name": safe_project_name,
             "subdir": safe_subdir,
+            "chat_subdir": safe_subdir,
         },
     )
     ag = AgentLoop(executor=executor)
@@ -366,6 +381,7 @@ class JobSubmitRequest(BaseModel):
     memory_mb: int = 16384
     time_limit: int = 240  # 分钟
     subdir: str = ""
+    chat_subdir: str = ""
 
 
 class ModelSelectRequest(BaseModel):
@@ -1436,9 +1452,12 @@ def _validated_job_draft(raw: dict) -> dict:
     account = str(raw.get("account") or "").strip()
     qos = str(raw.get("qos") or "").strip()
     subdir = str(raw.get("subdir") or "").strip().strip("/")
+    chat_subdir = str(raw.get("chat_subdir") or "").strip().strip("/")
 
     if not project_name:
         raise FileTransferError("必须在一个项目中提交作业")
+    if chat_subdir.startswith(".") or ".." in chat_subdir.split("/") or "/" in chat_subdir:
+        raise FileTransferError(f"非法的会话小文件夹名称: {chat_subdir}")
     if not command:
         raise FileTransferError("作业命令不能为空")
     if len(command) > 100_000:
@@ -1523,6 +1542,7 @@ def _validated_job_draft(raw: dict) -> dict:
     return {
         "project_name": project_name,
         "subdir": subdir,
+        "chat_subdir": chat_subdir,
         "command": command,
         "job_name": safe_name,
         "partition": partition,
@@ -1712,12 +1732,12 @@ def _submit_controlled_job(raw_draft: dict) -> dict:
     )
     job_id = _job_id_from_response(result)
 
-    # 登记作业供心跳监控：完成/失败时前端会收到右下角通知（Web 与 Agent 共用此路径）
+    # 登记作业供心跳监控：终态报告生成后写入所属会话（Web 与 Agent 共用）
     if job_id is not None:
         try:
             _register_watched_job(
                 job_id, draft["job_name"], workspace.project_name,
-                draft["subdir"], logs_dir,
+                draft["subdir"], draft["chat_subdir"], logs_dir,
             )
         except Exception:
             logger.exception("登记作业监控失败（不影响提交结果）")
@@ -3236,6 +3256,7 @@ def submit_project_job(req: JobSubmitRequest):
             "source": "web",
             "project_name": req.project_name,
             "subdir": req.subdir,
+            "chat_subdir": req.chat_subdir,
             "command": req.command,
             "job_name": req.job_name,
             "partition": req.partition,
@@ -3255,11 +3276,14 @@ def submit_project_job(req: JobSubmitRequest):
 
 
 # ---------------------------------------------------------------------------
-# 作业状态心跳：跟踪本服务提交的作业，发现 COMPLETED/FAILED 时通知前端；
-# 完成可打包下载输出目录，失败由 LLM 阅读日志生成简报
+# 作业状态心跳：跟踪本服务提交的作业，终态后统一生成分析报告；
+# 成功与失败都写入项目会话，并可在文档界面查看详细内容
 # ---------------------------------------------------------------------------
 JOB_WATCH_FILE = Path.home() / ".slurm-agent" / "job-watch.json"
-JOB_FAILED_STATES = {"FAILED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY"}
+JOB_FAILED_STATES = {
+    "FAILED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY",
+    "PREEMPTED", "BOOT_FAIL", "DEADLINE", "REVOKED",
+}
 _job_watch_lock = threading.Lock()
 
 
@@ -3283,7 +3307,14 @@ def _save_job_watch(records: list[dict]) -> None:
         logger.exception("保存作业监控记录失败")
 
 
-def _register_watched_job(job_id, job_name: str, project_name: str, subdir: str, logs_dir: Path) -> None:
+def _register_watched_job(
+    job_id,
+    job_name: str,
+    project_name: str,
+    run_subdir: str,
+    chat_subdir: str,
+    logs_dir: Path,
+) -> None:
     """提交成功后登记作业，供心跳查询与结果定位。"""
     if job_id is None:
         return
@@ -3293,11 +3324,17 @@ def _register_watched_job(job_id, job_name: str, project_name: str, subdir: str,
             "job_id": str(job_id),
             "job_name": job_name,
             "project_name": project_name,
-            "subdir": subdir,
+            "subdir": run_subdir,  # 兼容旧记录字段：表示作业运行目录
+            "run_subdir": run_subdir,
+            "chat_subdir": chat_subdir,
             "logs_dir": str(logs_dir),
             "state": "SUBMITTED",
             "final_state": "",
+            "analyzing": False,
             "report_ready": False,
+            "report_error": "",
+            "message_content": "",
+            "notification_delivered": False,
             "submitted_at": datetime.now().isoformat(timespec="seconds"),
         })
         # 只保留最近 200 条，避免无限增长
@@ -3374,40 +3411,70 @@ def _update_watched_record(job_id: str, **fields) -> Optional[dict]:
 
 @app.get("/api/jobs/watch")
 def jobs_watch():
-    """心跳：查询已登记作业状态，返回新发生的 COMPLETE/FAILED 事件（不重复报）。"""
+    """心跳：发现终态后在后台生成报告，报告和会话消息就绪后才返回事件。"""
     with _job_watch_lock:
         records = _load_job_watch()
-    pending = [r for r in records if not r.get("final_state")]
-    events: list[dict] = []
-    if pending:
+        pending_ids = [r["job_id"] for r in records if not r.get("final_state")]
+    analyze_records: list[dict] = []
+    states: dict[str, str] = {}
+    if pending_ids:
         try:
-            states = _watched_job_states([r["job_id"] for r in pending])
+            states = _watched_job_states(pending_ids)
         except Exception as e:  # REST 整体不可用时静默，下轮再试
             logger.warning("作业状态查询失败: %s", e)
-            return {"status": "ok", "events": []}
-        changed = False
-        for record in pending:
-            state = states.get(record["job_id"])
-            if not state:
-                continue
-            record["state"] = state
-            if state.startswith("CANCELLED"):
-                record["final_state"] = state  # 主动取消：忽略，不产生事件
-                changed = True
-            elif state == "COMPLETED" or state in JOB_FAILED_STATES:
-                record["final_state"] = state
-                changed = True
-                events.append({
-                    "job_id": record["job_id"],
-                    "job_name": record.get("job_name", ""),
-                    "state": state,
-                    "project_name": record.get("project_name", ""),
-                    "subdir": record.get("subdir", ""),
-                    "logs_dir": record.get("logs_dir", ""),
-                })
-        if changed:
-            with _job_watch_lock:
+
+    # 查询 REST 时不占文件锁；回写前重新读取，防止覆盖分析线程的更新。
+    if states:
+        with _job_watch_lock:
+            records = _load_job_watch()
+            changed = False
+            for record in records:
+                if record.get("final_state"):
+                    continue
+                state = states.get(record["job_id"])
+                if not state:
+                    continue
+                record["state"] = state
+                if state.startswith("CANCELLED"):
+                    record["final_state"] = state  # 主动取消：忽略，不产生事件
+                    changed = True
+                elif state == "COMPLETED" or state in JOB_FAILED_STATES:
+                    record["final_state"] = state
+                    record["analyzing"] = True
+                    # 旧版服务登记但尚未结束的作业也要进入新消息流程。
+                    record["notification_delivered"] = False
+                    changed = True
+                    analyze_records.append(dict(record))
+            if changed:
                 _save_job_watch(records)
+
+    # 不在文件锁内调用 LLM；多份作业各自使用独立线程和报告文件。
+    for record in analyze_records:
+        threading.Thread(target=_run_job_analysis, args=(record,), daemon=True).start()
+
+    events: list[dict] = []
+    with _job_watch_lock:
+        records = _load_job_watch()
+        changed = False
+        for record in records:
+            # 只有新版登记的记录才带显式 False，避免升级后重放历史作业。
+            if record.get("notification_delivered") is not False:
+                continue
+            if not record.get("report_ready") or not record.get("message_content"):
+                continue
+            events.append({
+                "job_id": record["job_id"],
+                "job_name": record.get("job_name", ""),
+                "state": record.get("final_state", ""),
+                "project_name": record.get("project_name", ""),
+                "subdir": record.get("chat_subdir", record.get("subdir", "")),
+                "run_subdir": record.get("run_subdir", record.get("subdir", "")),
+                "message": record.get("message_content", ""),
+            })
+            record["notification_delivered"] = True
+            changed = True
+        if changed:
+            _save_job_watch(records)
     return {"status": "ok", "events": events}
 
 
@@ -3440,60 +3507,192 @@ def job_results(job_id: str):
     )
 
 
-def _run_failure_analysis(record: dict) -> None:
-    """后台线程：读 .err/.out/脚本，调 LLM 生成失败简报写到输出目录。"""
+def _job_log_path(record: dict, suffix: str) -> Optional[Path]:
+    """按作业 ID 精确找日志，避免并行作业相互读到对方的输出。"""
+    logs_dir = Path(record["logs_dir"])
+    suffix = suffix.lstrip(".")
+    exact = logs_dir / f"{record.get('job_name', '')}-{record['job_id']}.{suffix}"
+    if exact.is_file():
+        return exact
+    matches = sorted(
+        logs_dir.glob(f"*-{record['job_id']}.{suffix}"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return matches[0] if matches else None
+
+
+def _job_slurm_context(record: dict) -> str:
+    """组合登记信息与 Slurm 历史详情，供结果/失败报告共用。"""
+    summary: dict = {
+        "job_id": record.get("job_id", ""),
+        "job_name": record.get("job_name", ""),
+        "project_name": record.get("project_name", ""),
+        "run_subdir": record.get("run_subdir", record.get("subdir", "")),
+        "chat_subdir": record.get("chat_subdir", record.get("subdir", "")),
+        "final_state": record.get("final_state", ""),
+        "submitted_at": record.get("submitted_at", ""),
+    }
+    try:
+        jobs = SlurmClient().get_jobs_history(
+            params={"job_id": str(record["job_id"])}
+        ).get("jobs") or []
+        detail = next(
+            (job for job in jobs if str(job.get("job_id")) == str(record["job_id"])),
+            None,
+        )
+        if detail:
+            summary["slurm_detail"] = detail
+    except Exception as e:
+        logger.warning("Slurm 详情查询失败 job=%s: %s", record.get("job_id"), e)
+        summary["slurm_detail_error"] = str(e)[:300]
+    return json.dumps(summary, ensure_ascii=False, indent=2, default=str)[:12000]
+
+
+def _external_log_urls(*texts: str) -> list[str]:
+    """从日志中保留 W&B 等 HTTP(S) 结果地址。"""
+    urls: list[str] = []
+    for text in texts:
+        for raw in re.findall(r"https?://[^\s<>()\[\]`\"']+", text or ""):
+            url = raw.rstrip(".,;:!?。，；：！？")
+            if url and url not in urls:
+                urls.append(url)
+    return urls[:20]
+
+
+def _failure_message_summary(stderr: str, state: str) -> str:
+    lines = [
+        re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+        for line in (stderr or "").splitlines()
+        if line.strip()
+    ]
+    keywords = re.compile(
+        r"(error|exception|traceback|failed|failure|out of memory|oom|timeout|timed out|killed|no such file)",
+        re.IGNORECASE,
+    )
+    candidate = next((line for line in reversed(lines) if keywords.search(line)), "")
+    if not candidate:
+        candidate = f"Slurm 终态为 {state or 'FAILED'}"
+    candidate = re.sub(r"\s+", " ", candidate)
+    return candidate[:180] + ("…" if len(candidate) > 180 else "")
+
+
+def _fallback_job_report(
+    record: dict, slurm_text: str, stdout: str, stderr: str, error: Exception
+) -> str:
+    kind = "结果" if record.get("final_state") == "COMPLETED" else "失败"
+    return (
+        f"# 作业{kind}分析：{record.get('job_name', record['job_id'])}\n\n"
+        "## 分析状态\n\n"
+        f"自动模型分析未完成（{error}），以下保留 Slurm 与原始日志供排查。\n\n"
+        f"## Slurm 信息\n\n```json\n{slurm_text}\n```\n\n"
+        f"## stdout（尾部）\n\n```text\n{stdout}\n```\n\n"
+        f"## stderr（尾部）\n\n```text\n{stderr}\n```"
+    )
+
+
+def _run_job_analysis(record: dict) -> None:
+    """后台线程：按作业读 Slurm/.out/.err，生成独立报告并写入所属会话。"""
     job_id = record["job_id"]
     try:
         logs_dir = Path(record["logs_dir"])
-        err_files = sorted(logs_dir.glob("*.err"), key=lambda p: p.stat().st_mtime, reverse=True)
-        out_files = sorted(logs_dir.glob("*.out"), key=lambda p: p.stat().st_mtime, reverse=True)
-        script_files = sorted(logs_dir.glob("*.sh"), key=lambda p: p.stat().st_mtime, reverse=True)
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        err_path = _job_log_path(record, "err")
+        out_path = _job_log_path(record, "out")
+        err_text = (
+            err_path.read_text(encoding="utf-8", errors="ignore")[-8000:]
+            if err_path else "（未找到该作业的 .err 文件）"
+        )
+        out_text = (
+            out_path.read_text(encoding="utf-8", errors="ignore")[-8000:]
+            if out_path else "（未找到该作业的 .out 文件）"
+        )
+        slurm_text = _job_slurm_context(record)
+        completed = record.get("final_state") == "COMPLETED"
+        if completed:
+            system_prompt = (
+                "你是 HPC 集群的 Slurm 作业结果分析专家。仅根据 Slurm 信息与 "
+                "stdout/stderr，用中文写一份简洁的 markdown 结果报告。不得猜测日志中"
+                "不存在的指标或产物。结构：\n# 作业结果分析：<作业名>\n## 作业状态\n"
+                "## 运行与训练概况\n## 关键指标与趋势\n## 警告与注意事项\n## 结论。"
+                "如日志包含 W&B 等 HTTP(S) 结果地址，必须原样保留并写成可点击的 "
+                "markdown 链接。只输出报告正文。"
+            )
+        else:
+            system_prompt = (
+                "你是 HPC 集群的 Slurm 作业诊断专家。仅根据 Slurm 信息与 "
+                "stderr/stdout，用中文写一份简洁的 markdown 失败分析报告，结构：\n"
+                "# 作业失败分析：<作业名>\n## 失败状态\n（一句话）\n"
+                "## 关键错误\n（引用最重要的原始错误行，代码块）\n"
+                "## 原因分析\n（2-4 条要点）\n## 修复建议\n（可操作的具体步骤）。"
+                "如日志包含 W&B 等 HTTP(S) 地址，必须原样保留并写成可点击的 "
+                "markdown 链接。只输出报告正文。"
+            )
 
-        err_text = err_files[0].read_text(encoding="utf-8", errors="ignore")[-8000:] if err_files else "（未找到 .err 文件）"
-        out_text = out_files[0].read_text(encoding="utf-8", errors="ignore")[-2500:] if out_files else "（未找到 .out 文件）"
-        script_text = script_files[0].read_text(encoding="utf-8", errors="ignore")[:4000] if script_files else "（未找到脚本）"
+        try:
+            response = LLMProvider().chat([
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        "## Slurm 信息\n```json\n" + slurm_text + "\n```\n\n"
+                        "## stdout（尾部）\n```text\n" + out_text + "\n```\n\n"
+                        "## stderr（尾部）\n```text\n" + err_text + "\n```"
+                    ),
+                },
+            ])
+            report = (response.choices[0].message.content or "").strip()
+            if not report:
+                raise RuntimeError("LLM 返回空内容")
+        except Exception as llm_error:
+            logger.exception("作业 %s 模型分析失败，将生成原始日志报告", job_id)
+            report = _fallback_job_report(
+                record, slurm_text, out_text, err_text, llm_error
+            )
 
-        llm = LLMProvider()
-        response = llm.chat([
-            {
-                "role": "system",
-                "content": (
-                    "你是 HPC 集群的 Slurm 作业诊断专家。请根据作业的 stderr/stdout 与提交脚本，"
-                    "用中文写一份简洁的 markdown 失败分析简报，结构：\n"
-                    "# 作业失败分析：<作业名>\n"
-                    "## 失败状态\n（一句话）\n"
-                    "## 关键错误\n（引用最重要的原始错误行，代码块）\n"
-                    "## 原因分析\n（2-4 条要点）\n"
-                    "## 修复建议\n（可操作的具体步骤）\n"
-                    "只输出简报正文。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"作业 ID: {job_id}\n作业名: {record.get('job_name', '')}\n"
-                    f"项目: {record.get('project_name', '')}\n最终状态: {record.get('final_state', '')}\n\n"
-                    "## stderr（尾部）\n```\n" + err_text + "\n```\n\n"
-                    "## stdout（尾部）\n```\n" + out_text + "\n```\n\n"
-                    "## 提交脚本\n```bash\n" + script_text + "\n```"
-                ),
-            },
-        ])
-        report = (response.choices[0].message.content or "").strip()
-        if not report:
-            raise RuntimeError("LLM 返回空内容")
-        report_path = logs_dir / f"failure-report-{job_id}.md"
+        urls = _external_log_urls(out_text, err_text)
+        missing_urls = [url for url in urls if url not in report]
+        if missing_urls:
+            report += "\n\n## 可视化与外部链接\n\n" + "\n".join(
+                f"- [打开 {url}]({url})" for url in missing_urls
+            )
+
+        report_path = logs_dir / f"job-report-{job_id}.md"
         report_path.write_text(report + "\n", encoding="utf-8")
-        _update_watched_record(job_id, report_ready=True, report_error="")
-        logger.info("作业 %s 失败简报已生成: %s", job_id, report_path)
+        if completed:
+            message = f"作业 {job_id} 训练完成。\n\n[[JOB_REPORT:{job_id}]]"
+        else:
+            summary = _failure_message_summary(
+                err_text + "\n" + out_text, record.get("final_state", "")
+            )
+            message = (
+                f"作业 {job_id} 训练失败，异常终止，报错信息为：{summary}\n\n"
+                f"[[JOB_REPORT:{job_id}]]"
+            )
+        _append_chat_history(
+            record.get("project_name", ""),
+            "ai",
+            message,
+            record.get("chat_subdir", record.get("subdir", "")),
+        )
+        _update_watched_record(
+            job_id,
+            analyzing=False,
+            report_ready=True,
+            report_error="",
+            message_content=message,
+        )
+        logger.info("作业 %s 分析报告已生成: %s", job_id, report_path)
     except Exception as e:
-        logger.exception("作业 %s 失败分析失败", job_id)
-        _update_watched_record(job_id, report_ready=False, report_error=str(e)[:300])
+        logger.exception("作业 %s 分析报告生成失败", job_id)
+        _update_watched_record(
+            job_id, analyzing=False, report_ready=False, report_error=str(e)[:300]
+        )
 
 
 @app.post("/api/jobs/{job_id}/analyze-failure")
 def job_analyze_failure(job_id: str):
-    """触发后台 LLM 失败分析（不阻塞），前端轮询 /report 获取结果。"""
+    """兼容旧前端：触发作业终态分析（成功/失败均支持）。"""
     record = _watched_record(job_id)
     if not record:
         return JSONResponse({"error": "未找到该作业的记录"}, status_code=404)
@@ -3502,7 +3701,8 @@ def job_analyze_failure(job_id: str):
     if record.get("analyzing"):
         return {"status": "ok", "ready": False}
     _update_watched_record(job_id, analyzing=True)
-    threading.Thread(target=_run_failure_analysis, args=(record,), daemon=True).start()
+    record["analyzing"] = True
+    threading.Thread(target=_run_job_analysis, args=(record,), daemon=True).start()
     return {"status": "ok", "ready": False}
 
 
@@ -3529,27 +3729,102 @@ def _fs_tree(root: Path, base: Optional[Path] = None) -> list[dict]:
 
 @app.get("/api/jobs/{job_id}/report")
 def job_report(job_id: str):
-    """返回失败分析简报内容与输出目录树（报告就绪前返回 pending）。"""
+    """返回成功/失败分析报告与输出目录树。"""
     record = _watched_record(job_id)
     if not record:
         return JSONResponse({"error": "未找到该作业的记录"}, status_code=404)
     if record.get("analyzing") and not record.get("report_ready"):
         return {"status": "pending"}
     logs_dir = Path(record["logs_dir"])
-    report_path = logs_dir / f"failure-report-{job_id}.md"
+    report_path = logs_dir / f"job-report-{job_id}.md"
+    # 兼容升级前已生成的失败简报。
+    legacy_path = logs_dir / f"failure-report-{job_id}.md"
+    if not report_path.is_file() and legacy_path.is_file():
+        report_path = legacy_path
     if not report_path.is_file():
         return {"status": "pending"}
     if record.get("report_ready") is False and record.get("report_error"):
         return JSONResponse({"error": f"分析失败: {record['report_error']}"}, status_code=500)
+    failed = record.get("final_state") != "COMPLETED"
+    title_kind = "失败分析" if failed else "结果分析"
     return {
         "status": "ok",
         "job_id": job_id,
         "job_name": record.get("job_name", ""),
-        "title": f"失败分析 · {record.get('job_name', job_id)} ({job_id})",
+        "title": f"{title_kind} · {record.get('job_name', job_id)} ({job_id})",
         "report_path": report_path.relative_to(logs_dir).as_posix(),
         "content": report_path.read_text(encoding="utf-8", errors="ignore"),
         "tree": _fs_tree(logs_dir),
     }
+
+
+JOB_OUTPUT_PREVIEW_MAX_BYTES = int(
+    os.environ.get("SLURM_JOB_OUTPUT_PREVIEW_MAX_BYTES", str(1024 * 1024))
+)
+JOB_OUTPUT_TEXT_SUFFIXES = READABLE_TEXT_SUFFIXES | {
+    ".out", ".err", ".csv", ".tsv", ".html", ".xml", ".tex", ".slurm",
+}
+
+
+def _job_output_path(record: dict, relative_path: str) -> tuple[Path, Path]:
+    """将报告树中的相对路径限制在该作业登记的 logs 目录内。"""
+    rel = (relative_path or "").strip().replace("\\", "/").strip("/")
+    if not rel or rel.startswith(".") or ".." in rel.split("/"):
+        raise FileTransferError("非法的作业输出路径")
+    logs_dir = Path(record["logs_dir"]).resolve()
+    target = (logs_dir / rel).resolve()
+    try:
+        target.relative_to(logs_dir)
+    except ValueError:
+        raise FileTransferError("作业输出路径超出 logs 目录")
+    return logs_dir, target
+
+
+@app.get("/api/jobs/{job_id}/output-file")
+def job_output_file(job_id: str, path: str):
+    """在报告文档界面中只读预览该作业 logs 目录内的文件。"""
+    record = _watched_record(job_id)
+    if not record:
+        return JSONResponse({"error": "未找到该作业的记录"}, status_code=404)
+    try:
+        logs_dir, target = _job_output_path(record, path)
+        if not target.is_file():
+            return JSONResponse({"error": "文件不存在"}, status_code=404)
+        size = target.stat().st_size
+        suffix = target.suffix.lower()
+        is_text = suffix in JOB_OUTPUT_TEXT_SUFFIXES or _looks_decodable_text(target)
+        if not is_text:
+            content = (
+                f"文件 {target.name} 为二进制或不支持的格式，"
+                f"无法在文档界面预览。\n\n文件大小：{size} 字节"
+            )
+            truncated = False
+        elif size > JOB_OUTPUT_PREVIEW_MAX_BYTES:
+            with target.open("rb") as handle:
+                handle.seek(-JOB_OUTPUT_PREVIEW_MAX_BYTES, os.SEEK_END)
+                data = handle.read(JOB_OUTPUT_PREVIEW_MAX_BYTES)
+            content = (
+                f"文件过大，仅显示末尾 {JOB_OUTPUT_PREVIEW_MAX_BYTES} 字节。\n\n"
+                + data.decode("utf-8", errors="replace")
+            )
+            truncated = True
+        else:
+            content = target.read_text(encoding="utf-8", errors="replace")
+            truncated = False
+        return {
+            "status": "ok",
+            "job_id": job_id,
+            "path": target.relative_to(logs_dir).as_posix(),
+            "title": target.name,
+            "content": content,
+            "size": size,
+            "truncated": truncated,
+            "render_mode": "markdown" if suffix == ".md" and is_text else "text",
+        }
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        return JSONResponse({"error": f"读取作业输出失败: {e}"}, status_code=500)
 
 
 MANAGED_FILES_ROOT = Path.home().resolve()
