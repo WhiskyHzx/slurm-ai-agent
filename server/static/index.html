@@ -274,7 +274,7 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 270px 0px minmax(420px, 1fr) 430px;
+    grid-template-columns: 270px 0px calc(100vw - 700px) 430px;
     gap: 0;
     height: calc(100vh - 65px);
     max-width: none;
@@ -287,15 +287,15 @@
   }
 
   .layout.left-collapsed {
-    grid-template-columns: 46px 0px minmax(420px, 1fr) 430px;
+    grid-template-columns: 46px 0px calc(100vw - 476px) 430px;
   }
 
   .layout.right-collapsed {
-    grid-template-columns: 270px 0px minmax(420px, 1fr) 0px;
+    grid-template-columns: 270px 0px calc(100vw - 270px) 0px;
   }
 
   .layout.left-collapsed.right-collapsed {
-    grid-template-columns: 46px 0px minmax(420px, 1fr) 0px;
+    grid-template-columns: 46px 0px calc(100vw - 46px) 0px;
   }
 
   /* 帮助文档模式：阅读器滑入成为中间宽栏，智能体收窄靠右，资源栏收成轨道 */
@@ -2369,9 +2369,13 @@
   }
 
   body.docs-mode #checkDepsBtn,
+  body.file-manager-mode #checkDepsBtn,
   body.docs-mode #confirmRunBtn,
+  body.file-manager-mode #confirmRunBtn,
   body.docs-mode .composer-add,
-  body.docs-mode .composer-divider {
+  body.file-manager-mode .composer-add,
+  body.docs-mode .composer-divider,
+  body.file-manager-mode .composer-divider {
     opacity: 0;
     visibility: hidden;
     max-width: 0;
@@ -2380,11 +2384,13 @@
     padding-right: 0;
   }
 
-  body.docs-mode .composer-right {
+  body.docs-mode .composer-right,
+  body.file-manager-mode .composer-right {
     gap: 0;
   }
 
-  body.docs-mode .composer-left {
+  body.docs-mode .composer-left,
+  body.file-manager-mode .composer-left {
     order: 2;
     margin-left: auto;
   }
@@ -2644,19 +2650,19 @@
   @media (max-width: 1080px) {
     .layout,
     .layout.left-collapsed {
-      grid-template-columns: 46px 0px minmax(0, 1fr) 46px;
+      grid-template-columns: 46px 0px calc(100vw - 92px) 46px;
     }
     .layout.right-collapsed,
     .layout.left-collapsed.right-collapsed {
-      grid-template-columns: 46px 0px minmax(0, 1fr) 0px;
+      grid-template-columns: 46px 0px calc(100vw - 46px) 0px;
     }
     .layout.docs-open,
     .layout.docs-open.left-collapsed {
-      grid-template-columns: 46px minmax(0, 1fr) minmax(0, 1fr) 46px;
+      grid-template-columns: 46px calc(50vw - 46px) calc(50vw - 46px) 46px;
     }
     .layout.docs-open.right-collapsed,
     .layout.docs-open.left-collapsed.right-collapsed {
-      grid-template-columns: 46px minmax(0, 1fr) minmax(0, 1fr) 0px;
+      grid-template-columns: 46px calc(50vw - 23px) calc(50vw - 23px) 0px;
     }
     .layout:not(.left-open) .left-sidebar .sidebar-panel,
     .layout:not(.right-open) .right-sidebar .right-content {
@@ -3454,6 +3460,7 @@ let docsTreeOverride = null;
 // 独立会话：文档模式下聊天是纯问答（不绑定项目），与项目作业会话各自暂存 DOM 节点
 let projectChatNodes = null;
 let docsChatNodes = null;
+let fileManagerChatNodes = null;
 let fileManagerMode = false;
 let fileManagerRoot = '';
 let fileTreeData = [];
@@ -3466,6 +3473,7 @@ let managedCreateDraft = null;
 let managedCreatePending = false;
 
 const DOCS_CHAT_PLACEHOLDER = '阅读文档时有疑问？直接问我，我来解释';
+const FILE_MANAGER_CHAT_PLACEHOLDER = '查看或编辑文件时有疑问？直接问我';
 const PROJECT_CHAT_PLACEHOLDER = '添加依赖清单或算力要求';
 
 function swapChatNodes(incoming, welcomeText) {
@@ -3643,16 +3651,32 @@ async function openDocsFile(path) {
 }
 
 function setFileManagerMode(enabled) {
-  fileManagerMode = enabled;
+  const target = Boolean(enabled);
+  if (target === fileManagerMode) return;
+  if (target && docsMode) toggleDocsMode(false);
+  fileManagerMode = target;
   document.body.classList.toggle('file-manager-mode', fileManagerMode);
   updateSidebarTitle();
   if (fileManagerMode) {
     localStorage.setItem('slurmFileManagerMode', 'true');
-    if (docsMode) toggleDocsMode(false);
+    pendingDependencyFiles = [];
+    renderDependencyFileChips();
+    activeToolCards.clear();
+    userInput.placeholder = FILE_MANAGER_CHAT_PLACEHOLDER;
+    projectChatNodes = swapChatNodes(
+      fileManagerChatNodes,
+      '这里是文件管理问答会话，与项目作业互不影响。打开可编辑文件后，可以直接询问代码、配置或修改思路。',
+    );
     if (!fileTreeData.length) loadManagedTree('');
   } else {
     localStorage.setItem('slurmFileManagerMode', 'false');
     closeManagedFileEditor();
+    activeToolCards.clear();
+    userInput.placeholder = PROJECT_CHAT_PLACEHOLDER;
+    fileManagerChatNodes = swapChatNodes(
+      projectChatNodes,
+      '选择左侧作业目录，或点击左侧新建按钮创建新的作业目录。可以问我查询资源、生成脚本、准备提交命令。',
+    );
   }
 }
 
@@ -4669,7 +4693,7 @@ async function selectProject(name, subdir = '') {
   selectedDependencyItems = [];
   dependencyPlanReady = false;
   checkDepsBtn.textContent = '检查依赖';
-  if (!docsMode) userInput.placeholder = PROJECT_CHAT_PLACEHOLDER;
+  if (!docsMode && !fileManagerMode) userInput.placeholder = PROJECT_CHAT_PLACEHOLDER;
   depsState = 'unknown';
   lastCondaEnvDir = '';
   activeToolCards.clear();
@@ -4678,7 +4702,7 @@ async function selectProject(name, subdir = '') {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || '读取会话失败');
     // 文档模式激活时只把项目会话加载进暂存区，不打断当前的文档问答会话
-    const holder = docsMode ? document.createElement('div') : null;
+    const holder = (docsMode || fileManagerMode) ? document.createElement('div') : null;
     const sink = holder || messagesEl;
     if (!holder) messagesEl.innerHTML = '';
     const history = data.messages || [];
@@ -4702,7 +4726,7 @@ async function selectProject(name, subdir = '') {
 }
 
 async function persistDisplayMessage(role, content) {
-  if (docsMode) return; // 文档问答会话独立存在内存中，不写入项目历史
+  if (docsMode || fileManagerMode) return; // 独立问答会话只存在内存中，不写入项目历史
   const projectName = currentProjectName();
   if (!projectName || !content.trim()) return;
   try {
@@ -6793,14 +6817,15 @@ ${text}`;
 
   try {
     // 文档模式下是独立问答会话：不携带项目上下文，后端用全局 agent，不能布置作业
-    const inDocsMode = docsMode;
+    const standaloneSession = docsMode ? 'docs' : (fileManagerMode ? 'files' : '');
     const resp = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: messageText,
-        project_name: inDocsMode ? '' : currentProjectName(),
-        subdir: inDocsMode ? '' : (selectedSubdir || ''),
+        project_name: standaloneSession ? '' : currentProjectName(),
+        subdir: standaloneSession ? '' : (selectedSubdir || ''),
+        session: standaloneSession,
       }),
     });
     if (!resp.ok) {
@@ -6847,15 +6872,22 @@ ${text}`;
 
 async function resetChat() {
   try {
+    const standaloneSession = docsMode ? 'docs' : (fileManagerMode ? 'files' : '');
     await fetch('/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project_name: currentProjectName(),
-        subdir: selectedSubdir || '',
+        project_name: standaloneSession ? '' : currentProjectName(),
+        subdir: standaloneSession ? '' : (selectedSubdir || ''),
+        session: standaloneSession,
       }),
     });
-    messagesEl.innerHTML = '<div class="message ai">对话已重置。可以继续查询资源、生成脚本或准备提交命令。</div>';
+    const resetText = docsMode
+      ? '文档问答已重置。可以继续询问当前文档内容。'
+      : (fileManagerMode
+        ? '文件管理问答已重置。可以继续询问代码、配置或修改思路。'
+        : '对话已重置。可以继续查询资源、生成脚本或准备提交命令。');
+    messagesEl.innerHTML = `<div class="message ai">${resetText}</div>`;
     lastProjectReport = '';
     lastProjectDir = '';
     depsState = 'unknown';
