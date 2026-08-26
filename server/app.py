@@ -12,8 +12,6 @@ server/app.py — FastAPI 后端入口。
 """
 
 import asyncio
-import base64
-import hmac
 import json
 import logging
 import os
@@ -31,7 +29,7 @@ from typing import Optional
 
 import requests
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, Response
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -79,53 +77,6 @@ logger = logging.getLogger(__name__)
 # FastAPI 应用
 # ---------------------------------------------------------------------------
 app = FastAPI(title="算力平台智能助手", version="1.0")
-
-
-# ---------------------------------------------------------------------------
-# 访问认证（Basic Auth）
-# 登录节点多用户共享 localhost，仅绑 127.0.0.1 挡不住同节点其他用户直连。
-# 存在非空的 config/access_token 文件（600 权限，不入库）时启用认证：
-# 浏览器首次访问弹登录框，用户名任意、密码填 token；SSE/fetch 同源自动携带。
-# 未配置则放行（本地开发）。
-# ---------------------------------------------------------------------------
-_ACCESS_TOKEN_FILE = Path(__file__).resolve().parent.parent / "config" / "access_token"
-
-
-def _load_access_token() -> str:
-    try:
-        return _ACCESS_TOKEN_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
-_ACCESS_TOKEN = _load_access_token()
-
-
-@app.middleware("http")
-async def require_basic_auth(request: Request, call_next):
-    if _ACCESS_TOKEN:
-        auth = request.headers.get("authorization") or ""
-        authorized = False
-        if auth.startswith("Basic "):
-            try:
-                decoded = base64.b64decode(auth[len("Basic "):]).decode("utf-8")
-                # Basic 格式为 "用户名:密码"；只校验密码部分，用户名任意。
-                # compare_digest 对非 ASCII str 会抛 TypeError，一并纳入异常处理返回 401
-                try:
-                    _, _, password = decoded.partition(":")
-                    authorized = hmac.compare_digest(password, _ACCESS_TOKEN)
-                except TypeError:
-                    authorized = False
-            except Exception:
-                authorized = False
-        if not authorized:
-            return Response(
-                status_code=401,
-                content="Unauthorized",
-                headers={"WWW-Authenticate": 'Basic realm="slurm-ai-agent"'},
-            )
-    return await call_next(request)
-
 
 # ---------------------------------------------------------------------------
 # Agent 实例（未选择项目时使用默认会话；选择项目后每个作业目录一个会话）
