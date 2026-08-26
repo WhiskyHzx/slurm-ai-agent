@@ -4,6 +4,7 @@
 !.env.example
 *.token
 config/model_config.json
+config/access_token
 
 # Slurm 作业输出文件（测试残留）
 *.out

@@ -12,6 +12,8 @@ server/app.py — FastAPI 后端入口。
 """
 
 import asyncio
+import base64
+import hmac
 import json
 import logging
 import os
@@ -29,7 +31,7 @@ from typing import Optional
 
 import requests
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -78,11 +80,59 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 app = FastAPI(title="算力平台智能助手", version="1.0")
 
+
+# ---------------------------------------------------------------------------
+# 访问认证（Basic Auth）
+# 登录节点多用户共享 localhost，仅绑 127.0.0.1 挡不住同节点其他用户直连。
+# 存在非空的 config/access_token 文件（600 权限，不入库）时启用认证：
+# 浏览器首次访问弹登录框，用户名任意、密码填 token；SSE/fetch 同源自动携带。
+# 未配置则放行（本地开发）。
+# ---------------------------------------------------------------------------
+_ACCESS_TOKEN_FILE = Path(__file__).resolve().parent.parent / "config" / "access_token"
+
+
+def _load_access_token() -> str:
+    try:
+        return _ACCESS_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+_ACCESS_TOKEN = _load_access_token()
+
+
+@app.middleware("http")
+async def require_basic_auth(request: Request, call_next):
+    if _ACCESS_TOKEN:
+        auth = request.headers.get("authorization") or ""
+        authorized = False
+        if auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth[len("Basic "):]).decode("utf-8")
+                # Basic 格式为 "用户名:密码"；只校验密码部分，用户名任意。
+                # compare_digest 对非 ASCII str 会抛 TypeError，一并纳入异常处理返回 401
+                try:
+                    _, _, password = decoded.partition(":")
+                    authorized = hmac.compare_digest(password, _ACCESS_TOKEN)
+                except TypeError:
+                    authorized = False
+            except Exception:
+                authorized = False
+        if not authorized:
+            return Response(
+                status_code=401,
+                content="Unauthorized",
+                headers={"WWW-Authenticate": 'Basic realm="slurm-ai-agent"'},
+            )
+    return await call_next(request)
+
+
 # ---------------------------------------------------------------------------
 # Agent 实例（未选择项目时使用默认会话；选择项目后每个作业目录一个会话）
 # ---------------------------------------------------------------------------
 agent: Optional[AgentLoop] = None
 project_agents: dict[str, AgentLoop] = {}
+standalone_agents: dict[str, AgentLoop] = {}
 conda_init_jobs: dict[str, dict] = {}
 conda_init_jobs_lock = threading.Lock()
 
@@ -238,7 +288,7 @@ def _agent_from_history(project_name: str, subdir: str = "") -> AgentLoop:
     return ag
 
 
-def get_agent(project_name: str = "", subdir: str = "") -> AgentLoop:
+def get_agent(project_name: str = "", subdir: str = "", session: str = "") -> AgentLoop:
     """获取或懒初始化 AgentLoop；每个项目/小文件夹绑定独立受控提交上下文。"""
     global agent
     if project_name:
@@ -249,6 +299,11 @@ def get_agent(project_name: str = "", subdir: str = "") -> AgentLoop:
         if cache_key not in project_agents:
             project_agents[cache_key] = _agent_from_history(safe_project_name, safe_subdir)
         return project_agents[cache_key]
+    standalone_session = (session or "").strip().lower()
+    if standalone_session in {"docs", "files"}:
+        if standalone_session not in standalone_agents:
+            standalone_agents[standalone_session] = AgentLoop()
+        return standalone_agents[standalone_session]
     if agent is None:
         agent = AgentLoop()
     return agent
@@ -261,6 +316,7 @@ class ChatRequest(BaseModel):
     message: str
     project_name: str = ""
     subdir: str = ""
+    session: str = ""
 
 
 class ResetResponse(BaseModel):
@@ -1726,7 +1782,7 @@ async def chat(req: ChatRequest):
 
     async def event_stream():
         try:
-            ag = get_agent(project_name, subdir)
+            ag = get_agent(project_name, subdir, req.session)
             ag.messages.append({"role": "user", "content": user_message})
             final_reply = ""
 
@@ -1841,10 +1897,12 @@ async def reset(req: Request):
     global agent
     project_name = ""
     subdir = ""
+    session = ""
     try:
         body = await req.json()
         project_name = str(body.get("project_name") or "").strip()
         subdir = str(body.get("subdir") or "").strip().strip("/")
+        session = str(body.get("session") or "").strip().lower()
     except Exception:
         project_name = ""
         subdir = ""
@@ -1855,6 +1913,10 @@ async def reset(req: Request):
         cache_key = f"{safe_project_name}/{subdir}" if subdir else safe_project_name
         project_agents.pop(cache_key, None)
         _write_chat_history(safe_project_name, [], subdir)
+        return ResetResponse(status="ok")
+
+    if session in {"docs", "files"}:
+        standalone_agents.pop(session, None)
         return ResetResponse(status="ok")
 
     if agent:
@@ -2055,13 +2117,14 @@ async def models_refresh():
 @app.post("/api/models/select")
 async def models_select(req: ModelSelectRequest):
     """Persist selected model and reset in-memory agent instances."""
-    global agent, project_agents
+    global agent, project_agents, standalone_agents
     try:
         config = set_selected_model(req.model)
     except Exception as e:
         return JSONResponse({"error": f"切换模型失败: {e}"}, status_code=400)
     agent = None
     project_agents = {}
+    standalone_agents = {}
     return {"status": "ok", **config}
 
 
