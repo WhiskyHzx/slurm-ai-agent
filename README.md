@@ -7,6 +7,7 @@
 - 资源看板：展示节点、GPU/CPU 使用情况、作业列表和当前用户作业。
 - 智能助手：通过 OpenAI 兼容接口调用大模型，支持 Function Calling 调用 Slurm 工具。
 - Slurm 工具：查询作业、查询节点/QoS、提交/取消作业、读取日志、生成 sbatch 脚本。
+- 知识库检索：基于 embedding 向量检索，从 107 平台文档中检索与用户问题最相关的片段。
 - 项目工作流：新建作业目录、记录用户需求、自动准备 per-project conda 环境。
 - 文件上传：浏览器选择文件或文件夹，服务端打包、SHA256 校验并解压到项目目录。
 - 提交前报告：读取项目目录、用户需求记录和可阅读源码/脚本/配置文本，生成依赖和算力配置建议。
@@ -25,7 +26,7 @@ slurm-ai-agent/
 │   └── templates/             # sbatch 脚本模板
 ├── core/
 │   ├── file_transfer.py       # 项目目录、上传归档、SHA 校验、conda 环境创建
-│   ├── knowledge_base.py      # 文档知识库检索
+│   ├── knowledge_base.py      # 文档知识库向量检索（embedding）
 │   ├── slurm_client.py        # Slurm REST API 客户端和 JWT 刷新
 │   └── template_engine.py     # 作业脚本模板渲染
 ├── server/
@@ -43,7 +44,7 @@ slurm-ai-agent/
 - Miniconda/conda 可用，用于为每个项目创建独立环境
 - 在 107 算力平台登录节点运行，例如 `tradmin-01` / `tradmin-02`
 - 可访问 Slurm REST API：`http://107.ustc.edu.cn:6820`
-- 可访问 LLM API：`https://api.llm.ustc.edu.cn/v1`
+- 可访问 LLM API：`https://api.llm.ustc.edu.cn/v1`（对话 + embedding）
 
 ## 准备 Miniconda（conda）环境
 
@@ -114,6 +115,17 @@ export SLURM_CONDA_EXE="$HOME/miniconda3/bin/conda"
 export SLURM_PROJECT_CONDA_PYTHON="3.10"
 export SLURM_UPLOAD_MAX_BYTES="2147483648"
 ```
+
+知识库检索使用 embedding 向量检索，相关可选变量：
+
+```bash
+export EMBEDDING_MODEL="qwen3-embedding"   # 默认 qwen3-embedding
+export RERANKER_MODEL="qwen3-reranker"    # 预留，未启用
+export EMBEDDING_CACHE_DIR=".embedding_cache"  # 向量缓存目录
+```
+
+> 知识库向量检索会在首次使用时自动构建索引并缓存到本地，之后直接读缓存；文档更新后可调用 `rebuild_index()` 或删除缓存目录重新构建。
+
 
 ## 启动 Web 控制台
 

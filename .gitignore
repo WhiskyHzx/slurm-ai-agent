@@ -10,7 +10,8 @@ config/model_config.json
 *.err
 runs/
 *.log
-
+# 向量检索缓存（可由文档重新构建）
+.embedding_cache/
 # Python
 __pycache__/
 *.py[cod]

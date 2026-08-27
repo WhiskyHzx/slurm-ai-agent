@@ -79,3 +79,16 @@ LLM_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "deepseek-v4-flash")  
 LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.3"))                    # 工具调用场景建议低温度
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "2048"))
 LLM_MAX_TOOL_TURNS = int(os.environ.get("LLM_MAX_TOOL_TURNS", "10"))                  # 单轮对话最多工具调用轮数，防止死循环
+
+# ---------------------------------------------------------------------------
+# Embedding（向量检索）配置
+# ---------------------------------------------------------------------------
+# Embedding 模型（独立于对话模型，不影响 LLM_MODEL 选择）
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "qwen3-embedding")
+# 可选 reranker 模型（当前未启用。文档量增大后可启用做重排序）
+RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "qwen3-reranker")
+# 向量缓存目录（相对项目根）
+EMBEDDING_CACHE_DIR = os.environ.get(
+    "EMBEDDING_CACHE_DIR",
+    str(Path(__file__).resolve().parent.parent / ".embedding_cache"),
+)
