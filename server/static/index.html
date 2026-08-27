@@ -274,7 +274,7 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 270px 0px minmax(420px, 1fr) 430px;
+    grid-template-columns: 270px 0px calc(100vw - 700px) 430px;
     gap: 0;
     height: calc(100vh - 65px);
     max-width: none;
@@ -282,36 +282,47 @@
     margin: 0;
     overflow: hidden;
     border-top: 1px solid var(--line);
-    /* 侧栏展开/收起：列宽带阻尼滑动（docs 阅读器列同理） */
-    transition: grid-template-columns .42s cubic-bezier(.32, .72, .33, 1);
+    /* 侧栏/阅读器展开收起：统一用更柔和的列宽动画 */
+    transition: grid-template-columns .68s cubic-bezier(.19, 1, .22, 1);
   }
 
   .layout.left-collapsed {
-    grid-template-columns: 46px 0px minmax(420px, 1fr) 430px;
+    grid-template-columns: 46px 0px calc(100vw - 476px) 430px;
   }
 
   .layout.right-collapsed {
-    grid-template-columns: 270px 0px minmax(420px, 1fr) 46px;
+    grid-template-columns: 270px 0px calc(100vw - 270px) 0px;
   }
 
   .layout.left-collapsed.right-collapsed {
-    grid-template-columns: 46px 0px minmax(420px, 1fr) 46px;
+    grid-template-columns: 46px 0px calc(100vw - 46px) 0px;
   }
 
   /* 帮助文档模式：阅读器滑入成为中间宽栏，智能体收窄靠右，资源栏收成轨道 */
   .layout.docs-open,
   .layout.docs-open.right-collapsed {
-    grid-template-columns: 270px minmax(420px, 1fr) minmax(320px, 380px) 46px;
+    grid-template-columns: 270px calc(100vw - 270px - 360px) 360px 0px;
   }
 
   .layout.docs-open.left-collapsed,
   .layout.docs-open.left-collapsed.right-collapsed {
-    grid-template-columns: 46px minmax(420px, 1fr) minmax(320px, 380px) 46px;
+    grid-template-columns: 46px calc(100vw - 46px - 360px) 360px 0px;
+  }
+
+  .layout.file-editor-open,
+  .layout.file-editor-open.right-collapsed {
+    grid-template-columns: 270px calc(100vw - 270px - 330px) 330px 0px;
+  }
+
+  .layout.file-editor-open.left-collapsed,
+  .layout.file-editor-open.left-collapsed.right-collapsed {
+    grid-template-columns: 46px calc(100vw - 46px - 330px) 330px 0px;
   }
 
   .main, .left-sidebar, .right-sidebar {
     min-width: 0;
     min-height: 0;
+    transition: border-color .3s ease, background-color .3s ease;
   }
 
   /* --------------------------------------------------------------------- */
@@ -334,7 +345,7 @@
     grid-template-rows: auto minmax(0, 1fr);
     opacity: 0;
     transform: translateX(-20px);
-    transition: opacity .38s ease .12s, transform .48s cubic-bezier(.22, .9, .34, 1) .08s;
+    transition: opacity .42s ease .08s, transform .62s cubic-bezier(.22, .9, .24, 1) .04s;
   }
 
   .layout.docs-open .docs-reader-inner {
@@ -379,6 +390,11 @@
     line-height: 1.7;
   }
 
+  .docs-content.file-editing {
+    padding: 0;
+    overflow: hidden;
+  }
+
   .docs-content h1 { font-size: 22px; margin: 4px 0 14px; line-height: 1.3; }
   .docs-content h2 { font-size: 17px; margin: 22px 0 8px; }
   .docs-content h3 { font-size: 14.5px; margin: 16px 0 6px; }
@@ -420,7 +436,7 @@
 
   .layout.docs-open .docs-tree { display: block; }
   .layout.docs-open #projectsList { display: none; }
-  .layout.docs-open .sidebar-actions { display: none; }
+  body.docs-mode .layout.docs-open .sidebar-actions { display: none; }
 
   @keyframes docsCascadeIn {
     from { opacity: 0; transform: translateY(-14px); }
@@ -430,6 +446,24 @@
   .docs-tree .cascade {
     animation: docsCascadeIn .34s cubic-bezier(.22, .9, .34, 1) both;
     animation-delay: calc(var(--i, 0) * 45ms);
+  }
+
+  @keyframes docsDoorOpen {
+    from {
+      opacity: 0;
+      clip-path: inset(0 0 100% 0);
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      clip-path: inset(0 0 0 0);
+      transform: none;
+    }
+  }
+
+  .docs-dir-children {
+    transform-origin: top;
+    animation: docsDoorOpen .28s cubic-bezier(.22, .9, .24, 1) both;
   }
 
   .docs-dir-label {
@@ -451,8 +485,27 @@
   }
 
   .docs-dir-label:hover { background: var(--surface-soft); }
-  .docs-dir-label .caret { transition: transform .28s ease; font-size: 9px; }
-  .docs-dir-label.open .caret { transform: rotate(90deg); }
+  .docs-dir-label .caret {
+    width: 10px;
+    height: 10px;
+    position: relative;
+    display: inline-block;
+  }
+
+  .docs-dir-label .caret::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 1px;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--muted);
+    border-bottom: 1.5px solid var(--muted);
+    transform: rotate(-45deg);
+    transition: transform .18s ease;
+  }
+
+  .docs-dir-label.open .caret::before { transform: rotate(45deg); }
 
   .docs-file-item {
     display: flex;
@@ -473,63 +526,6 @@
 
   .docs-file-item:hover { background: var(--surface-soft); }
   .docs-file-item.active { background: var(--focus-soft, rgba(59, 130, 246, .12)); color: var(--blue); font-weight: 650; }
-  /* 报告阅读模式：输出目录树中除报告外的文件锁定不可点 */
-  .docs-file-item.locked { opacity: .45; cursor: default; }
-  .docs-file-item.locked:hover { background: none; }
-
-  /* 作业状态通知：右下角滑入卡片 */
-  .job-alert-stack {
-    position: fixed;
-    right: 18px;
-    bottom: 18px;
-    display: grid;
-    gap: 10px;
-    z-index: 150;
-    width: min(340px, calc(100vw - 36px));
-  }
-
-  .job-alert-card {
-    position: relative;
-    display: grid;
-    gap: 8px;
-    padding: 14px 16px;
-    border: 1px solid var(--glass-line);
-    border-radius: 14px;
-    background: var(--glass);
-    backdrop-filter: blur(24px) saturate(170%);
-    -webkit-backdrop-filter: blur(24px) saturate(170%);
-    box-shadow: var(--modal-shadow);
-    transform: translateX(120%);
-    opacity: 0;
-    transition: transform .45s cubic-bezier(.32, 1.2, .5, 1), opacity .3s ease;
-  }
-
-  .job-alert-card.in { transform: none; opacity: 1; }
-  .job-alert-card.out { transform: translateX(120%); opacity: 0; }
-
-  .job-alert-card .alert-title { font-weight: 750; font-size: 13.5px; padding-right: 22px; }
-  .job-alert-card.ok .alert-title { color: var(--green); }
-  .job-alert-card.fail .alert-title { color: var(--red); }
-  .job-alert-card .alert-body { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
-  .job-alert-card .alert-actions { display: flex; justify-content: flex-end; gap: 8px; }
-
-  .job-alert-card .alert-close {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    width: 22px;
-    height: 22px;
-    border: 0;
-    border-radius: 6px;
-    background: none;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-  }
-
-  .job-alert-card .alert-close:hover { background: var(--surface-soft); color: var(--ink); }
-
   .left-sidebar, .right-sidebar {
     background: var(--surface);
     overflow: hidden;
@@ -543,11 +539,16 @@
     border-left: 1px solid var(--line);
   }
 
+  .layout.right-collapsed .right-sidebar {
+    border-left-color: transparent;
+  }
+
   .sidebar-panel {
     height: 100%;
     display: grid;
     grid-template-rows: auto 1fr;
     min-height: 0;
+    position: relative;
   }
 
   .sidebar-head {
@@ -566,10 +567,38 @@
     gap: 6px;
   }
 
+  .file-manager-tab {
+    height: auto;
+    padding: 0 1px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.15;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .file-manager-tab:hover,
+  body.file-manager-mode .file-manager-tab {
+    color: var(--ink);
+  }
+
   .sidebar-title {
     font-size: 14px;
     font-weight: 750;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  body.file-manager-mode .sidebar-title {
+    font-size: 12.5px;
+    font-weight: 400;
+    color: var(--muted);
   }
 
   .collapse-btn {
@@ -581,49 +610,364 @@
     place-items: center;
   }
 
-  /* 上传按钮：点击后原位变文件夹按钮，左侧紧挨着滑出文件按钮 */
+  /* 左下角圆形动作组：主按钮展开后向上裂出上传文件/文件夹 */
+  .sidebar-fab-dock {
+    position: absolute;
+    right: 14px;
+    bottom: 14px;
+    z-index: 8;
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+  }
+
+  body.file-manager-mode .left-sidebar .sidebar-fab-dock {
+    display: none !important;
+  }
+
   .upload-fab {
-    display: flex;
-    align-items: center;
-    height: 32px;
+    display: grid;
+    justify-items: center;
     gap: 0;
     transition: gap .34s cubic-bezier(.32, 1.2, .5, 1);
   }
 
-  .upload-fab.split { gap: 4px; }
+  .upload-fab.split { gap: 8px; }
 
   .upload-fab .upload-child {
-    width: 0;
-    min-width: 0;
-    height: 32px;
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
     padding: 0;
-    border-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface-soft);
+    color: var(--muted);
     overflow: hidden;
     opacity: 0;
-    transform: translateX(12px) scale(0.6);
+    transform: translateY(18px) scale(0.62);
     pointer-events: none;
-    transition: width .34s cubic-bezier(.32, 1.2, .5, 1),
-                border-width .34s cubic-bezier(.32, 1.2, .5, 1),
-                opacity .2s ease,
+    transition: opacity .2s ease,
                 transform .34s cubic-bezier(.32, 1.2, .5, 1);
   }
 
   .upload-fab.split .upload-child {
-    width: 32px;
-    min-width: 32px;
-    padding: 0;
-    border-width: 1px;
     opacity: 1;
     transform: none;
     pointer-events: auto;
   }
 
+  .upload-fab .upload-main {
+    width: 42px;
+    min-width: 42px;
+    height: 42px;
+    border-radius: 999px;
+    background: var(--blue);
+    border-color: var(--blue);
+    color: #fff;
+    font-size: 22px;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, .18);
+  }
+
+  :root[data-theme="dark"] .upload-fab .upload-main {
+    background: var(--blue);
+    border-color: var(--blue);
+  }
+
   .project-list {
     overflow-y: auto;
-    padding: 8px;
+    padding: 8px 8px 72px;
     display: grid;
     align-content: start;
     gap: 4px;
+  }
+
+  .file-tree {
+    display: none;
+    overflow-y: auto;
+    padding: 6px 6px 72px;
+    font-size: 12.5px;
+    transition: opacity .18s ease, transform .22s cubic-bezier(.22, .9, .24, 1);
+  }
+
+  .left-sidebar.switching #projectsList,
+  .left-sidebar.switching #fileTree {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  body.file-manager-mode #projectsList,
+  body.file-manager-mode #docsTree {
+    display: none;
+  }
+
+  body.file-manager-mode #fileTree {
+    display: block;
+  }
+
+  .file-manager-root {
+    display: none;
+  }
+
+  .file-root-row {
+    width: 100%;
+    height: 26px;
+    padding: 0 4px 0 6px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--ink);
+  }
+
+  .file-root-select {
+    min-width: 0;
+    flex: 1;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    display: grid;
+    grid-template-columns: 13px minmax(0, 1fr);
+    align-items: center;
+    gap: 3px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .file-root-select:hover { color: var(--blue); }
+
+  .file-root-row.selected {
+    background: rgba(245, 158, 11, .11);
+    color: #b7791f;
+  }
+
+  :root[data-theme="dark"] .file-root-row.selected {
+    background: rgba(251, 191, 36, .14);
+    color: #f8d36b;
+  }
+
+  .file-root-actions {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+  }
+
+  .file-root-action {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+  }
+
+  .file-root-action:hover {
+    background: var(--surface-soft);
+    color: var(--ink);
+  }
+
+  .tree-action-icon {
+    position: relative;
+    display: block;
+    width: 14px;
+    height: 14px;
+  }
+
+  .tree-action-icon::before {
+    content: "";
+    position: absolute;
+    left: 1px;
+    top: 2px;
+    width: 9px;
+    height: 10px;
+    border: 1.4px solid currentColor;
+    border-radius: 1px;
+  }
+
+  .tree-action-icon.new-folder::before {
+    top: 4px;
+    width: 11px;
+    height: 7px;
+    border-radius: 1px 2px 2px 2px;
+  }
+
+  .tree-action-icon.new-folder > span {
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    width: 5px;
+    height: 3px;
+    border: 1.4px solid currentColor;
+    border-bottom: 0;
+    border-radius: 1px 1px 0 0;
+  }
+
+  .tree-action-icon::after {
+    content: "+";
+    position: absolute;
+    right: -1px;
+    bottom: -3px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    color: currentColor;
+    background: var(--surface);
+  }
+
+  .file-create-row {
+    height: 24px;
+    padding: 1px 6px;
+    display: grid;
+    grid-template-columns: 13px minmax(0, 1fr);
+    align-items: center;
+    gap: 3px;
+  }
+
+  .file-create-input {
+    width: 100%;
+    min-width: 0;
+    height: 21px;
+    padding: 0 4px;
+    border: 1px solid var(--blue);
+    border-radius: 2px;
+    outline: none;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+  }
+
+  .file-node {
+    position: relative;
+  }
+
+  .file-node.dir-open > .file-children {
+    position: relative;
+  }
+
+  .file-node.dir-open > .file-children::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 4px;
+    width: 1px;
+    background: var(--line);
+    opacity: .9;
+  }
+
+  /* 根目录下第一层不再画竖线（顶层项紧贴根行，线显得多余）；更深层级保留 */
+  .file-node.dir-open > .file-children.file-root-children::before {
+    display: none;
+  }
+
+  .file-node-row {
+    width: 100%;
+    height: 24px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ink);
+    display: grid;
+    grid-template-columns: 13px 1fr;
+    align-items: center;
+    gap: 3px;
+    padding: 0 6px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .file-node-row:hover { background: var(--surface-soft); }
+  .file-node-row.active { background: var(--focus-ring); color: var(--blue); }
+  .file-node-row.selected {
+    background: rgba(245, 158, 11, .11);
+    color: #b7791f;
+  }
+
+  :root[data-theme="dark"] .file-node-row.selected {
+    background: rgba(251, 191, 36, .14);
+    color: #f8d36b;
+  }
+  .file-node-row.locked { color: var(--muted); opacity: .6; cursor: default; }
+  .file-caret {
+    width: 10px;
+    height: 10px;
+    position: relative;
+    display: inline-block;
+  }
+
+  .file-caret::before {
+    content: "";
+    position: absolute;
+    left: 1px;
+    top: 1px;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--muted);
+    border-bottom: 1.5px solid var(--muted);
+    transform: rotate(-45deg);
+    transition: transform .18s ease;
+  }
+
+  .file-caret.open::before {
+    transform: rotate(45deg);
+  }
+
+  .file-caret.file::before,
+  .file-caret.blank::before {
+    display: none;
+  }
+  .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-children { margin-left: 9px; position: relative; }
+
+  .file-editor-wrap {
+    height: 100%;
+    min-height: calc(100vh - 118px);
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .file-editor-lines {
+    padding: 18px 8px 44px 0;
+    border-right: 1px solid var(--line);
+    background: var(--surface-soft);
+    color: var(--muted);
+    text-align: right;
+    font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .file-editor {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: calc(100vh - 118px);
+    padding: 18px 24px 44px;
+    border: 0;
+    resize: none;
+    outline: none;
+    background: transparent;
+    color: var(--ink);
+    font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre;
+    overflow: auto;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  .file-editor-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   /* 小文件夹行展开：带阻尼淡入，不硬生生出现 */
@@ -786,14 +1130,32 @@
     place-items: start center;
   }
 
-  .layout.left-collapsed .left-sidebar .sidebar-panel,
-  .layout.right-collapsed .right-sidebar .right-content {
+  .layout.left-collapsed .left-sidebar .sidebar-panel {
     display: none;
+  }
+
+  /* 右栏内容常驻渲染（不用 display:none）：展开时列宽动画首帧会以极窄宽度布局，
+     标题换行竖排占大空间且滞留到 reflow 才恢复；
+     改 visibility + 延迟淡入，内容在列宽动画后半段才显示，彻底避开窄布局 */
+  .right-sidebar .right-content {
+    visibility: visible;
+    opacity: 1;
+    transition: visibility 0s, opacity .3s ease .38s;
+  }
+
+  .layout.right-collapsed .right-sidebar .right-content {
+    visibility: hidden;
+    opacity: 0;
+    transition: visibility 0s linear .2s, opacity .18s ease;
   }
 
   .layout.left-collapsed .left-sidebar .collapsed-rail,
   .layout.right-collapsed .right-sidebar .collapsed-rail {
     display: grid;
+  }
+
+  .layout.right-collapsed .right-sidebar .collapsed-rail {
+    display: none;
   }
 
   .panel {
@@ -805,34 +1167,87 @@
 
   .dashboard-stack {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
     gap: 0;
     height: 100%;
     min-height: 0;
   }
 
   .rightbar-top {
-    min-height: 52px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--line);
+    min-height: 42px;
+    padding: 6px 10px 8px;
+    border-top: 1px solid var(--line);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
   }
 
-  .resource-module {
-    display: block;
-    min-width: 0;
-    min-height: 0;
+  .right-collapse-inline {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 20px;
+    line-height: 1;
   }
 
-  .resource-module .panel {
+  .resource-fab {
+    position: fixed;
+    right: 18px;
+    /* 悬停高度对齐右栏内“历史作业”按钮：顶栏+首面板头部+节点表高+次面板头部 */
+    top: calc(170px + min(34vh, 300px));
+    z-index: 120;
+    min-width: 72px;
+    height: 42px;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: var(--shadow);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 12.5px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: transform .28s cubic-bezier(.22, .9, .24, 1), opacity .2s ease, background .15s ease;
+  }
+
+  .resource-fab:hover {
+    transform: translateY(-2px);
+    background: var(--surface-soft);
+  }
+
+  .layout.right-collapsed .resource-fab {
+    display: flex;
+  }
+
+  .resource-module {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .combined-resource-panel {
     height: 100%;
     min-height: 0;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
+  }
+
+  .combined-resource-panel > .resource-module:first-child {
+    grid-template-rows: auto auto;
+  }
+
+  .combined-resource-panel > .resource-module:first-child .table-wrap {
+    max-height: min(34vh, 300px);
   }
 
   .panel-head {
@@ -854,6 +1269,13 @@
     margin: 0;
     font-size: 18px;
     font-weight: 700;
+  }
+
+  .panel-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
   }
 
   .panel-stat {
@@ -1302,30 +1724,57 @@
   }
 
   .content-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 10px;
+    display: block;
     padding: 10px;
     min-height: 0;
     position: relative;
   }
 
+  .detail-link {
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.1;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .detail-link:hover {
+    color: var(--ink);
+  }
+
   /* 历史作业覆盖层：从右侧栏底部滑上来盖住节点情况/作业情况，仅限右栏内部 */
   .history-overlay {
     position: absolute;
-    inset: 0;
-    z-index: 20;
+    inset: 0 0 0 0;
+    z-index: 40;
     transform: translateY(103%);
     opacity: 0;
     pointer-events: none;
     transition: transform .42s cubic-bezier(.22, .9, .32, 1), opacity .3s ease;
   }
 
+  .right-content {
+    position: relative;
+  }
+
+  .right-content > .history-overlay {
+    inset: 0;
+  }
+
   .history-overlay.open {
     transform: translateY(0);
     opacity: 1;
     pointer-events: auto;
+  }
+
+  .history-overlay .history-panel {
+    height: 100%;
+    border-radius: 0;
   }
 
   .history-panel {
@@ -1367,6 +1816,7 @@
     font-weight: 650;
     position: sticky;
     top: 0;
+    z-index: 2;
   }
 
   .group-row {
@@ -1519,6 +1969,7 @@
     min-width: 0;
     min-height: 0;
     background: var(--bg);
+    transition: transform .68s cubic-bezier(.19, 1, .22, 1), opacity .35s ease;
   }
 
   .assistant .panel {
@@ -1644,6 +2095,17 @@
 
   .message.markdown a {
     color: var(--blue);
+  }
+
+  .job-report-action {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: 10px;
+  }
+
+  .job-report-action .btn {
+    min-height: 32px;
+    padding: 6px 13px;
   }
 
   .message.user {
@@ -1861,9 +2323,13 @@
   }
 
   body.docs-mode #checkDepsBtn,
+  body.file-manager-mode #checkDepsBtn,
   body.docs-mode #confirmRunBtn,
+  body.file-manager-mode #confirmRunBtn,
   body.docs-mode .composer-add,
-  body.docs-mode .composer-divider {
+  body.file-manager-mode .composer-add,
+  body.docs-mode .composer-divider,
+  body.file-manager-mode .composer-divider {
     opacity: 0;
     visibility: hidden;
     max-width: 0;
@@ -1872,11 +2338,13 @@
     padding-right: 0;
   }
 
-  body.docs-mode .composer-right {
+  body.docs-mode .composer-right,
+  body.file-manager-mode .composer-right {
     gap: 0;
   }
 
-  body.docs-mode .composer-left {
+  body.docs-mode .composer-left,
+  body.file-manager-mode .composer-left {
     order: 2;
     margin-left: auto;
   }
@@ -2135,16 +2603,20 @@
 
   @media (max-width: 1080px) {
     .layout,
-    .layout.left-collapsed,
+    .layout.left-collapsed {
+      grid-template-columns: 46px 0px calc(100vw - 92px) 46px;
+    }
     .layout.right-collapsed,
     .layout.left-collapsed.right-collapsed {
-      grid-template-columns: 46px 0px minmax(0, 1fr) 46px;
+      grid-template-columns: 46px 0px calc(100vw - 46px) 0px;
     }
     .layout.docs-open,
+    .layout.docs-open.left-collapsed {
+      grid-template-columns: 46px calc(50vw - 46px) calc(50vw - 46px) 46px;
+    }
     .layout.docs-open.right-collapsed,
-    .layout.docs-open.left-collapsed,
     .layout.docs-open.left-collapsed.right-collapsed {
-      grid-template-columns: 46px minmax(0, 1fr) minmax(0, 1fr) 46px;
+      grid-template-columns: 46px calc(50vw - 23px) calc(50vw - 23px) 0px;
     }
     .layout:not(.left-open) .left-sidebar .sidebar-panel,
     .layout:not(.right-open) .right-sidebar .right-content {
@@ -2153,6 +2625,9 @@
     .layout:not(.left-open) .left-sidebar .collapsed-rail,
     .layout:not(.right-open) .right-sidebar .collapsed-rail {
       display: grid;
+    }
+    .layout:not(.right-open) .right-sidebar .collapsed-rail {
+      display: none;
     }
     .table-wrap { max-height: 360px; }
     .submit-layout { grid-template-columns: 1fr; }
@@ -2195,24 +2670,30 @@
       </div>
       <section class="sidebar-panel">
         <div class="sidebar-head">
-          <div class="sidebar-title">
+          <div class="sidebar-title" id="sidebarTitle">
             <span class="swap-window"><span class="swap-stack">
               <span class="swap-row">projects</span>
               <span class="swap-row">docs</span>
             </span></span>
           </div>
           <div class="sidebar-actions">
-            <div class="upload-fab" id="uploadFab">
-              <button class="btn collapse-btn upload-child" onclick="closeUploadSplit(); chooseUploadFiles()" title="上传文件">↑</button>
-              <button class="btn collapse-btn upload-main" id="uploadMainBtn" onclick="toggleUploadSplit()" title="上传文件或文件夹">↑</button>
-            </div>
-            <button class="btn collapse-btn primary" onclick="openNewJobFlow()" title="新作业">＋</button>
+            <button class="file-manager-tab" onclick="toggleFileManagerMode()" title="浏览和编辑远端用户目录">文件管理</button>
           </div>
         </div>
         <div id="projectsList" class="project-list">
           <div class="empty">正在读取作业目录</div>
         </div>
+        <div id="fileTree" class="file-tree">
+          <div class="empty">正在读取文件目录</div>
+        </div>
         <div id="docsTree" class="docs-tree"></div>
+        <div class="sidebar-fab-dock">
+          <div class="upload-fab" id="uploadFab">
+            <button class="btn collapse-btn upload-child" onclick="closeUploadSplit(); chooseUploadFolder()" title="上传文件夹">▣</button>
+            <button class="btn collapse-btn upload-child" onclick="closeUploadSplit(); chooseUploadFiles()" title="上传文件">↑</button>
+            <button class="btn collapse-btn upload-main" id="uploadMainBtn" onclick="toggleUploadSplit()" title="展开上传按钮；再次点击新建项目">+</button>
+          </div>
+        </div>
       </section>
     </aside>
 
@@ -2220,7 +2701,10 @@
       <div class="docs-reader-inner">
         <div class="docs-reader-head">
           <div id="docsBreadcrumb" class="docs-breadcrumb">帮助文档</div>
-          <button class="btn docs-close-btn" onclick="toggleDocsMode(false)" title="关闭文档，返回控制台">✕</button>
+          <div class="file-editor-actions">
+            <button id="fileSaveBtn" class="btn" onclick="saveManagedFile()" style="display:none">保存</button>
+            <button class="btn docs-close-btn" onclick="closeReaderPane()" title="关闭">✕</button>
+          </div>
         </div>
         <div id="docsContent" class="docs-content"></div>
       </div>
@@ -2257,18 +2741,15 @@
         <button class="btn collapse-btn" onclick="toggleRightSidebar(false)" title="展开资源栏">‹</button>
       </div>
       <section class="right-content dashboard-stack">
-        <div class="rightbar-top">
-          <div class="dashboard-footer">
-            <button id="dashboardUpdatedAt" class="refresh-stamp" data-label="每 15 秒自动更新" data-hover="手动更新" onclick="handleUpdateStampClick()" title="手动更新"></button>
-          </div>
-          <button class="btn collapse-btn" onclick="toggleRightSidebar(true)" title="收起资源栏">›</button>
-        </div>
         <section class="content-grid">
-          <div class="resource-module">
-            <div class="panel">
+          <div class="panel combined-resource-panel">
+            <div class="resource-module">
               <div class="panel-head">
                 <div class="panel-heading">
-                  <h2 class="panel-title">节点情况</h2>
+                  <div class="panel-title-row">
+                    <h2 class="panel-title">节点情况</h2>
+                    <button class="detail-link" onclick="toggleNodeDetailOverlay(true)">详细</button>
+                  </div>
                   <div id="nodeUsageSummary" class="panel-stat">正在加载节点数据</div>
                 </div>
               </div>
@@ -2276,26 +2757,26 @@
                 <table>
                   <thead>
                     <tr>
-                      <th>显卡类型</th>
-                      <th>节点</th>
-                      <th>状态</th>
+                      <th>节点类型</th>
+                      <th>节点数</th>
                       <th>CPU</th>
                       <th>GPU</th>
                     </tr>
                   </thead>
                   <tbody id="nodesTable">
-                    <tr><td colspan="5" class="empty">正在加载节点数据</td></tr>
+                    <tr><td colspan="4" class="empty">正在加载节点数据</td></tr>
                   </tbody>
                 </table>
               </div>
             </div>
-          </div>
 
-          <div class="resource-module">
-            <div class="panel">
+            <div class="resource-module">
               <div class="panel-head">
                 <div class="panel-heading">
-                  <h2 class="panel-title">作业情况</h2>
+                  <div class="panel-title-row">
+                    <h2 class="panel-title">作业情况</h2>
+                    <button class="detail-link" onclick="toggleJobDetailOverlay(true)">详细</button>
+                  </div>
                   <div id="jobsSummary" class="panel-stat">正在加载作业数据</div>
                 </div>
                 <button class="btn history-toggle-btn" onclick="toggleHistoryOverlay(true)" title="查看本人的历史作业">历史作业</button>
@@ -2305,58 +2786,118 @@
                   <thead>
                     <tr>
                       <th>用户</th>
-                      <th>ID</th>
                       <th>名称</th>
                       <th>状态</th>
-                      <th>分区</th>
                       <th>时长</th>
                     </tr>
                   </thead>
                   <tbody id="jobsTable">
-                    <tr><td colspan="6" class="empty">正在加载作业数据</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <div id="historyOverlay" class="history-overlay">
-            <div class="panel history-panel">
-              <div class="panel-head">
-                <div class="panel-heading">
-                  <h2 class="panel-title">历史作业</h2>
-                  <div id="historySummary" class="panel-stat secondary">最近 30 天</div>
-                </div>
-                <button class="btn" onclick="toggleHistoryOverlay(false)" title="返回实时面板">关闭</button>
-              </div>
-              <div class="table-wrap history-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>名称</th>
-                      <th>状态</th>
-                      <th>分区</th>
-                      <th>提交时间</th>
-                      <th>运行时长</th>
-                    </tr>
-                  </thead>
-                  <tbody id="historyTable">
-                    <tr><td colspan="6" class="empty">点击“历史作业”加载</td></tr>
+                    <tr><td colspan="4" class="empty">正在加载作业数据</td></tr>
                   </tbody>
                 </table>
               </div>
             </div>
           </div>
         </section>
+        <div class="rightbar-top">
+          <button class="btn right-collapse-inline" onclick="toggleRightSidebar(true)" title="收起资源栏" aria-label="收起资源栏">›</button>
+          <div class="dashboard-footer">
+            <button id="dashboardUpdatedAt" class="refresh-stamp" data-label="每 15 秒自动更新" data-hover="手动更新" onclick="handleUpdateStampClick()" title="手动更新"></button>
+          </div>
+        </div>
+        <div id="nodeDetailOverlay" class="history-overlay">
+          <div class="panel history-panel">
+            <div class="panel-head">
+              <div class="panel-heading">
+                <h2 class="panel-title">节点详情</h2>
+                <div id="nodeDetailSummary" class="panel-stat secondary">按节点类型展开</div>
+              </div>
+              <button class="btn" onclick="toggleNodeDetailOverlay(false)" title="返回实时面板">关闭</button>
+            </div>
+            <div class="table-wrap history-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>节点类型</th>
+                    <th>节点</th>
+                    <th>状态</th>
+                    <th>CPU</th>
+                    <th>GPU</th>
+                  </tr>
+                </thead>
+                <tbody id="nodeDetailTable">
+                  <tr><td colspan="5" class="empty">点击“详细”加载</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="historyOverlay" class="history-overlay">
+          <div class="panel history-panel">
+            <div class="panel-head">
+              <div class="panel-heading">
+                <h2 class="panel-title">历史作业</h2>
+                <div id="historySummary" class="panel-stat secondary">最近 30 天</div>
+              </div>
+              <button class="btn" onclick="toggleHistoryOverlay(false)" title="返回实时面板">关闭</button>
+            </div>
+            <div class="table-wrap history-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>名称</th>
+                    <th>状态</th>
+                    <th>分区</th>
+                    <th>提交时间</th>
+                    <th>运行时长</th>
+                  </tr>
+                </thead>
+                <tbody id="historyTable">
+                  <tr><td colspan="6" class="empty">点击“历史作业”加载</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="jobDetailOverlay" class="history-overlay">
+          <div class="panel history-panel">
+            <div class="panel-head">
+              <div class="panel-heading">
+                <h2 class="panel-title">作业详情</h2>
+                <div id="jobDetailSummary" class="panel-stat secondary">全部作业 · 按用户展开</div>
+              </div>
+              <button class="btn" onclick="toggleJobDetailOverlay(false)" title="返回实时面板">关闭</button>
+            </div>
+            <div class="table-wrap history-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>用户</th>
+                    <th>ID</th>
+                    <th>名称</th>
+                    <th>状态</th>
+                    <th>分区</th>
+                    <th>时长</th>
+                  </tr>
+                </thead>
+                <tbody id="jobDetailTable">
+                  <tr><td colspan="6" class="empty">点击“详细”加载</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </section>
     </aside>
+    <button id="resourceFab" class="resource-fab" onclick="toggleRightSidebar(false)" title="展开资源栏">空闲中</button>
   </main>
 </div>
 
 <div id="notices" class="toast-stack"></div>
 
-<div id="jobAlertStack" class="job-alert-stack"></div>
 
 <div id="subdirModal" class="modal-backdrop" onclick="closeSubdirModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
@@ -2385,18 +2926,18 @@
 </div>
 <div id="jobModal" class="modal-backdrop" onclick="closeJobModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-head">新作业</div>
+    <div class="modal-head">新项目</div>
     <div class="modal-body">
-      <label for="projectNameInput">作业目录名称</label>
-      <input id="projectNameInput" type="text" placeholder="例如 my-training" title="作业目录为 ~/projects/作业目录名称">
+      <label for="projectNameInput">项目目录名称</label>
+      <input id="projectNameInput" type="text" placeholder="例如 my-training" title="项目目录为 ~/projects/项目目录名称">
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeJobModal()">取消</button>
-      <button class="btn primary" onclick="createProject()">创建作业目录</button>
+      <button class="btn primary" onclick="createProject()">创建项目</button>
     </div>
   </div>
 </div>
-<div id="dependencyModal" class="modal-backdrop" onclick="closeDependencyModal(event)">
+<div id="dependencyModal" class="modal-backdrop">
   <div class="modal wide" onclick="event.stopPropagation()">
     <div class="modal-body dependency-review">
     <div id="dependencyInstallProgress" class="install-progress-banner" hidden>
@@ -2456,7 +2997,7 @@
   </div>
 </div>
 
-<div id="jobSubmitModal" class="modal-backdrop" onclick="closeJobSubmitModal(event)">
+<div id="jobSubmitModal" class="modal-backdrop">
   <div class="modal wide" onclick="event.stopPropagation()">
     <div class="modal-body dependency-review">
       <div class="submit-layout">
@@ -2561,6 +3102,9 @@ const themeToggle = document.getElementById('themeToggle');
 const confirmRunBtn = document.getElementById('confirmRunBtn');
 const workspace = document.querySelector('.layout');
 const projectsList = document.getElementById('projectsList');
+const fileTreeEl = document.getElementById('fileTree');
+const sidebarTitle = document.getElementById('sidebarTitle');
+const resourceFab = document.getElementById('resourceFab');
 const sessionSubtitle = document.getElementById('sessionSubtitle');
 const modelMenu = document.getElementById('modelMenu');
 const modelPill = document.getElementById('modelPill');
@@ -2600,9 +3144,6 @@ const submitJobBtn = document.getElementById('submitJobBtn');
 let submitOptionsData = null;
 const activeToolCards = new Map();
 const TOOL_AUTO_COLLAPSE_MS = 1500;
-const expandedNodeGroups = new Set();
-const expandedJobGroups = new Set();
-let initializedCurrentUserGroup = false;
 
 function applyTheme(theme) {
   const nextTheme = theme === 'dark' ? 'dark' : 'light';
@@ -2808,7 +3349,25 @@ function renderMarkdown(markdown) {
 
 function setMessageContent(element, text, role = 'ai') {
   element.classList.toggle('markdown', role === 'ai');
-  element.innerHTML = role === 'ai' ? renderMarkdown(text) : escapeHtml(text);
+  const rawText = String(text || '');
+  const reportMatch = role === 'ai'
+    ? rawText.match(/\n*\[\[JOB_REPORT:(\d+)\]\]\s*$/)
+    : null;
+  const visibleText = reportMatch
+    ? rawText.slice(0, reportMatch.index).trimEnd()
+    : rawText;
+  element.innerHTML = role === 'ai' ? renderMarkdown(visibleText) : escapeHtml(visibleText);
+  if (reportMatch) {
+    const actions = document.createElement('div');
+    actions.className = 'job-report-action';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn primary';
+    button.textContent = '查看详情';
+    button.onclick = () => openJobReport(reportMatch[1]);
+    actions.appendChild(button);
+    element.appendChild(actions);
+  }
 }
 
 function addNotice(text, kind = 'notice') {
@@ -2872,8 +3431,20 @@ let docsTreeOverride = null;
 // 独立会话：文档模式下聊天是纯问答（不绑定项目），与项目作业会话各自暂存 DOM 节点
 let projectChatNodes = null;
 let docsChatNodes = null;
+let fileManagerChatNodes = null;
+let fileManagerMode = false;
+let fileManagerRoot = '';
+let fileTreeData = [];
+let fileExpandedPaths = new Set(['']);
+let activeManagedFilePath = '';
+let activeManagedFileDirty = false;
+let selectedManagedPath = '';
+let selectedManagedType = '';
+let managedCreateDraft = null;
+let managedCreatePending = false;
 
 const DOCS_CHAT_PLACEHOLDER = '阅读文档时有疑问？直接问我，我来解释';
+const FILE_MANAGER_CHAT_PLACEHOLDER = '查看或编辑文件时有疑问？直接问我';
 const PROJECT_CHAT_PLACEHOLDER = '添加依赖清单或算力要求';
 
 function swapChatNodes(incoming, welcomeText) {
@@ -2892,9 +3463,16 @@ function swapChatNodes(incoming, welcomeText) {
 function toggleDocsMode(force) {
   const target = typeof force === 'boolean' ? force : !docsMode;
   if (target === docsMode) return;
+  if (target && fileManagerMode) setFileManagerMode(false);
   docsMode = target;
   workspace.classList.toggle('docs-open', docsMode);
+  workspace.classList.remove('file-editor-open');
   document.body.classList.toggle('docs-mode', docsMode);
+  updateSidebarTitle();
+  const saveBtn = document.getElementById('fileSaveBtn');
+  if (saveBtn) saveBtn.style.display = 'none';
+  const content = document.getElementById('docsContent');
+  if (content) content.classList.remove('file-editing');
   const reader = document.getElementById('docsReader');
   if (reader) reader.setAttribute('aria-hidden', String(!docsMode));
   activeToolCards.clear();
@@ -2942,6 +3520,29 @@ function toggleDocsMode(force) {
   localStorage.setItem('slurmDocsMode', String(docsMode));
 }
 
+function updateSidebarTitle() {
+  if (!sidebarTitle) return;
+  if (fileManagerMode) {
+    const title = fileManagerRoot || '/home/scc/<用户名>';
+    sidebarTitle.textContent = title;
+    sidebarTitle.title = title;
+    return;
+  }
+  sidebarTitle.title = '';
+  sidebarTitle.innerHTML = `<span class="swap-window"><span class="swap-stack">
+    <span class="swap-row">projects</span>
+    <span class="swap-row">docs</span>
+  </span></span>`;
+}
+
+function closeReaderPane() {
+  if (docsMode) {
+    toggleDocsMode(false);
+    return;
+  }
+  closeManagedFileEditor();
+}
+
 async function loadDocsTree() {
   try {
     const res = await fetch('/api/docs/tree');
@@ -2964,16 +3565,13 @@ function docsTreeHtml(nodes, depth, animate) {
       const kids = open ? `<div class="docs-dir-children">${docsTreeHtml(node.children || [], depth + 1, animate)}</div>` : '';
       return `<div class="docs-node${animate ? ' cascade' : ''}" style="--i:${depth}">
         <button class="docs-dir-label${open ? ' open' : ''}" onclick="toggleDocsDir('${escapeHtml(node.name)}')">
-          <span class="caret">▶</span>${escapeHtml(node.name)}
+          <span class="caret"></span>${escapeHtml(node.name)}
         </button>${kids}
       </div>`;
     }
-    const isReport = docsTreeOverride && node.path === docsTreeOverride.reportPath;
-    const locked = docsTreeOverride && !isReport;
-    const cls = `docs-file-item${animate ? ' cascade' : ''}${node.path === activeDocsPath || isReport ? ' active' : ''}${locked ? ' locked' : ''}`;
-    const clickAttr = locked ? '' : ` onclick="openDocsFile('${escapeHtml(node.path)}')"`;
+    const cls = `docs-file-item${animate ? ' cascade' : ''}${node.path === activeDocsPath ? ' active' : ''}`;
     return `<button class="${cls}" data-path="${escapeHtml(node.path)}"
-      style="--i:${depth + 1}"${clickAttr} title="${escapeHtml(node.title)}">
+      style="--i:${depth + 1}" onclick="openDocsFile(this.dataset.path)" title="${escapeHtml(node.title)}">
       ${escapeHtml(node.title)}
     </button>`;
   }).join('');
@@ -3002,7 +3600,10 @@ function toggleDocsDir(name) {
 }
 
 async function openDocsFile(path) {
-  if (docsTreeOverride) return; // 报告阅读模式下左侧树已锁定
+  if (docsTreeOverride) {
+    await openJobOutputFile(path);
+    return;
+  }
   activeDocsPath = path;
   updateDocsTreeActive();
   try {
@@ -3011,6 +3612,7 @@ async function openDocsFile(path) {
     if (data.status !== 'ok') throw new Error(data.error || '读取失败');
     const content = document.getElementById('docsContent');
     const crumb = document.getElementById('docsBreadcrumb');
+    if (content) content.classList.remove('file-editing');
     if (content) content.innerHTML = renderMarkdown(data.content);
     if (crumb) crumb.textContent = data.title;
     if (content) content.scrollTop = 0;
@@ -3019,7 +3621,382 @@ async function openDocsFile(path) {
   }
 }
 
-// ===== 作业状态心跳：发现完成/失败时右下角滑入通知 =====
+function setFileManagerMode(enabled) {
+  const target = Boolean(enabled);
+  if (target === fileManagerMode) return;
+  if (target && docsMode) toggleDocsMode(false);
+  fileManagerMode = target;
+  document.body.classList.toggle('file-manager-mode', fileManagerMode);
+  updateSidebarTitle();
+  if (fileManagerMode) {
+    localStorage.setItem('slurmFileManagerMode', 'true');
+    pendingDependencyFiles = [];
+    renderDependencyFileChips();
+    activeToolCards.clear();
+    userInput.placeholder = FILE_MANAGER_CHAT_PLACEHOLDER;
+    projectChatNodes = swapChatNodes(
+      fileManagerChatNodes,
+      '这里是文件管理问答会话，与项目作业互不影响。打开可编辑文件后，可以直接询问代码、配置或修改思路。',
+    );
+    if (!fileTreeData.length) loadManagedTree('');
+  } else {
+    localStorage.setItem('slurmFileManagerMode', 'false');
+    closeManagedFileEditor();
+    activeToolCards.clear();
+    userInput.placeholder = PROJECT_CHAT_PLACEHOLDER;
+    fileManagerChatNodes = swapChatNodes(
+      projectChatNodes,
+      '选择左侧作业目录，或点击左侧新建按钮创建新的作业目录。可以问我查询资源、生成脚本、准备提交命令。',
+    );
+  }
+}
+
+function toggleFileManagerMode() {
+  const left = document.querySelector('.left-sidebar');
+  if (!left) {
+    setFileManagerMode(!fileManagerMode);
+    return;
+  }
+  left.classList.add('switching');
+  window.setTimeout(() => {
+    setFileManagerMode(!fileManagerMode);
+    window.setTimeout(() => left.classList.remove('switching'), 90);
+  }, 170);
+}
+
+async function loadManagedTree(path = '') {
+  if (!fileTreeEl) return;
+  if (!path && !fileTreeData.length) fileTreeEl.innerHTML = '<div class="empty">正在读取文件目录</div>';
+  try {
+    const res = await fetch('/api/files/tree?path=' + encodeURIComponent(path));
+    const data = await res.json();
+    if (!res.ok || data.status !== 'ok') throw new Error(data.error || '读取目录失败');
+    fileManagerRoot = data.root || fileManagerRoot;
+    if (!path) {
+      fileTreeData = mergeManagedTreeState(data.children || [], fileTreeData);
+    } else {
+      const current = findManagedNode(fileTreeData, path);
+      insertManagedChildren(fileTreeData, path, mergeManagedTreeState(data.children || [], current?.children || []));
+    }
+    updateSidebarTitle();
+    renderManagedTree();
+  } catch (e) {
+    fileTreeEl.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function mergeManagedTreeState(nextNodes, previousNodes) {
+  const previousByPath = new Map((previousNodes || []).map(node => [node.path, node]));
+  return (nextNodes || []).map(node => {
+    const previous = previousByPath.get(node.path);
+    if (node.type === 'dir' && previous) {
+      if (previous.loaded) node.loaded = true;
+      if (previous.children) node.children = previous.children;
+    }
+    return node;
+  });
+}
+
+function insertManagedChildren(nodes, path, children) {
+  for (const node of nodes || []) {
+    if (node.path === path) {
+      node.children = children;
+      node.loaded = true;
+      return true;
+    }
+    if (node.children && insertManagedChildren(node.children, path, children)) return true;
+  }
+  return false;
+}
+
+function managedCreateRowHtml() {
+  if (!managedCreateDraft) return '';
+  const placeholder = managedCreateDraft.entryType === 'dir' ? '文件夹名称' : '文件名称';
+  return `<div class="file-create-row">
+    <span class="file-caret blank"></span>
+    <input class="file-create-input" type="text" value="${escapeHtml(managedCreateDraft.value || '')}"
+      placeholder="${placeholder}" onkeydown="onManagedCreateKey(event)" onblur="onManagedCreateBlur()">
+  </div>`;
+}
+
+function managedTreeHtml(nodes, depth = 0) {
+  return (nodes || []).map(node => {
+    const isDir = node.type === 'dir';
+    const open = isDir && fileExpandedPaths.has(node.path);
+    const active = !isDir && node.path === activeManagedFilePath;
+    const selected = node.path === selectedManagedPath;
+    const locked = !isDir && !node.editable;
+    const rowClass = `file-node-row${active ? ' active' : ''}${selected ? ' selected' : ''}${locked ? ' locked' : ''}`;
+    const caretClass = isDir ? `file-caret${open ? ' open' : ''}` : `file-caret${node.editable ? ' file' : ' blank'}`;
+    const click = isDir
+      ? `toggleManagedDir('${escapeHtml(node.path)}')`
+      : `selectManagedFile('${escapeHtml(node.path)}', ${node.editable ? 'true' : 'false'})`;
+    const createRow = isDir && open && managedCreateDraft?.parentPath === node.path ? managedCreateRowHtml() : '';
+    const kids = isDir && open && (node.children || createRow)
+      ? `<div class="file-children">${createRow}${managedTreeHtml(node.children || [], depth + 1)}</div>`
+      : '';
+    return `<div class="file-node${isDir && open ? ' dir-open' : ''}" style="--depth:${depth}">
+      <button class="${rowClass}"${click ? ` onclick="${click}"` : ''} title="${escapeHtml(node.path || fileManagerRoot)}">
+        <span class="${caretClass}"></span>
+        <span class="file-name">${escapeHtml(node.name)}</span>
+      </button>${kids}
+    </div>`;
+  }).join('');
+}
+
+function renderManagedTree() {
+  if (!fileTreeEl) return;
+  updateSidebarTitle();
+  const rootName = (fileManagerRoot || '').split('/').filter(Boolean).pop() || '用户目录';
+  const rootSelected = selectedManagedType === 'dir' && !selectedManagedPath ? ' selected' : '';
+  const rootCreateRow = managedCreateDraft?.parentPath === '' ? managedCreateRowHtml() : '';
+  const children = fileTreeData.length ? managedTreeHtml(fileTreeData) : '<div class="empty">目录为空</div>';
+  fileTreeEl.innerHTML = `<div class="file-node file-root-node dir-open">
+    <div class="file-root-row${rootSelected}">
+      <button class="file-root-select" onclick="selectManagedRoot()" title="${escapeHtml(fileManagerRoot)}">
+        <span class="file-caret open"></span>
+        <span class="file-name">${escapeHtml(rootName)}</span>
+      </button>
+      <div class="file-root-actions">
+        <button class="file-root-action" onclick="startManagedCreate('file')" title="新建文件" aria-label="新建文件">
+          <span class="tree-action-icon new-file"></span>
+        </button>
+        <button class="file-root-action" onclick="startManagedCreate('dir')" title="新建文件夹" aria-label="新建文件夹">
+          <span class="tree-action-icon new-folder"><span></span></span>
+        </button>
+      </div>
+    </div>
+    <div class="file-children file-root-children">${rootCreateRow}${children}</div>
+  </div>`;
+  const createInput = fileTreeEl.querySelector('.file-create-input');
+  if (createInput) {
+    requestAnimationFrame(() => {
+      createInput.focus();
+      createInput.select();
+    });
+  }
+}
+
+function selectManagedRoot() {
+  selectedManagedPath = '';
+  selectedManagedType = 'dir';
+  renderManagedTree();
+}
+
+async function startManagedCreate(entryType) {
+  if (managedCreatePending) return;
+  const parentPath = managedUploadTargetPath();
+  if (parentPath) {
+    fileExpandedPaths.add(parentPath);
+    const parentNode = findManagedNode(fileTreeData, parentPath);
+    if (parentNode && !parentNode.loaded) await loadManagedTree(parentPath);
+  }
+  managedCreateDraft = { entryType, parentPath, value: '' };
+  renderManagedTree();
+}
+
+function onManagedCreateKey(event) {
+  event.stopPropagation();
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    confirmManagedCreate();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    cancelManagedCreate();
+  }
+}
+
+function onManagedCreateBlur() {
+  const blurredDraft = managedCreateDraft;
+  window.setTimeout(() => {
+    if (managedCreateDraft === blurredDraft && !managedCreatePending) confirmManagedCreate();
+  }, 0);
+}
+
+function cancelManagedCreate() {
+  managedCreateDraft = null;
+  managedCreatePending = false;
+  renderManagedTree();
+}
+
+async function confirmManagedCreate() {
+  if (!managedCreateDraft || managedCreatePending) return;
+  const input = fileTreeEl?.querySelector('.file-create-input');
+  const name = (input?.value || '').trim();
+  if (!name) {
+    cancelManagedCreate();
+    return;
+  }
+  const draft = { ...managedCreateDraft, value: name };
+  managedCreateDraft = draft;
+  managedCreatePending = true;
+  if (input) input.disabled = true;
+  try {
+    const res = await fetch('/api/files/entries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        parent_path: draft.parentPath,
+        name,
+        entry_type: draft.entryType,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.status !== 'ok') throw new Error(data.error || '新建失败');
+    managedCreateDraft = null;
+    selectedManagedPath = data.entry?.path || '';
+    selectedManagedType = data.entry?.type || draft.entryType;
+    await refreshDirectoryDisplays(draft.parentPath);
+  } catch (e) {
+    managedCreateDraft = draft;
+    addNotice('新建失败：' + e.message, 'error');
+    renderManagedTree();
+  } finally {
+    managedCreatePending = false;
+  }
+}
+
+async function refreshDirectoryDisplays(managedPath = '') {
+  const tasks = [loadProjects(false)];
+  if (fileManagerMode || fileTreeData.length) tasks.push(loadManagedTree(managedPath));
+  await Promise.all(tasks);
+}
+
+async function toggleManagedDir(path) {
+  selectedManagedPath = path;
+  selectedManagedType = 'dir';
+  if (fileExpandedPaths.has(path)) {
+    fileExpandedPaths.delete(path);
+    renderManagedTree();
+    return;
+  }
+  fileExpandedPaths.add(path);
+  const node = findManagedNode(fileTreeData, path);
+  if (!node || node.loaded) {
+    renderManagedTree();
+    return;
+  }
+  await loadManagedTree(path);
+}
+
+function selectManagedFile(path, editable) {
+  selectedManagedPath = path;
+  selectedManagedType = 'file';
+  renderManagedTree();
+  if (editable) openManagedFile(path);
+}
+
+function findManagedNode(nodes, path) {
+  for (const node of nodes || []) {
+    if (node.path === path) return node;
+    const found = findManagedNode(node.children || [], path);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function openManagedFile(path) {
+  if (activeManagedFileDirty && !window.confirm('当前文件有未保存修改，仍要切换文件？')) return;
+  try {
+    const res = await fetch('/api/files/content?path=' + encodeURIComponent(path));
+    const data = await res.json();
+    if (!res.ok || data.status !== 'ok') throw new Error(data.error || '读取文件失败');
+    activeManagedFilePath = data.path;
+    selectedManagedPath = data.path;
+    selectedManagedType = 'file';
+    activeManagedFileDirty = false;
+    workspace.classList.add('docs-open');
+    workspace.classList.add('file-editor-open');
+    workspace.classList.add('right-collapsed');
+    workspace.classList.remove('right-open');
+    const reader = document.getElementById('docsReader');
+    if (reader) reader.setAttribute('aria-hidden', 'false');
+    const crumb = document.getElementById('docsBreadcrumb');
+    const content = document.getElementById('docsContent');
+    const saveBtn = document.getElementById('fileSaveBtn');
+    if (crumb) crumb.textContent = `${data.root}/${data.path}`;
+    if (saveBtn) saveBtn.style.display = '';
+    if (content) {
+      content.classList.add('file-editing');
+      content.innerHTML = `<div class="file-editor-wrap">
+        <div id="managedFileLines" class="file-editor-lines"></div>
+        <textarea id="managedFileEditor" class="file-editor" spellcheck="false" wrap="off"></textarea>
+      </div>`;
+      const editor = document.getElementById('managedFileEditor');
+      editor.value = data.content || '';
+      editor.addEventListener('input', () => {
+        activeManagedFileDirty = true;
+        updateManagedFileLineNumbers();
+      });
+      editor.addEventListener('scroll', syncManagedFileLineScroll);
+      updateManagedFileLineNumbers();
+      editor.focus();
+    }
+    renderManagedTree();
+  } catch (e) {
+    addNotice('打开文件失败: ' + e.message, 'error');
+  }
+}
+
+function updateManagedFileLineNumbers() {
+  const editor = document.getElementById('managedFileEditor');
+  const lines = document.getElementById('managedFileLines');
+  if (!editor || !lines) return;
+  const count = Math.max(1, editor.value.split('\n').length);
+  lines.textContent = Array.from({ length: count }, (_, index) => index + 1).join('\n');
+  syncManagedFileLineScroll();
+}
+
+function syncManagedFileLineScroll() {
+  const editor = document.getElementById('managedFileEditor');
+  const lines = document.getElementById('managedFileLines');
+  if (!editor || !lines) return;
+  lines.scrollTop = editor.scrollTop;
+}
+
+async function saveManagedFile() {
+  const editor = document.getElementById('managedFileEditor');
+  if (!activeManagedFilePath || !editor) return;
+  try {
+    const res = await fetch('/api/files/content', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: activeManagedFilePath, content: editor.value }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.status !== 'ok') throw new Error(data.error || '保存失败');
+    activeManagedFileDirty = false;
+    const parentPath = activeManagedFilePath.split('/').slice(0, -1).join('/');
+    await refreshDirectoryDisplays(parentPath);
+    addNotice(`已保存：${data.path}`);
+  } catch (e) {
+    addNotice('保存文件失败: ' + e.message, 'error');
+  }
+}
+
+function closeManagedFileEditor() {
+  if (activeManagedFileDirty && !window.confirm('当前文件有未保存修改，仍要关闭？')) return;
+  if (!docsMode) {
+    workspace.classList.remove('docs-open');
+    workspace.classList.remove('file-editor-open');
+    const reader = document.getElementById('docsReader');
+    if (reader) reader.setAttribute('aria-hidden', 'true');
+    const saveBtn = document.getElementById('fileSaveBtn');
+    if (saveBtn) saveBtn.style.display = 'none';
+    const content = document.getElementById('docsContent');
+    if (content) {
+      content.classList.remove('file-editing');
+      content.innerHTML = '';
+    }
+    const crumb = document.getElementById('docsBreadcrumb');
+    if (crumb) crumb.textContent = '帮助文档';
+  }
+  activeManagedFilePath = '';
+  activeManagedFileDirty = false;
+  renderManagedTree();
+}
+
+// ===== 作业状态心跳：报告就绪后在所属项目会话显示消息 =====
 const reportedJobEvents = new Set(); // "job_id:state" 双保险去重（后端已去重）
 
 async function watchJobs() {
@@ -3031,104 +4008,66 @@ async function watchJobs() {
       const key = `${ev.job_id}:${ev.state}`;
       if (reportedJobEvents.has(key)) continue;
       reportedJobEvents.add(key);
-      if (ev.state === 'COMPLETED') handleJobCompleted(ev);
-      else handleJobFailed(ev);
+      displayJobReportMessage(ev);
     }
   } catch (e) {
     // 心跳失败静默，下一轮重试
   }
 }
 
-function handleJobCompleted(ev) {
-  showJobAlert({
-    kind: 'ok',
-    title: '作业完成',
-    body: `${ev.job_name}（ID ${ev.job_id}）已正常结束，输出已就绪。`,
-    actionText: '下载结果',
-    onAction: () => { window.open(`/api/jobs/${ev.job_id}/results`, '_blank'); },
-  });
-}
-
-function handleJobFailed(ev) {
-  // 1) 先弹纯粹的失败提示
-  showJobAlert({
-    kind: 'fail',
-    title: '作业失败',
-    body: `${ev.job_name}（ID ${ev.job_id}）状态 ${ev.state}，正在生成失败分析报告...`,
-  });
-  // 2) 触发后台 LLM 分析，报告写好后再弹第二个通知
-  fetch(`/api/jobs/${ev.job_id}/analyze-failure`, { method: 'POST' }).catch(() => {});
-  const deadline = Date.now() + 5 * 60 * 1000;
-  const poll = async () => {
-    if (Date.now() > deadline) return;
-    try {
-      const resp = await fetch(`/api/jobs/${ev.job_id}/report`);
-      const data = await resp.json();
-      if (resp.ok && data.status === 'ok') {
-        showJobAlert({
-          kind: 'fail',
-          title: `${ev.job_id}:${ev.job_name}失败`,
-          body: '失败分析报告已生成，点击查看。',
-          actionText: '查看报告',
-          onAction: () => openJobReport(ev.job_id),
-        });
-        return;
-      }
-      if (resp.ok && data.status === 'pending') { setTimeout(poll, 5000); return; }
-      showJobAlert({
-        kind: 'fail',
-        title: `${ev.job_id}:${ev.job_name}失败`,
-        body: data.error || '报告生成失败，可到输出目录查看日志。',
-      });
-    } catch (e) {
-      setTimeout(poll, 5000);
-    }
-  };
-  setTimeout(poll, 4000);
-}
-
-function showJobAlert({ kind, title, body, actionText, onAction }) {
-  const stack = document.getElementById('jobAlertStack');
-  if (!stack) return;
-  const card = document.createElement('div');
-  card.className = `job-alert-card ${kind || ''}`;
-  card.innerHTML = `
-    <button class="alert-close" title="关闭">×</button>
-    <div class="alert-title">${escapeHtml(title)}</div>
-    <div class="alert-body">${escapeHtml(body)}</div>
-    <div class="alert-actions"></div>`;
-  const actions = card.querySelector('.alert-actions');
-  if (actionText && onAction) {
-    const btn = document.createElement('button');
-    btn.className = 'btn primary';
-    btn.textContent = actionText;
-    btn.onclick = () => { onAction(); dismissJobAlert(card); };
-    actions.appendChild(btn);
+async function openJobOutputFile(path) {
+  const ov = docsTreeOverride;
+  if (!ov || !ov.jobId) return;
+  activeDocsPath = path;
+  updateDocsTreeActive();
+  try {
+    const resp = await fetch(
+      `/api/jobs/${encodeURIComponent(ov.jobId)}/output-file?path=${encodeURIComponent(path)}`
+    );
+    const data = await resp.json();
+    if (!resp.ok || data.status !== 'ok') throw new Error(data.error || '读取失败');
+    ov.activePath = data.path;
+    ov.activeTitle = data.title;
+    ov.activeContent = data.content;
+    ov.activeRenderMode = data.render_mode || 'text';
+    renderJobReportContent();
+  } catch (e) {
+    addNotice('打开作业文件失败：' + e.message, 'error');
   }
-  card.querySelector('.alert-close').onclick = () => dismissJobAlert(card);
-  stack.appendChild(card);
-  requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add('in')));
-  setTimeout(() => dismissJobAlert(card), 120000);
 }
 
-function dismissJobAlert(card) {
-  if (!card || card.classList.contains('out')) return;
-  card.classList.add('out');
-  setTimeout(() => card.remove(), 450);
+function displayJobReportMessage(ev) {
+  if (!ev.message) return;
+  const eventSubdir = (ev.subdir || '').trim();
+  if (currentProjectName() !== ev.project_name || selectedSubdir !== eventSubdir) return;
+  // 后端已把消息持久化到该作业所属会话，这里只负责实时显示。
+  if (docsMode) {
+    const holder = document.createElement('div');
+    const node = addChatMessage(ev.message, 'ai', false, holder);
+    projectChatNodes.push(node);
+  } else {
+    addChatMessage(ev.message, 'ai', false);
+  }
 }
 
-// 报告阅读：复用文档模式，左侧树为输出目录结构，仅报告可点
+// 报告阅读：复用文档模式，左侧树中的作业输出均可只读预览
 async function openJobReport(jobId) {
   try {
     const resp = await fetch(`/api/jobs/${jobId}/report`);
     const data = await resp.json();
     if (!resp.ok || data.status !== 'ok') throw new Error(data.error || '报告尚未生成');
     docsTreeOverride = {
+      jobId: String(jobId),
       tree: data.tree || [],
       reportPath: data.report_path,
       title: data.title,
       content: data.content,
+      activePath: data.report_path,
+      activeTitle: data.title,
+      activeContent: data.content,
+      activeRenderMode: 'markdown',
     };
+    activeDocsPath = data.report_path;
     if (!docsMode) toggleDocsMode(true);
     else {
       renderDocsTree(false);
@@ -3144,9 +4083,16 @@ function renderJobReportContent() {
   if (!ov) return;
   const content = document.getElementById('docsContent');
   const crumb = document.getElementById('docsBreadcrumb');
-  if (content) content.innerHTML = renderMarkdown(ov.content);
-  if (crumb) crumb.textContent = ov.title;
+  const body = ov.activeContent == null ? ov.content : ov.activeContent;
+  const mode = ov.activeRenderMode || 'markdown';
+  if (content) {
+    content.innerHTML = mode === 'markdown'
+      ? renderMarkdown(body)
+      : `<pre><code>${escapeHtml(body)}</code></pre>`;
+  }
+  if (crumb) crumb.textContent = ov.activeTitle || ov.title;
   if (content) content.scrollTop = 0;
+  updateDocsTreeActive();
 }
 
 // 行内编辑状态：{projectIndex, subIndex, mode: 'create'|'rename'}，null 表示无编辑
@@ -3313,7 +4259,7 @@ async function confirmSubdirEdit() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || '新建失败');
       expandOnlyProject(project.name);
-      await loadProjects(false);
+      await refreshDirectoryDisplays(`projects/${project.name}`);
       addNotice(`小文件夹已创建：${project.name}/${data.subdir}，可拖拽文件/文件夹上传到其中`);
     } else {
       const subdir = (project.subdirs || [])[editing.subIndex] || '';
@@ -3328,7 +4274,7 @@ async function confirmSubdirEdit() {
       if (project.name === selectedProjectName && selectedSubdir === subdir) {
         syncProjectName(project.name, data.subdir);
       }
-      await loadProjects(false);
+      await refreshDirectoryDisplays(`projects/${project.name}`);
       addNotice(`小文件夹已重命名：${subdir} → ${data.subdir}`);
     }
   } catch (e) {
@@ -3352,9 +4298,8 @@ async function deleteSubdir(projectIndex, subIndex) {
     if (!resp.ok) throw new Error(data.error || '删除失败');
     if (project.name === selectedProjectName && selectedSubdir === subdir) {
       await selectProject(project.name, '');
-    } else {
-      await loadProjects(false);
     }
+    await refreshDirectoryDisplays(`projects/${project.name}`);
     addNotice(`小文件夹已删除：${project.name}/${subdir}`);
   } catch (e) {
     addNotice('删除小文件夹失败: ' + e.message, 'error');
@@ -3445,7 +4390,7 @@ async function uploadCollectedFiles(projectName, subdir, collected) {
       return;
     }
     if (projectsCache.some(p => p.name === projectName)) expandOnlyProject(projectName);
-    await loadProjects(false);
+    await refreshDirectoryDisplays(`projects/${projectName}${subdir ? '/' + subdir : ''}`);
     addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.total_bytes)} → ${data.remote_project_dir}`);
     addChatMessage(`### 文件上传完成
 
@@ -3596,6 +4541,7 @@ function applyJobTemplate(index) {
   const template = jobTemplatesCache[index];
   if (!template) return;
   const { form, body } = parseSbatchScript(template.content || '');
+  markJobBodyUserEdited(false);
   const setIfOption = (selectId, value) => {
     const sel = document.getElementById(selectId);
     if (!sel || !value) return;
@@ -3688,7 +4634,7 @@ async function selectProject(name, subdir = '') {
   selectedDependencyItems = [];
   dependencyPlanReady = false;
   checkDepsBtn.textContent = '检查依赖';
-  if (!docsMode) userInput.placeholder = PROJECT_CHAT_PLACEHOLDER;
+  if (!docsMode && !fileManagerMode) userInput.placeholder = PROJECT_CHAT_PLACEHOLDER;
   depsState = 'unknown';
   lastCondaEnvDir = '';
   activeToolCards.clear();
@@ -3697,7 +4643,7 @@ async function selectProject(name, subdir = '') {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || '读取会话失败');
     // 文档模式激活时只把项目会话加载进暂存区，不打断当前的文档问答会话
-    const holder = docsMode ? document.createElement('div') : null;
+    const holder = (docsMode || fileManagerMode) ? document.createElement('div') : null;
     const sink = holder || messagesEl;
     if (!holder) messagesEl.innerHTML = '';
     const history = data.messages || [];
@@ -3721,7 +4667,7 @@ async function selectProject(name, subdir = '') {
 }
 
 async function persistDisplayMessage(role, content) {
-  if (docsMode) return; // 文档问答会话独立存在内存中，不写入项目历史
+  if (docsMode || fileManagerMode) return; // 独立问答会话只存在内存中，不写入项目历史
   const projectName = currentProjectName();
   if (!projectName || !content.trim()) return;
   try {
@@ -3912,11 +4858,61 @@ async function toggleHistoryOverlay(open) {
   const overlay = document.getElementById('historyOverlay');
   if (!overlay) return;
   if (open) {
+    toggleNodeDetailOverlay(false);
+    document.getElementById('jobDetailOverlay')?.classList.remove('open');
     overlay.classList.add('open');
     await loadHistoryJobs();
   } else {
     overlay.classList.remove('open');
   }
+}
+
+function toggleNodeDetailOverlay(open) {
+  const overlay = document.getElementById('nodeDetailOverlay');
+  if (!overlay) return;
+  if (open) {
+    document.getElementById('historyOverlay')?.classList.remove('open');
+    document.getElementById('jobDetailOverlay')?.classList.remove('open');
+    renderNodeDetailOverlay(window.lastDashboardData || {});
+    overlay.classList.add('open');
+  } else {
+    overlay.classList.remove('open');
+  }
+}
+
+function toggleJobDetailOverlay(open) {
+  const overlay = document.getElementById('jobDetailOverlay');
+  if (!overlay) return;
+  if (open) {
+    document.getElementById('historyOverlay')?.classList.remove('open');
+    document.getElementById('nodeDetailOverlay')?.classList.remove('open');
+    renderJobDetailOverlay(window.lastDashboardData || {});
+    overlay.classList.add('open');
+  } else {
+    overlay.classList.remove('open');
+  }
+}
+
+function renderJobDetailOverlay(data) {
+  const jobs = data.jobs || [];
+  const summary = data.summary || {};
+  const table = document.getElementById('jobDetailTable');
+  const summaryEl = document.getElementById('jobDetailSummary');
+  if (summaryEl) {
+    summaryEl.textContent = `全部 ${summary.job_count || jobs.length || 0} 个作业 · 我的 ${summary.my_job_count || 0} 个`;
+  }
+  if (table) table.innerHTML = renderJobDetailGroups(jobs);
+}
+
+function renderNodeDetailOverlay(data) {
+  const nodes = data.nodes || [];
+  const summary = data.summary || {};
+  const table = document.getElementById('nodeDetailTable');
+  const summaryEl = document.getElementById('nodeDetailSummary');
+  if (summaryEl) {
+    summaryEl.textContent = `${summary.node_count || nodes.length || 0} 台节点 · 按节点类型展开`;
+  }
+  if (table) table.innerHTML = renderNodeDetailGroups(nodes);
 }
 
 async function loadHistoryJobs() {
@@ -4019,31 +5015,57 @@ function groupBy(items, getter) {
   return Array.from(groups.entries()).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
 }
 
+function nodeTypeGroups(nodes) {
+  return groupBy(nodes, gpuType).sort((a, b) => {
+    const aCpu = String(a[0]).startsWith('CPU');
+    const bCpu = String(b[0]).startsWith('CPU');
+    if (aCpu !== bCpu) return aCpu ? -1 : 1;
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+}
+
+function nodeGroupStats(group) {
+  const states = {};
+  let cpus = 0;
+  let allocCpus = 0;
+  for (const node of group) {
+    const state = String(node.state || 'UNKNOWN').split(',', 1)[0].toUpperCase();
+    states[state] = (states[state] || 0) + 1;
+    cpus += Number(node.cpus || 0);
+    allocCpus += Number(node.alloc_cpus || 0);
+  }
+  return { states, cpus, allocCpus, gpuUsageText: formatGpuUsage(summarizeGpuUsage(group)) };
+}
+
 function renderNodeGroups(nodes) {
-  if (!nodes.length) return '<tr><td colspan="5" class="empty">暂无节点数据</td></tr>';
-  return groupBy(nodes, gpuType).map(([type, group], index) => {
-    const states = {};
-    let cpus = 0;
-    let allocCpus = 0;
-    for (const node of group) {
-      const state = String(node.state || 'UNKNOWN').split(',', 1)[0].toUpperCase();
-      states[state] = (states[state] || 0) + 1;
-      cpus += Number(node.cpus || 0);
-      allocCpus += Number(node.alloc_cpus || 0);
-    }
-    const gpuUsageText = formatGpuUsage(summarizeGpuUsage(group));
-    const key = `node-${index}`;
-    const expanded = expandedNodeGroups.has(key);
-    const summaryRow = `
-      <tr class="group-row" onclick="toggleNodeGroup('${key}')">
-        <td class="group-title"><span class="group-caret">${expanded ? '▼' : '▶'}</span>${escapeHtml(type)}</td>
-        <td>${group.length} 台节点</td>
-        <td>${escapeHtml(summarizeStates(states))}</td>
-        <td>${escapeHtml(formatUsage(allocCpus, cpus))}</td>
-        <td>${escapeHtml(gpuUsageText)}</td>
+  if (!nodes.length) return '<tr><td colspan="4" class="empty">暂无节点数据</td></tr>';
+  return nodeTypeGroups(nodes).map(([type, group]) => {
+    const stats = nodeGroupStats(group);
+    return `
+      <tr class="group-row">
+        <td class="group-title">${escapeHtml(type)}</td>
+        <td>${group.length}</td>
+        <td>${escapeHtml(formatUsage(stats.allocCpus, stats.cpus))}</td>
+        <td>${escapeHtml(stats.gpuUsageText)}</td>
       </tr>
     `;
-    const detailRows = expanded ? group.map(node => `
+  }).join('');
+}
+
+function renderNodeDetailGroups(nodes) {
+  if (!nodes.length) return '<tr><td colspan="5" class="empty">暂无节点数据</td></tr>';
+  return nodeTypeGroups(nodes).map(([type, group]) => {
+    const stats = nodeGroupStats(group);
+    const summaryRow = `
+      <tr class="group-row">
+        <td class="group-title">${escapeHtml(type)}</td>
+        <td>${group.length} 台节点</td>
+        <td>${escapeHtml(summarizeStates(stats.states))}</td>
+        <td>${escapeHtml(formatUsage(stats.allocCpus, stats.cpus))}</td>
+        <td>${escapeHtml(stats.gpuUsageText)}</td>
+      </tr>
+    `;
+    const detailRows = group.map(node => `
       <tr>
         <td>${escapeHtml(type)}</td>
         <td>${escapeHtml(node.name)}</td>
@@ -4051,12 +5073,36 @@ function renderNodeGroups(nodes) {
         <td>${escapeHtml(formatUsage(Number(node.alloc_cpus || 0), Number(node.cpus || 0)))}</td>
         <td>${escapeHtml(formatGpuUsage(gpuUsage(node)))}</td>
       </tr>
-    `).join('') : '';
+    `).join('');
     return summaryRow + detailRows;
   }).join('');
 }
 
 function renderJobGroups(jobs) {
+  // 默认面板：不分组不折叠，我的作业永远排最前；用户名脱敏缩写，只留名称/状态/时长
+  if (!jobs.length) return '<tr><td colspan="4" class="empty">暂无作业数据</td></tr>';
+  const currentUser = (window.lastDashboardData?.summary?.current_user || '').toString();
+  const sorted = [...jobs].sort((a, b) => {
+    if (String(a.user) === currentUser) return -1;
+    if (String(b.user) === currentUser) return 1;
+    return String(a.user).localeCompare(String(b.user));
+  });
+  return sorted.map(job => {
+    const mine = String(job.user) === currentUser;
+    const userLabel = maskUsername(job.user) + (mine ? '（我）' : '');
+    return `
+      <tr>
+        <td>${escapeHtml(userLabel)}</td>
+        <td><div class="truncate" title="${escapeHtml(job.name)}" onclick="event.stopPropagation(); this.classList.toggle('expanded'); this.textContent = this.classList.contains('expanded') ? this.title : shortJobName(this.title)">${escapeHtml(shortJobName(job.name))}</div></td>
+        <td><span class="pill ${stateClass(job.state)}">${escapeHtml(job.state)}</span></td>
+        <td>${escapeHtml(jobDurationText(job))}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderJobDetailGroups(jobs) {
+  // 详情面板：完整六列，按用户分组展开（样式与节点详情一致），我的作业排最前
   if (!jobs.length) return '<tr><td colspan="6" class="empty">暂无作业数据</td></tr>';
   const currentUser = (window.lastDashboardData?.summary?.current_user || '').toString();
   const groups = groupBy(jobs, job => job.user).sort((a, b) => {
@@ -4064,26 +5110,21 @@ function renderJobGroups(jobs) {
     if (String(b[0]) === currentUser) return 1;
     return String(a[0]).localeCompare(String(b[0]));
   });
-  return groups.map(([user, group], index) => {
+  return groups.map(([user, group]) => {
     const states = {};
     for (const job of group) {
       const state = String(job.state || 'UNKNOWN').split(',', 1)[0].toUpperCase();
       states[state] = (states[state] || 0) + 1;
     }
-    const key = `job-${index}`;
-    if (!initializedCurrentUserGroup && currentUser && String(user) === currentUser) {
-      expandedJobGroups.add(key);
-    }
-    const expanded = expandedJobGroups.has(key);
     const userLabel = String(user) === currentUser ? `${user}（我）` : user;
     const summaryRow = `
-      <tr class="group-row" onclick="toggleJobGroup('${key}')">
-        <td class="group-title"><span class="group-caret">${expanded ? '▼' : '▶'}</span>${escapeHtml(userLabel)}</td>
+      <tr class="group-row">
+        <td class="group-title">${escapeHtml(userLabel)}</td>
         <td colspan="3">${group.length} 个作业</td>
         <td colspan="2">${escapeHtml(summarizeStates(states))}</td>
       </tr>
     `;
-    const detailRows = expanded ? group.map(job => `
+    const detailRows = group.map(job => `
       <tr>
         <td>${escapeHtml(userLabel)}</td>
         <td>${escapeHtml(job.id)}</td>
@@ -4092,9 +5133,16 @@ function renderJobGroups(jobs) {
         <td>${escapeHtml(job.partition)}</td>
         <td>${escapeHtml(jobDurationText(job))}</td>
       </tr>
-    `).join('') : '';
+    `).join('');
     return summaryRow + detailRows;
   }).join('');
+}
+
+function maskUsername(user) {
+  // 用户名脱敏：前两位 + * + 后三位（如 pb*697）；太短的名字不脱敏
+  const text = String(user || '-');
+  if (text.length <= 5) return text;
+  return text.slice(0, 2) + '*' + text.slice(-3);
 }
 
 function shortJobName(name) {
@@ -4102,18 +5150,6 @@ function shortJobName(name) {
   const vscodeAt = text.toLowerCase().indexOf('vscode');
   if (vscodeAt >= 0) return text.slice(0, vscodeAt + 'vscode'.length);
   return text.length > 18 ? text.slice(0, 18) + '...' : text;
-}
-
-function toggleNodeGroup(key) {
-  if (expandedNodeGroups.has(key)) expandedNodeGroups.delete(key);
-  else expandedNodeGroups.add(key);
-  renderDashboard(window.lastDashboardData || {});
-}
-
-function toggleJobGroup(key) {
-  if (expandedJobGroups.has(key)) expandedJobGroups.delete(key);
-  else expandedJobGroups.add(key);
-  renderDashboard(window.lastDashboardData || {});
 }
 
 function renderDashboard(data) {
@@ -4126,13 +5162,21 @@ function renderDashboard(data) {
     `${summary.node_count || 0} 台节点 · CPU ${formatUsage(summary.alloc_cpus || 0, summary.total_cpus || 0)} · GPU ${gpuUsageText}`;
   document.getElementById('jobsSummary').textContent =
     `全部 ${summary.job_count || 0} 个作业 · 我的 ${summary.my_job_count || 0} 个`;
+  if (resourceFab) {
+    resourceFab.textContent = Number(summary.my_job_count || 0) > 0 ? '正在运行' : '空闲中';
+  }
   setUpdateStamps(updatedText, '手动更新', '手动更新');
 
   document.getElementById('nodesTable').innerHTML = renderNodeGroups(nodes);
+  if (document.getElementById('nodeDetailOverlay')?.classList.contains('open')) {
+    renderNodeDetailOverlay(data);
+  }
 
   const jobs = data.jobs || [];
   document.getElementById('jobsTable').innerHTML = renderJobGroups(jobs);
-  initializedCurrentUserGroup = true;
+  if (document.getElementById('jobDetailOverlay')?.classList.contains('open')) {
+    renderJobDetailOverlay(data);
+  }
 
   if (data.errors && data.errors.length) {
     addNotice(data.errors.join('；'), 'error');
@@ -4258,7 +5302,7 @@ async function ensureCondaReadyForAction(projectName, action = '') {
 async function createProject() {
   const name = projectNameInput.value.trim();
   if (!name) {
-    addNotice('请先输入作业目录名称', 'error');
+    addNotice('请先输入项目目录名称', 'error');
     projectNameInput.focus();
     return;
   }
@@ -4268,7 +5312,7 @@ async function createProject() {
     createButton.disabled = true;
     createButton.textContent = '创建中...';
   }
-  addNotice('正在创建作业目录...');
+  addNotice('正在创建项目目录...');
   try {
     const resp = await fetch('/api/projects', {
       method: 'POST',
@@ -4281,12 +5325,12 @@ async function createProject() {
     });
     const data = await resp.json();
     if (!resp.ok) {
-      addNotice(data.error || '创建作业目录失败', 'error');
+      addNotice(data.error || '创建项目目录失败', 'error');
       return;
     }
     syncProjectName(data.project_name);
     closeJobModal();
-    await loadProjects(false);
+    await refreshDirectoryDisplays('projects');
     renderProjects(projectsCache);
     messagesEl.innerHTML = '';
     activeToolCards.clear();
@@ -4299,8 +5343,8 @@ async function createProject() {
     userInput.placeholder = '添加依赖清单或算力要求';
     depsState = 'unknown';
     lastCondaEnvDir = data.conda_env_dir || '';
-    addNotice(`作业目录已创建：${data.project_dir}`);
-    addChatMessage(`### 作业目录已创建
+    addNotice(`项目目录已创建：${data.project_dir}`);
+    addChatMessage(`### 项目目录已创建
 
 - 项目目录：\`${data.project_dir}\`
 - 项目 Conda 环境：\`${data.conda_env_dir}\`
@@ -4311,7 +5355,7 @@ async function createProject() {
     condaInitMessage = addChatMessage('### 项目 Conda 环境后台初始化中\n\n正在准备项目 Conda 环境...', 'ai', true);
     startCondaPolling(data.project_name, condaInitMessage);
   } catch (e) {
-    addNotice('创建作业目录失败: ' + e.message, 'error');
+    addNotice('创建项目目录失败: ' + e.message, 'error');
   } finally {
     if (createButton) {
       createButton.disabled = false;
@@ -4345,12 +5389,9 @@ function setUploadSplit(split) {
   if (!fab) return;
   fab.classList.toggle('split', split);
   if (main) {
-    // 展开后原位变文件夹按钮，左侧滑出文件按钮
-    main.textContent = split ? '▣' : '↑';
-    main.title = split ? '上传文件夹' : '上传文件或文件夹';
-    main.onclick = split
-      ? function () { closeUploadSplit(); chooseUploadFolder(); }
-      : toggleUploadSplit;
+    main.textContent = '+';
+    main.title = split ? '新建作业' : '展开上传按钮';
+    main.onclick = split ? openNewJobFromFab : toggleUploadSplit;
   }
 }
 
@@ -4361,6 +5402,11 @@ function toggleUploadSplit() {
 
 function closeUploadSplit() {
   setUploadSplit(false);
+}
+
+function openNewJobFromFab() {
+  closeUploadSplit();
+  openNewJobFlow();
 }
 
 // 点击其他地方：分裂的上传按钮合并
@@ -4637,13 +5683,17 @@ async function uploadDependencyFiles(projectName) {
   pendingDependencyFiles = [];
   renderDependencyFileChips();
   syncProjectName(data.project_name);
-  await loadProjects(false);
+  await refreshDirectoryDisplays(`projects/${data.project_name}`);
   return { ...data, count };
 }
 
 async function uploadSelectedFiles(input) {
   const selected = Array.from(input.files || []);
   if (!selected.length || isUploading) return;
+  if (fileManagerMode) {
+    await uploadManagedSelectedFiles(selected, input);
+    return;
+  }
   const projectName = currentProjectName();
   if (!projectName) {
     addNotice('请先输入作业目录名称', 'error');
@@ -4671,7 +5721,7 @@ async function uploadSelectedFiles(input) {
     }
     syncProjectName(data.project_name, selectedSubdir);
     if (selectedSubdir) expandOnlyProject(projectName);
-    await loadProjects(false);
+    await refreshDirectoryDisplays(`projects/${projectName}${selectedSubdir ? '/' + selectedSubdir : ''}`);
     renderProjects(projectsCache);
     addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.total_bytes)}，目录 ${data.remote_project_dir}`);
     addChatMessage(`### 文件上传完成
@@ -4681,6 +5731,43 @@ async function uploadSelectedFiles(input) {
 - 目标目录：\`${data.remote_project_dir}\`
 
 同名文件已覆盖，原有其他文件保留。现在建议在输入框里补充依赖清单或算力要求，再点击 **检查依赖**。`, 'ai', true);
+  } catch (e) {
+    addNotice('文件上传失败: ' + e.message, 'error');
+  } finally {
+    isUploading = false;
+    input.value = '';
+  }
+}
+
+function managedUploadTargetPath() {
+  if (!selectedManagedPath) return '';
+  if (selectedManagedType === 'file') {
+    const parts = selectedManagedPath.split('/').filter(Boolean);
+    parts.pop();
+    return parts.join('/');
+  }
+  return selectedManagedPath;
+}
+
+async function uploadManagedSelectedFiles(selected, input) {
+  const targetPath = managedUploadTargetPath();
+  const formData = new FormData();
+  formData.append('target_path', targetPath);
+  for (const file of selected) {
+    formData.append('files', file, file.webkitRelativePath || file.name);
+  }
+  isUploading = true;
+  addNotice(`正在上传 ${selected.length} 个文件到 /home/scc/.../${targetPath || ''} ...`);
+  try {
+    const resp = await fetch('/api/files/managed-upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) {
+      addNotice(data.error || '文件上传失败', 'error');
+      return;
+    }
+    addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.total_bytes)}，目录 ${data.absolute_target_dir}`);
+    if (targetPath) fileExpandedPaths.add(targetPath);
+    await refreshDirectoryDisplays(targetPath);
   } catch (e) {
     addNotice('文件上传失败: ' + e.message, 'error');
   } finally {
@@ -5306,6 +6393,31 @@ function buildSbatchHeader(form) {
 let submitSkeleton = null; // 服务端下发的锁定区骨架：project_dir/conda_env_dir/conda_sh/prelude
 let jobBodyGenerating = false;
 let jobBodyGenerationVersion = 0;
+let jobBodyUserEdited = false;
+
+function cancelJobBodyGeneration() {
+  const wasGenerating = jobBodyGenerating;
+  jobBodyGenerationVersion += 1;
+  jobBodyGenerating = false;
+  const regenBtn = document.getElementById('regenJobBodyBtn');
+  if (regenBtn) regenBtn.disabled = false;
+  if (wasGenerating) {
+    submitScriptInput.placeholder = '作业命令（可修改）';
+  }
+  return wasGenerating;
+}
+
+function markJobBodyUserEdited(notify = true) {
+  jobBodyUserEdited = true;
+  const wasGenerating = cancelJobBodyGeneration();
+  if (wasGenerating && notify) {
+    addNotice('检测到手动修改，已停止 AI 自动填充并保留当前作业命令');
+  }
+}
+
+submitScriptInput.addEventListener('input', () => {
+  markJobBodyUserEdited(true);
+});
 
 function fallbackSubmitPrelude() {
   // 骨架接口失败时的回退：按约定路径拼前导，保证弹窗可用
@@ -5333,9 +6445,11 @@ function renderSubmitLockedPreviews() {
   lockedEl.textContent = `${header}\n\n${prelude}`;
 }
 
-async function generateJobBody() {
+async function generateJobBody(force = false) {
   const projectName = currentProjectName();
   if (!projectName) return;
+  if (jobBodyUserEdited && !force) return;
+  if (force) jobBodyUserEdited = false;
   const generationVersion = ++jobBodyGenerationVersion;
   const requestedSubdir = (document.getElementById('submitRunDir')?.value || '').trim();
   jobBodyGenerating = true;
@@ -5377,7 +6491,7 @@ async function generateJobBody() {
 }
 
 function regenerateJobBody() {
-  generateJobBody();
+  generateJobBody(true);
 }
 
 function syncScriptHeader() {
@@ -5386,6 +6500,8 @@ function syncScriptHeader() {
 }
 
 async function openJobSubmitModal() {
+  cancelJobBodyGeneration();
+  jobBodyUserEdited = false;
   // 账户/分区/QoS 菜单由 Slurm 实时数据填充，获取失败不打开弹窗
   if (!submitOptionsData) {
     addNotice('正在获取集群的 账户/分区/QoS 授权...');
@@ -5442,6 +6558,7 @@ async function fetchSubmitSkeleton() {
 
 async function onSubmitRunDirChange() {
   // run_dir 是命令路径基准；切换后同步刷新骨架和模型可见的目录树。
+  cancelJobBodyGeneration();
   renderSubmitLockedPreviews();
   onSubmitFieldChange();
   await fetchSubmitSkeleton();
@@ -5450,6 +6567,7 @@ async function onSubmitRunDirChange() {
 
 function closeJobSubmitModal(event) {
   if (event && event.target !== jobSubmitModal) return;
+  cancelJobBodyGeneration();
   jobSubmitModal.classList.remove('open');
 }
 
@@ -5497,6 +6615,8 @@ async function submitJobFromModal() {
       body: JSON.stringify({
         project_name: projectName,
         subdir: (document.getElementById('submitRunDir')?.value || '').trim(),
+        // 运行目录可以在弹窗中切换，但终态消息应回到发起提交的会话。
+        chat_subdir: selectedSubdir,
         command: bodyText,
         job_name: form.jobName,
         partition: form.partition,
@@ -5671,14 +6791,15 @@ ${text}`;
 
   try {
     // 文档模式下是独立问答会话：不携带项目上下文，后端用全局 agent，不能布置作业
-    const inDocsMode = docsMode;
+    const standaloneSession = docsMode ? 'docs' : (fileManagerMode ? 'files' : '');
     const resp = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: messageText,
-        project_name: inDocsMode ? '' : currentProjectName(),
-        subdir: inDocsMode ? '' : (selectedSubdir || ''),
+        project_name: standaloneSession ? '' : currentProjectName(),
+        subdir: standaloneSession ? '' : (selectedSubdir || ''),
+        session: standaloneSession,
       }),
     });
     if (!resp.ok) {
@@ -5725,15 +6846,22 @@ ${text}`;
 
 async function resetChat() {
   try {
+    const standaloneSession = docsMode ? 'docs' : (fileManagerMode ? 'files' : '');
     await fetch('/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project_name: currentProjectName(),
-        subdir: selectedSubdir || '',
+        project_name: standaloneSession ? '' : currentProjectName(),
+        subdir: standaloneSession ? '' : (selectedSubdir || ''),
+        session: standaloneSession,
       }),
     });
-    messagesEl.innerHTML = '<div class="message ai">对话已重置。可以继续查询资源、生成脚本或准备提交命令。</div>';
+    const resetText = docsMode
+      ? '文档问答已重置。可以继续询问当前文档内容。'
+      : (fileManagerMode
+        ? '文件管理问答已重置。可以继续询问代码、配置或修改思路。'
+        : '对话已重置。可以继续查询资源、生成脚本或准备提交命令。');
+    messagesEl.innerHTML = `<div class="message ai">${resetText}</div>`;
     lastProjectReport = '';
     lastProjectDir = '';
     depsState = 'unknown';
@@ -5743,12 +6871,15 @@ async function resetChat() {
 }
 
 applySidebarState();
+if (localStorage.getItem('slurmFileManagerMode') === 'true') {
+  setFileManagerMode(true);
+}
 loadProjects(true);
 loadModels(false);
 autoResizeComposer();
 refreshDashboard(false);
 refreshTimer = setInterval(() => refreshDashboard(false), 15000);
-// 作业状态心跳：发现完成/失败立刻右下角通知（比看板轮询更早发现）
+// 作业状态心跳：分析报告就绪后把终态消息送入项目会话
 setTimeout(watchJobs, 8000);
 setInterval(watchJobs, 15000);
 </script>

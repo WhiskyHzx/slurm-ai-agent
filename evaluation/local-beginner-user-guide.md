@@ -61,36 +61,40 @@ python -m pip install -r requirements.txt
 
 ## 启动应用
 
-在 SSH 服务器上运行：
+在 SSH 服务器上运行（Unix Domain Socket 模式，不监听 TCP 端口）：
 
 ```bash
 cd ~/slurm-ai-agent
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate base
-PYTHONPATH=. python -m uvicorn server.app:app --host 0.0.0.0 --port 8080
+./start-server.sh
 ```
 
-如果只想让 SSH 隧道访问，可以把 `--host` 改成：
+脚本会自动选择可用的 Python 解释器、后台常驻运行，并把 socket 权限收紧为 600。
+启动后约需 40 秒初始化，验证：
 
 ```bash
---host 127.0.0.1
+curl --unix-socket ~/slurm-ai-agent/server.sock http://localhost/api/dashboard
 ```
+
+> 注意：禁止用 `--host 0.0.0.0` / `--host 127.0.0.1` 监听 TCP 端口。共享登录
+> 节点上回环地址全机共享、TCP 端口无属主概念，任何用户都能直接访问。
 
 ## 浏览器访问
 
-如果服务监听 `127.0.0.1:8080`，在自己电脑上开 SSH 隧道：
+浏览器不能直接访问 Unix socket，需在**自己电脑**的 `~/.ssh/config` 中配置：
 
-```bash
-ssh -L 8080:127.0.0.1:8080 107.ustc.edu.cn
+```
+Host 107.ustc.edu.cn
+  LocalForward 8080 /home/<你的用户名>/slurm-ai-agent/server.sock
 ```
 
-然后浏览器打开：
+然后 SSH 连接（或 VS Code Remote-SSH）后，浏览器打开：
 
 ```text
 http://127.0.0.1:8080
 ```
 
-如果服务器安全策略允许直接访问对应端口，也可以使用服务器提供的访问地址。
+若启用了 ControlPersist，修改 config 后需先 `ssh -O exit 107.ustc.edu.cn`
+断开旧主连接再重连，新转发规则才会生效。
 
 ## 上传本地文件
 
