@@ -22,7 +22,9 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 SOCKET_PATH="${SOCKET_PATH:-$PROJECT_DIR/server.sock}"
-LOG_FILE="${LOG_FILE:-/tmp/slurm-ai-agent-uds.log}"
+LOG_DIR="$PROJECT_DIR/logs"
+LOG_FILE="${LOG_FILE:-$LOG_DIR/slurm-ai-agent-uds.log}"
+mkdir -p "$LOG_DIR"
 
 # 选择 Python 解释器：.venv 优先，其次 miniconda，最后系统 python3
 if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then

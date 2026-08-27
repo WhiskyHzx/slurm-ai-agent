@@ -88,6 +88,95 @@ standalone_agents: dict[str, AgentLoop] = {}
 conda_init_jobs: dict[str, dict] = {}
 conda_init_jobs_lock = threading.Lock()
 chat_history_lock = threading.Lock()
+dependency_state_lock = threading.RLock()
+
+DEPENDENCY_STATE_FILENAME = "dependency-analysis.json"
+
+
+def _dependency_state_path(project_dir: Path) -> Path:
+    return project_dir / ".slurm-agent" / DEPENDENCY_STATE_FILENAME
+
+
+def _read_dependency_state_unlocked(project_dir: Path) -> dict:
+    path = _dependency_state_path(project_dir)
+    if not path.is_file():
+        return {"version": 1, "revision": 0, "analyzed_revision": -1}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.warning("依赖分析状态文件损坏，将按未检查处理: %s", path)
+        return {"version": 1, "revision": 0, "analyzed_revision": -1}
+    return data if isinstance(data, dict) else {
+        "version": 1, "revision": 0, "analyzed_revision": -1
+    }
+
+
+def _write_dependency_state_unlocked(project_dir: Path, state: dict) -> None:
+    path = _dependency_state_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    os.replace(tmp_path, path)
+
+
+def _dependency_cache_status(project_dir: Path) -> dict:
+    with dependency_state_lock:
+        state = _read_dependency_state_unlocked(project_dir)
+    revision = int(state.get("revision", 0) or 0)
+    analyzed_revision = int(state.get("analyzed_revision", -1))
+    has_cached_result = (
+        isinstance(state.get("report"), str)
+        and isinstance(state.get("dependency_items"), list)
+    )
+    needs_check = not has_cached_result or analyzed_revision != revision
+    if not has_cached_result:
+        reason = "missing"
+    elif needs_check:
+        reason = "changed"
+    else:
+        reason = "current"
+    return {
+        "has_cached_result": has_cached_result,
+        "needs_check": needs_check,
+        "reason": reason,
+        "revision": revision,
+        "analyzed_revision": analyzed_revision,
+        "report": state.get("report", "") if has_cached_result else "",
+        "dependency_items": state.get("dependency_items", []) if has_cached_result else [],
+        "analyzed_at": state.get("analyzed_at", "") if has_cached_result else "",
+    }
+
+
+def _mark_dependency_analysis_dirty(project_dir: Path) -> None:
+    with dependency_state_lock:
+        state = _read_dependency_state_unlocked(project_dir)
+        state["version"] = 1
+        state["revision"] = int(state.get("revision", 0) or 0) + 1
+        state["changed_at"] = datetime.now().isoformat(timespec="seconds")
+        _write_dependency_state_unlocked(project_dir, state)
+
+
+def _save_dependency_analysis(
+    project_dir: Path,
+    report: str,
+    dependency_items: list[dict],
+    analyzed_revision: Optional[int] = None,
+) -> None:
+    with dependency_state_lock:
+        state = _read_dependency_state_unlocked(project_dir)
+        revision = int(state.get("revision", 0) or 0)
+        completed_revision = revision if analyzed_revision is None else analyzed_revision
+        state.update({
+            "version": 1,
+            "revision": revision,
+            "analyzed_revision": completed_revision,
+            "analyzed_at": datetime.now().isoformat(timespec="seconds"),
+            "report": report,
+            "dependency_items": dependency_items,
+        })
+        _write_dependency_state_unlocked(project_dir, state)
 
 
 def _conda_env_ready(conda_env_dir: Path) -> bool:
@@ -2359,6 +2448,7 @@ def create_project(req: ProjectCreateRequest):
             environment_requirements=req.environment_requirements,
             compute_requirements=req.compute_requirements,
         )
+        _mark_dependency_analysis_dirty(workspace.project_dir)
         conda_status = _start_conda_init(workspace.project_name)
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
@@ -2422,6 +2512,7 @@ def create_project_subdir(req: SubdirCreateRequest):
         if target.exists():
             raise FileTransferError(f"小文件夹已存在: {name}")
         target.mkdir(parents=True)
+        _mark_dependency_analysis_dirty(project_dir)
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2453,6 +2544,7 @@ def rename_project_subdir(req: SubdirRenameRequest):
         old_session = _subdir_session_path(project_dir, old_name)
         if old_session.exists():
             old_session.rename(_subdir_session_path(project_dir, new_name))
+        _mark_dependency_analysis_dirty(project_dir)
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2477,6 +2569,7 @@ def delete_project_subdir(req: SubdirDeleteRequest):
             raise FileTransferError(f"小文件夹不存在: {name}")
         shutil.rmtree(target)
         _subdir_session_path(project_dir, name).unlink(missing_ok=True)
+        _mark_dependency_analysis_dirty(project_dir)
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2588,10 +2681,49 @@ def delete_job_template(req: JobTemplateDeleteRequest):
     return {"status": "ok", "name": name}
 
 
+@app.get("/api/projects/dependency-state")
+def project_dependency_state(project_name: str):
+    """Return whether project changes have invalidated the dependency analysis."""
+    try:
+        safe_project_name, project_dir, _ = project_workspace(project_name)
+        if not project_dir.is_dir():
+            raise FileTransferError(f"作业目录不存在: {safe_project_name}")
+        cache = _dependency_cache_status(project_dir)
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return {
+        "status": "ok",
+        "project_name": safe_project_name,
+        "has_cached_result": cache["has_cached_result"],
+        "needs_check": cache["needs_check"],
+        "reason": cache["reason"],
+        "analyzed_at": cache["analyzed_at"],
+    }
+
+
 @app.post("/api/projects/report")
 def project_report(req: ProjectReportRequest):
-    """Generate a dependency/environment plan before installing dependencies."""
+    """Generate a dependency plan, or reuse it while project files are unchanged."""
     try:
+        safe_project_name, project_dir, conda_env_dir = project_workspace(req.name)
+        if not project_dir.is_dir():
+            raise FileTransferError(f"作业目录不存在: {safe_project_name}")
+        if not req.extra_notes.strip():
+            cache = _dependency_cache_status(project_dir)
+            if not cache["needs_check"]:
+                return {
+                    "status": "ok",
+                    "cached": True,
+                    "project_name": safe_project_name,
+                    "project_dir": str(project_dir),
+                    "conda_env_dir": str(conda_env_dir),
+                    "conda_created": False,
+                    "notes_path": str(project_dir / PROJECT_NOTES_FILENAME),
+                    "report": cache["report"],
+                    "dependency_items": cache["dependency_items"],
+                    "analyzed_at": cache["analyzed_at"],
+                }
+
         conda_status = _conda_status_for(req.name)
         if conda_status.get("status") != "ready":
             if conda_status.get("status") in {"missing", "failed"}:
@@ -2602,6 +2734,9 @@ def project_report(req: ProjectReportRequest):
                 "conda_env_dir": conda_status.get("conda_env_dir"),
             }, status_code=409)
         workspace = ensure_project_workspace(req.name)
+        if req.extra_notes.strip():
+            _mark_dependency_analysis_dirty(workspace.project_dir)
+        analysis_revision = _dependency_cache_status(workspace.project_dir)["revision"]
         notes_path = _append_project_notes(
             workspace.project_dir,
             extra_notes=req.extra_notes,
@@ -2644,6 +2779,10 @@ def project_report(req: ProjectReportRequest):
             dependency_items,
             "下面是根据依赖文件、脚本、源码 import 和用户补充需求得到的安装清单。请在弹窗中确认勾选项后再安装。",
         )
+        serialized_items = serialize_items(dependency_items)
+        _save_dependency_analysis(
+            workspace.project_dir, report, serialized_items, analysis_revision
+        )
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2652,13 +2791,14 @@ def project_report(req: ProjectReportRequest):
 
     return {
         "status": "ok",
+        "cached": False,
         "project_name": workspace.project_name,
         "project_dir": str(workspace.project_dir),
         "conda_env_dir": str(workspace.conda_env_dir),
         "conda_created": workspace.conda_created,
         "notes_path": str(notes_path),
         "report": report,
-        "dependency_items": serialize_items(dependency_items),
+        "dependency_items": serialized_items,
     }
 
 
@@ -3822,6 +3962,24 @@ def _managed_rel(path: Path) -> str:
     return path.resolve().relative_to(MANAGED_FILES_ROOT).as_posix()
 
 
+def _managed_project_dir(path: Path) -> Optional[Path]:
+    projects_base = Path(get_remote_projects_base()).expanduser().resolve()
+    try:
+        relative = path.resolve().relative_to(projects_base)
+    except ValueError:
+        return None
+    if not relative.parts:
+        return None
+    project_dir = projects_base / relative.parts[0]
+    return project_dir if project_dir.is_dir() else None
+
+
+def _mark_managed_project_dirty(path: Path) -> None:
+    project_dir = _managed_project_dir(path)
+    if project_dir is not None:
+        _mark_dependency_analysis_dirty(project_dir)
+
+
 def _is_editable_managed_file(path: Path) -> bool:
     if not path.is_file():
         return False
@@ -3927,6 +4085,7 @@ def managed_file_save(req: ManagedFileSaveRequest):
         if not _is_editable_managed_file(target):
             return JSONResponse({"error": "该文件不是可编辑文本，或文件过大"}, status_code=400)
         target.write_text(req.content, encoding="utf-8")
+        _mark_managed_project_dirty(target)
         stat = target.stat()
         return {
             "status": "ok",
@@ -3970,6 +4129,7 @@ def managed_entry_create(req: ManagedEntryCreateRequest):
             target.mkdir()
         else:
             target.touch(exist_ok=False)
+        _mark_managed_project_dirty(target)
         return {
             "status": "ok",
             "parent_path": _managed_rel(parent) if parent != MANAGED_FILES_ROOT else "",
@@ -4016,6 +4176,7 @@ async def managed_files_upload(
                         raise FileTransferError(f"上传总大小超过限制：{max_bytes} bytes")
                     out.write(chunk)
             file_count += 1
+        _mark_managed_project_dirty(target_dir)
         return {
             "status": "ok",
             "target_dir": _managed_rel(target_dir),
@@ -4080,6 +4241,8 @@ async def files_upload(
             result = await asyncio.to_thread(
                 copy_files_to_project, staging_dir, file_count, project_name, (subdir or "").strip()
             )
+            _, uploaded_project_dir, _ = project_workspace(result.project_name)
+            _mark_dependency_analysis_dirty(uploaded_project_dir)
 
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=502)

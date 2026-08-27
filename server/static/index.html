@@ -3130,6 +3130,7 @@ let selectedDependencyItems = [];
 let dependencyReviewMode = 'review';
 let dependencyPlanReady = false;
 let depsState = 'unknown'; // unknown=未检查 checked=清单已确认未安装 installed=已安装 failed=安装失败
+let dependencyCheckReason = 'missing'; // missing=未分析 changed=项目已修改 current=缓存有效
 let lastCondaEnvDir = '';
 let condaInitPollTimer = null;
 let condaInitMessage = null;
@@ -5776,12 +5777,15 @@ async function uploadManagedSelectedFiles(selected, input) {
   }
 }
 
+async function fetchProjectDependencyState(projectName) {
+  const resp = await fetch('/api/projects/dependency-state?project_name=' + encodeURIComponent(projectName));
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || '读取依赖检查状态失败');
+  dependencyCheckReason = data.reason || 'missing';
+  return data;
+}
+
 async function generateProjectReport() {
-  if (dependencyPlanReady) {
-    dependencyModal.classList.add('open');
-    await installProjectDependencies({ keepModalOpen: true });
-    return;
-  }
   const projectName = currentProjectName();
   if (!projectName) {
     addNotice('请先输入作业目录名称', 'error');
@@ -5789,15 +5793,42 @@ async function generateProjectReport() {
     return;
   }
   if (isProcessing) return;
-  try {
-    const ready = await ensureCondaReadyForAction(projectName, 'check-deps');
-    if (!ready) return;
-  } catch (e) {
-    addNotice('读取 Conda 环境状态失败: ' + e.message, 'error');
-    return;
-  }
 
   const extraNotes = userInput.value.trim();
+  let dependencyStatus = null;
+  try {
+    dependencyStatus = await fetchProjectDependencyState(projectName);
+  } catch (e) {
+    // 状态读取失败时按需要重查处理，不能继续使用可能过期的前端结果。
+    dependencyCheckReason = 'missing';
+    dependencyStatus = { needs_check: true, reason: 'missing' };
+    addNotice('读取依赖检查状态失败，将重新检查: ' + e.message, 'error');
+  }
+  const needsFreshAnalysis = Boolean(
+    dependencyStatus.needs_check || extraNotes || pendingDependencyFiles.length
+  );
+
+  if (dependencyPlanReady && !needsFreshAnalysis) {
+    dependencyModal.classList.add('open');
+    await installProjectDependencies({ keepModalOpen: true });
+    return;
+  }
+  if (needsFreshAnalysis) {
+    dependencyPlanReady = false;
+    lastProjectReport = '';
+    dependencyItems = [];
+    selectedDependencyItems = [];
+    depsState = 'unknown';
+    checkDepsBtn.textContent = '检查依赖';
+    try {
+      const ready = await ensureCondaReadyForAction(projectName, 'check-deps');
+      if (!ready) return;
+    } catch (e) {
+      addNotice('读取 Conda 环境状态失败: ' + e.message, 'error');
+      return;
+    }
+  }
+
   if (extraNotes) {
     addChatMessage(extraNotes, 'user', true);
     userInput.value = '';
@@ -5809,7 +5840,12 @@ async function generateProjectReport() {
   if (sendBtn) sendBtn.disabled = true;
   if (checkDepsBtn) checkDepsBtn.disabled = true;
   confirmRunBtn.disabled = true;
-  const pending = addChatMessage('读取项目目录、依赖清单，生成将要安装的程序环境列表...', 'ai');
+  const pending = addChatMessage(
+    needsFreshAnalysis
+      ? '读取项目目录、依赖清单，生成将要安装的程序环境列表...'
+      : '正在读取上一次的依赖推断结果...',
+    'ai'
+  );
   try {
     const uploadData = await uploadDependencyFiles(projectName);
     if (uploadData) {
@@ -5842,15 +5878,21 @@ async function generateProjectReport() {
     dependencyItems = Array.isArray(data.dependency_items) ? data.dependency_items : [];
     selectedDependencyItems = [];
     dependencyPlanReady = false;
+    dependencyCheckReason = 'current';
     checkDepsBtn.textContent = '检查依赖';
     userInput.placeholder = '还需更改';
+    setMessageContent(
+      pending,
+      data.cached ? '已加载上一次的依赖推断结果。' : '项目依赖扫描与推断已完成。',
+      'ai'
+    );
     openDependencyModal();
   } catch (e) {
     setMessageContent(pending, '检查依赖失败: ' + e.message, 'ai');
     addNotice('检查依赖失败: ' + e.message, 'error');
   } finally {
     isProcessing = false;
-  userInput.disabled = false;
+    userInput.disabled = false;
     if (sendBtn) sendBtn.disabled = false;
     if (checkDepsBtn) checkDepsBtn.disabled = false;
     if (confirmRunBtn) confirmRunBtn.disabled = false;
@@ -6171,7 +6213,7 @@ function formatValidationResults(results) {
   }).join('\n');
 }
 
-function confirmRunPlan() {
+async function confirmRunPlan() {
   if (isProcessing) return;
   const projectName = currentProjectName();
   if (!projectName) {
@@ -6179,8 +6221,19 @@ function confirmRunPlan() {
     openNewJobFlow();
     return;
   }
-  // 依赖未安装完成时先弹警告窗，用户确认后仍可继续
-  if (depsState !== 'installed') {
+  try {
+    const dependencyStatus = await fetchProjectDependencyState(projectName);
+    if (dependencyStatus.needs_check) {
+      openDepsWarningModal();
+      return;
+    }
+  } catch (e) {
+    dependencyCheckReason = 'missing';
+    addNotice('无法确认依赖检查状态: ' + e.message, 'error');
+    openDepsWarningModal();
+    return;
+  }
+  if (depsState === 'failed') {
     openDepsWarningModal();
     return;
   }
@@ -6188,6 +6241,9 @@ function confirmRunPlan() {
 }
 
 function depsWarningText() {
+  if (dependencyCheckReason === 'changed') {
+    return '<strong>项目文件在上次依赖分析后发生了变化。</strong><br>建议先点击「检查依赖」重新扫描并确认依赖，再布置作业。';
+  }
   if (depsState === 'checked') {
     return '<strong>依赖清单已确认，但尚未安装到项目 Conda 环境。</strong><br>建议先点击「安装依赖」完成安装，再布置作业。';
   }
