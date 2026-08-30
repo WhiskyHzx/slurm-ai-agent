@@ -171,7 +171,8 @@
   }
 
   .brand-swap:hover .swap-stack,
-  body.docs-mode .brand-swap .swap-stack {
+  body.docs-mode .brand-swap .swap-stack,
+  .brand-swap.auto-hint .swap-stack {
     transform: translateY(-1.45em);
   }
 
@@ -372,6 +373,8 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
   }
 
   .docs-close-btn {
@@ -969,6 +972,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-shrink: 0;
   }
 
   /* 小文件夹行展开：带阻尼淡入，不硬生生出现 */
@@ -2675,9 +2679,9 @@
   .terminal-project-select {
     padding: 4px 8px;
     border-radius: 8px;
-    border: 1px solid var(--line, #ccc);
-    background: var(--panel, #fff);
-    color: var(--ink, #222);
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
     font-size: 12px;
     max-width: 180px;
   }
@@ -2694,6 +2698,59 @@
   .terminal-container .xterm {
     height: 100%;
   }
+
+  /* ===== 文件管理右键菜单 ===== */
+  .managed-context-menu {
+    position: fixed;
+    z-index: 500;
+    min-width: 150px;
+    padding: 5px;
+    border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    display: none;
+  }
+
+  .managed-context-menu.open {
+    display: block;
+  }
+
+  .managed-context-menu .ctx-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 7px 12px;
+    border: none;
+    background: transparent;
+    color: var(--ink);
+    font-size: 13px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .managed-context-menu .ctx-item:hover {
+    background: var(--group-hover);
+  }
+
+  .managed-context-menu .ctx-item.danger {
+    color: var(--red);
+  }
+
+  .managed-context-menu .ctx-item:disabled {
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+
+  .managed-context-menu .ctx-item:disabled:hover {
+    background: transparent;
+  }
+
+  .managed-context-menu .ctx-divider {
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--line);
+  }
 </style>
 </head>
 <body>
@@ -2706,7 +2763,7 @@
           <span class="swap-row swap-accent">帮助文档</span>
         </span></span>
       </button>
-      <div class="brand-subtitle">Slurm 资源监视、项目文件上传、智能助手</div>
+      <div class="brand-subtitle">Slurm 资源监视、智能助手</div>
     </div>
     <div class="top-actions">
       <button id="terminalToggle" class="file-manager-tab" onclick="toggleTerminalPanel()" title="打开直连终端">打开终端</button>
@@ -2967,6 +3024,8 @@
 </div>
 
 <div id="notices" class="toast-stack"></div>
+
+<div id="managedContextMenu" class="managed-context-menu" aria-hidden="true"></div>
 
 
 <script src="/static/vendor/xterm/xterm.js"></script>
@@ -3805,12 +3864,13 @@ function managedTreeHtml(nodes, depth = 0) {
     const click = isDir
       ? `toggleManagedDir('${escapeHtml(node.path)}')`
       : `selectManagedFile('${escapeHtml(node.path)}', ${node.editable ? 'true' : 'false'})`;
+    const ctx = `oncontextmenu="openManagedContextMenu(event, '${escapeHtml(node.path)}', '${isDir ? 'dir' : 'file'}')"`;
     const createRow = isDir && open && managedCreateDraft?.parentPath === node.path ? managedCreateRowHtml() : '';
     const kids = isDir && open && (node.children || createRow)
       ? `<div class="file-children">${createRow}${managedTreeHtml(node.children || [], depth + 1)}</div>`
       : '';
     return `<div class="file-node${isDir && open ? ' dir-open' : ''}" style="--depth:${depth}">
-      <button class="${rowClass}"${click ? ` onclick="${click}"` : ''} title="${escapeHtml(node.path || fileManagerRoot)}">
+      <button class="${rowClass}"${click ? ` onclick="${click}"` : ''} ${ctx} title="${escapeHtml(node.path || fileManagerRoot)}">
         <span class="${caretClass}"></span>
         <span class="file-name">${escapeHtml(node.name)}</span>
       </button>${kids}
@@ -3826,7 +3886,7 @@ function renderManagedTree() {
   const rootCreateRow = managedCreateDraft?.parentPath === '' ? managedCreateRowHtml() : '';
   const children = fileTreeData.length ? managedTreeHtml(fileTreeData) : '<div class="empty">目录为空</div>';
   fileTreeEl.innerHTML = `<div class="file-node file-root-node dir-open">
-    <div class="file-root-row${rootSelected}">
+    <div class="file-root-row${rootSelected}" oncontextmenu="openManagedContextMenu(event, '', 'dir')">
       <button class="file-root-select" onclick="selectManagedRoot()" title="${escapeHtml(fileManagerRoot)}">
         <span class="file-caret open"></span>
         <span class="file-name">${escapeHtml(rootName)}</span>
@@ -7176,6 +7236,235 @@ function reconnectTerminal() {
 document.getElementById('terminalProject')?.addEventListener('change', () => {
   if (terminalOpen) connectTerminal();
 });
+
+/* =========================================================================
+   文件管理右键菜单（删除 / 剪切 / 复制 / 粘贴）
+   剪贴板是前端状态：{ mode: 'cut'|'copy', path, name, type }
+   ========================================================================= */
+
+let managedClipboard = null;   // 剪切/复制暂存
+let managedCtxTarget = null;   // 当前右键目标 { path, type }
+
+function openManagedContextMenu(event, path, type) {
+  event.preventDefault();
+  event.stopPropagation();
+  managedCtxTarget = { path, type };
+  const menu = document.getElementById('managedContextMenu');
+  if (!menu) return;
+
+  const isRoot = path === '';
+  const hasClipboard = !!managedClipboard;
+  const items = [];
+
+  // 剪切 / 复制 / 复制路径（根目录不可剪切/复制）
+  if (!isRoot) {
+    items.push(`<button class="ctx-item" onclick="managedCut()">剪切</button>`);
+    items.push(`<button class="ctx-item" onclick="managedCopy()">复制</button>`);
+    items.push(`<button class="ctx-item" onclick="managedCopyPath()">复制路径</button>`);
+  }
+
+  // 粘贴（有剪贴板时可用，目标必须是目录）
+  if (type === 'dir') {
+    items.push(`<button class="ctx-item" ${hasClipboard ? '' : 'disabled'} onclick="managedPaste()">粘贴</button>`);
+  }
+
+  // 删除（根目录不可删除）
+  if (!isRoot) {
+    if (items.length) items.push(`<div class="ctx-divider"></div>`);
+    items.push(`<button class="ctx-item danger" onclick="managedDelete()">删除</button>`);
+  }
+
+  menu.innerHTML = items.join('');
+  menu.classList.add('open');
+  menu.setAttribute('aria-hidden', 'false');
+
+  // 定位菜单（防止超出视口）
+  const menuW = 160, menuH = items.length * 34 + 10;
+  let x = event.clientX, y = event.clientY;
+  if (x + menuW > window.innerWidth) x = window.innerWidth - menuW - 8;
+  if (y + menuH > window.innerHeight) y = window.innerHeight - menuH - 8;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+}
+
+function closeManagedContextMenu() {
+  const menu = document.getElementById('managedContextMenu');
+  if (menu) {
+    menu.classList.remove('open');
+    menu.setAttribute('aria-hidden', 'true');
+  }
+  managedCtxTarget = null;
+}
+
+// 点击任意处关闭菜单
+document.addEventListener('click', closeManagedContextMenu);
+document.addEventListener('scroll', closeManagedContextMenu, true);
+
+function managedCut() {
+  if (!managedCtxTarget || managedCtxTarget.path === '') return;
+  const node = findManagedNode(fileTreeData, managedCtxTarget.path);
+  managedClipboard = {
+    mode: 'cut',
+    path: managedCtxTarget.path,
+    name: node ? node.name : managedCtxTarget.path.split('/').pop(),
+    type: managedCtxTarget.type,
+  };
+  addNotice(`已剪切：${managedClipboard.name}（右键目标文件夹选择「粘贴」）`);
+  closeManagedContextMenu();
+}
+
+function managedCopy() {
+  if (!managedCtxTarget || managedCtxTarget.path === '') return;
+  const node = findManagedNode(fileTreeData, managedCtxTarget.path);
+  managedClipboard = {
+    mode: 'copy',
+    path: managedCtxTarget.path,
+    name: node ? node.name : managedCtxTarget.path.split('/').pop(),
+    type: managedCtxTarget.type,
+  };
+  addNotice(`已复制：${managedClipboard.name}（右键目标文件夹选择「粘贴」）`);
+  closeManagedContextMenu();
+}
+
+async function managedCopyPath() {
+  if (!managedCtxTarget || managedCtxTarget.path === '') return;
+  const fullPath = (fileManagerRoot || '').replace(/\/$/, '') + '/' + managedCtxTarget.path;
+  closeManagedContextMenu();
+  try {
+    await navigator.clipboard.writeText(fullPath);
+    addNotice(`已复制路径：${fullPath}`);
+  } catch (e) {
+    // 剪贴板 API 不可用（非 HTTPS 或权限受限）时回退到 execCommand
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = fullPath;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      addNotice(`已复制路径：${fullPath}`);
+    } catch (e2) {
+      addNotice('复制路径失败: ' + e2.message, 'error');
+    }
+  }
+}
+
+async function managedPaste() {
+  if (!managedClipboard || !managedCtxTarget) return;
+  const destDir = managedCtxTarget.path;  // 目标目录（根目录为 ''）
+  const clip = managedClipboard;
+  const endpoint = clip.mode === 'cut' ? '/api/files/move' : '/api/files/copy';
+  closeManagedContextMenu();
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: clip.path, dest_dir: destDir }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '操作失败');
+    // 剪切成功后清空剪贴板
+    if (clip.mode === 'cut') managedClipboard = null;
+    // 刷新源目录和目标目录
+    await refreshManagedAfterChange(clip.path, destDir);
+    addNotice(`${clip.mode === 'cut' ? '移动' : '复制'}成功：${clip.name}`);
+  } catch (e) {
+    addNotice('粘贴失败: ' + e.message, 'error');
+  }
+}
+
+async function managedDelete() {
+  if (!managedCtxTarget || managedCtxTarget.path === '') return;
+  const path = managedCtxTarget.path;
+  const name = path.split('/').pop();
+  closeManagedContextMenu();
+  if (!window.confirm(`确定删除「${name}」？\n此操作不可恢复。`)) return;
+  try {
+    const resp = await fetch('/api/files/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '删除失败');
+    await refreshManagedAfterChange(path, '');
+    addNotice(`已删除：${name}`);
+  } catch (e) {
+    addNotice('删除失败: ' + e.message, 'error');
+  }
+}
+
+async function refreshManagedAfterChange(srcPath, destDir) {
+  // 刷新受影响的目录：源路径的父目录 + 目标目录
+  const srcParent = srcPath.includes('/') ? srcPath.slice(0, srcPath.lastIndexOf('/')) : '';
+  const dirs = new Set([srcParent, destDir]);
+  for (const d of dirs) {
+    if (d === '' || fileExpandedPaths.has(d)) {
+      await loadManagedTree(d);
+    }
+  }
+  // 若源目录本身被展开，也刷新
+  if (fileExpandedPaths.has(srcPath)) {
+    await loadManagedTree(srcPath);
+  }
+  renderManagedTree();
+}
+
+/* =========================================================================
+   帮助文档按钮呼吸提示：非文档模式下，每 5 秒滑动到「帮助文档」，
+   停留 2 秒后滑回「107 算力控制台」，循环吸引注意。
+   ========================================================================= */
+
+const DOCS_HINT_INTERVAL = 5000;   // 恢复后静息 5 秒再出现
+const DOCS_HINT_DURATION = 1500;   // 出现后停留 1.5 秒
+
+let docsHintTimer = null;
+
+function startDocsHintLoop() {
+  const btn = document.getElementById('docsModeBtn');
+  if (!btn) return;
+
+  function clearHintTimer() {
+    if (docsHintTimer) {
+      clearTimeout(docsHintTimer);
+      docsHintTimer = null;
+    }
+  }
+
+  function showHint() {
+    // 文档模式或文件管理模式下不提示，稍后重试
+    if (docsMode || fileManagerMode) {
+      docsHintTimer = setTimeout(showHint, DOCS_HINT_INTERVAL);
+      return;
+    }
+    btn.classList.add('auto-hint');
+    // 停留 1.5 秒后恢复，再静息 5 秒进入下一轮
+    docsHintTimer = setTimeout(() => {
+      btn.classList.remove('auto-hint');
+      docsHintTimer = setTimeout(showHint, DOCS_HINT_INTERVAL);
+    }, DOCS_HINT_DURATION);
+  }
+
+  // 鼠标移入：暂停提示（清除计时器，移除提示态）
+  btn.addEventListener('mouseenter', () => {
+    clearHintTimer();
+    btn.classList.remove('auto-hint');
+  });
+
+  // 鼠标移出：重新开始计时（静息 5 秒后出现）
+  btn.addEventListener('mouseleave', () => {
+    clearHintTimer();
+    btn.classList.remove('auto-hint');
+    docsHintTimer = setTimeout(showHint, DOCS_HINT_INTERVAL);
+  });
+
+  // 首次延迟 5 秒后开始
+  docsHintTimer = setTimeout(showHint, DOCS_HINT_INTERVAL);
+}
+
+startDocsHintLoop();
 </script>
 </body>
 </html>

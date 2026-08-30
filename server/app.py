@@ -440,6 +440,20 @@ class ManagedEntryCreateRequest(BaseModel):
     entry_type: str
 
 
+class ManagedEntryDeleteRequest(BaseModel):
+    path: str
+
+
+class ManagedEntryMoveRequest(BaseModel):
+    path: str
+    dest_dir: str = ""  # 目标目录（空 = 用户根目录）
+
+
+class ManagedEntryCopyRequest(BaseModel):
+    path: str
+    dest_dir: str = ""  # 目标目录（空 = 用户根目录）
+
+
 class SubdirCreateRequest(BaseModel):
     project_name: str
     name: str = ""  # 空 = 自动取名 数据集N
@@ -4140,6 +4154,119 @@ def managed_entry_create(req: ManagedEntryCreateRequest):
     except OSError as e:
         logger.exception("新建文件系统项目失败")
         return JSONResponse({"error": f"新建失败: {e}"}, status_code=500)
+
+
+# 受保护的关键文件/目录：禁止通过文件管理器删除，防止误删破坏环境
+_MANAGED_PROTECTED_NAMES = {
+    ".env", ".git", ".gitignore", ".ssh", ".conda", ".cache",
+    ".local", ".vscode-server", "miniconda3", "anaconda3", "miniforge3",
+    ".slurm-agent",
+}
+
+
+def _managed_protected(path: Path) -> bool:
+    """判断路径是否受保护（根目录或关键文件/目录）。"""
+    if path == MANAGED_FILES_ROOT:
+        return True
+    return path.name in _MANAGED_PROTECTED_NAMES
+
+
+def _managed_dest_dir(dest_dir: str) -> Path:
+    """解析并校验目标目录，返回目标目录 Path。"""
+    target = _managed_path(dest_dir)
+    if not target.is_dir():
+        raise FileTransferError("目标位置不是文件夹")
+    return target
+
+
+def _managed_unique_target(dest_dir: Path, name: str) -> Path:
+    """在目标目录内生成不冲突的目标路径（同名时追加 -copy）。"""
+    target = dest_dir / name
+    if not target.exists():
+        return target
+    stem, suffix = target.stem, target.suffix
+    for i in range(1, 1000):
+        candidate = dest_dir / f"{stem}-copy{i}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise FileTransferError("同名文件过多，无法自动命名")
+
+
+@app.post("/api/files/delete")
+def managed_entry_delete(req: ManagedEntryDeleteRequest):
+    """删除文件或文件夹（受保护的关键文件/目录会被拒绝）。"""
+    try:
+        target = _managed_path(req.path)
+        if not target.exists():
+            raise FileTransferError("目标不存在")
+        if _managed_protected(target):
+            raise FileTransferError("该文件/目录受保护，不允许删除")
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        _mark_managed_project_dirty(target)
+        return {"status": "ok", "path": _managed_rel(target)}
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        logger.exception("删除文件失败")
+        return JSONResponse({"error": f"删除失败: {e}"}, status_code=500)
+
+
+@app.post("/api/files/move")
+def managed_entry_move(req: ManagedEntryMoveRequest):
+    """移动（剪切）文件或文件夹到目标目录。"""
+    try:
+        target = _managed_path(req.path)
+        if not target.exists():
+            raise FileTransferError("目标不存在")
+        if _managed_protected(target):
+            raise FileTransferError("该文件/目录受保护，不允许移动")
+        dest_dir = _managed_dest_dir(req.dest_dir)
+        # 防止移动到自身内部
+        if target.is_dir():
+            try:
+                dest_dir.resolve().relative_to(target.resolve())
+                raise FileTransferError("不能移动到自身或其子目录内")
+            except ValueError:
+                pass
+        dest = dest_dir / target.name
+        if dest.exists():
+            raise FileTransferError(f"目标位置已存在同名项: {target.name}")
+        shutil.move(str(target), str(dest))
+        _mark_managed_project_dirty(target)
+        _mark_managed_project_dirty(dest)
+        return {"status": "ok", "path": _managed_rel(dest)}
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        logger.exception("移动文件失败")
+        return JSONResponse({"error": f"移动失败: {e}"}, status_code=500)
+
+
+@app.post("/api/files/copy")
+def managed_entry_copy(req: ManagedEntryCopyRequest):
+    """复制文件或文件夹到目标目录（同名自动追加 -copyN）。"""
+    try:
+        target = _managed_path(req.path)
+        if not target.exists():
+            raise FileTransferError("目标不存在")
+        if _managed_protected(target):
+            raise FileTransferError("该文件/目录受保护，不允许复制")
+        dest_dir = _managed_dest_dir(req.dest_dir)
+        dest = _managed_unique_target(dest_dir, target.name)
+        if target.is_dir():
+            shutil.copytree(str(target), str(dest))
+        else:
+            shutil.copy2(str(target), str(dest))
+        _mark_managed_project_dirty(dest)
+        return {"status": "ok", "path": _managed_rel(dest)}
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        logger.exception("复制文件失败")
+        return JSONResponse({"error": f"复制失败: {e}"}, status_code=500)
 
 
 @app.post("/api/files/managed-upload")
