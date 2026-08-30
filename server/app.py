@@ -4281,6 +4281,33 @@ async def index():
 
 
 # ---------------------------------------------------------------------------
+# 直连终端（PTY + WebSocket）
+# ---------------------------------------------------------------------------
+
+from fastapi import WebSocket as FastAPIWebSocket  # noqa: E402
+from server.terminal import terminal_websocket  # noqa: E402
+
+
+@app.websocket("/ws/terminal")
+async def ws_terminal(websocket: FastAPIWebSocket, project_name: Optional[str] = None):
+    """
+    直连终端：浏览器 xterm.js ↔ PTY 中的 bash。
+
+    查询参数 project_name 可选：指定时终端初始目录落在对应项目目录。
+    消息协议见 server/terminal.py 模块注释。
+    """
+    await terminal_websocket(websocket, project_name=project_name)
+
+
+# 静态资源（xterm.js 等前端库），由 /static/ 提供
+from pathlib import Path as _StaticPath  # noqa: E402
+
+_static_dir = _StaticPath(__file__).parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+# ---------------------------------------------------------------------------
 # 健康检查
 # ---------------------------------------------------------------------------
 

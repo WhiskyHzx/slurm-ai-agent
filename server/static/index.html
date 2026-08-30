@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>107 算力控制台</title>
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
 <style>
   /* 全局隐藏滚动条（保留滚动能力）：列表/表格/脚本区不再露出右侧滑块 */
   *, *::before, *::after {
@@ -2644,6 +2645,55 @@
     .upload-choice,
     .assistant-actions { grid-template-columns: 1fr; }
   }
+  /* ===== 直连终端浮层 ===== */
+  .terminal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0, 0, 0, .45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transform: none;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .25s ease;
+  }
+
+  .terminal-overlay.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .terminal-panel {
+    width: min(920px, 92vw);
+    height: min(640px, 86vh);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .terminal-project-select {
+    padding: 4px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--line, #ccc);
+    background: var(--panel, #fff);
+    color: var(--ink, #222);
+    font-size: 12px;
+    max-width: 180px;
+  }
+
+  .terminal-container {
+    flex: 1;
+    min-height: 0;
+    padding: 8px;
+    background: #1e1e1e;
+    border-radius: 0 0 12px 12px;
+    overflow: hidden;
+  }
+
+  .terminal-container .xterm {
+    height: 100%;
+  }
 </style>
 </head>
 <body>
@@ -2659,6 +2709,7 @@
       <div class="brand-subtitle">Slurm 资源监视、项目文件上传、智能助手</div>
     </div>
     <div class="top-actions">
+      <button id="terminalToggle" class="file-manager-tab" onclick="toggleTerminalPanel()" title="打开直连终端">打开终端</button>
       <button id="themeToggle" class="btn theme-toggle" onclick="toggleTheme()" title="切换暗夜模式">☾</button>
     </div>
   </header>
@@ -2896,8 +2947,30 @@
   </main>
 </div>
 
+<div id="terminalOverlay" class="history-overlay terminal-overlay" aria-hidden="true">
+  <div class="panel history-panel terminal-panel">
+    <div class="panel-head">
+      <div class="panel-heading">
+        <h2 class="panel-title">直连终端</h2>
+        <div id="terminalStatus" class="panel-stat secondary">未连接</div>
+      </div>
+      <div class="file-editor-actions">
+        <select id="terminalProject" class="terminal-project-select" title="选择终端打开位置">
+          <option value="">$HOME</option>
+        </select>
+        <button class="btn" onclick="reconnectTerminal()" title="重新连接">重连</button>
+        <button class="btn" onclick="toggleTerminalPanel(false)" title="关闭终端">关闭</button>
+      </div>
+    </div>
+    <div id="terminalContainer" class="terminal-container"></div>
+  </div>
+</div>
+
 <div id="notices" class="toast-stack"></div>
 
+
+<script src="/static/vendor/xterm/xterm.js"></script>
+<script src="/static/vendor/xterm/xterm-fit.js"></script>
 
 <div id="subdirModal" class="modal-backdrop" onclick="closeSubdirModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
@@ -6938,6 +7011,171 @@ refreshTimer = setInterval(() => refreshDashboard(false), 15000);
 // 作业状态心跳：分析报告就绪后把终态消息送入项目会话
 setTimeout(watchJobs, 8000);
 setInterval(watchJobs, 15000);
+
+/* =========================================================================
+   直连终端（xterm.js + WebSocket + PTY）
+   数据链路：键盘 → xterm.js → ws.send → 后端 os.write(PTY) → bash
+            bash 输出 → os.read(PTY) → ws.send → xterm.js 渲染 ANSI
+   ========================================================================= */
+
+let terminalInstance = null;      // xterm.Terminal 实例
+let terminalFitAddon = null;      // FitAddon 实例
+let terminalWs = null;            // WebSocket 连接
+let terminalOpen = false;         // 面板是否打开
+let terminalProjectsLoaded = false;
+
+function setTerminalStatus(text) {
+  const el = document.getElementById('terminalStatus');
+  if (el) el.textContent = text;
+}
+
+function toggleTerminalPanel(force) {
+  const overlay = document.getElementById('terminalOverlay');
+  if (!overlay) return;
+  const open = typeof force === 'boolean' ? force : !overlay.classList.contains('open');
+  overlay.classList.toggle('open', open);
+  overlay.setAttribute('aria-hidden', open ? 'false' : 'true');
+  terminalOpen = open;
+  if (open) {
+    loadTerminalProjectOptions();
+    connectTerminal();
+  } else {
+    disconnectTerminal();
+  }
+}
+
+async function loadTerminalProjectOptions() {
+  // 终端位置下拉：$HOME + 各项目目录（数据来自现有 /api/projects）
+  if (terminalProjectsLoaded) return;
+  try {
+    const resp = await fetch('/api/projects');
+    const data = await resp.json();
+    const select = document.getElementById('terminalProject');
+    if (!select || !Array.isArray(data.projects)) return;
+    data.projects.forEach(p => {
+      const name = typeof p === 'string' ? p : (p.name || p.project_name || '');
+      if (!name) return;
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      select.appendChild(opt);
+    });
+    terminalProjectsLoaded = true;
+  } catch (e) { /* 下拉加载失败不阻塞终端 */ }
+}
+
+function connectTerminal() {
+  disconnectTerminal();
+  const container = document.getElementById('terminalContainer');
+  if (!container) return;
+
+  if (typeof Terminal === 'undefined') {
+    setTerminalStatus('xterm.js 未加载');
+    return;
+  }
+
+  setTerminalStatus('连接中…');
+  container.innerHTML = '';
+
+  terminalInstance = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    theme: {
+      background: '#1e1e1e',
+      foreground: '#d4d4d4',
+      cursor: '#aeafad',
+    },
+  });
+  terminalFitAddon = new FitAddon.FitAddon();
+  terminalInstance.loadAddon(terminalFitAddon);
+  terminalInstance.open(container);
+  terminalFitAddon.fit();
+
+  const project = document.getElementById('terminalProject')?.value || '';
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${location.host}/ws/terminal${project ? `?project_name=${encodeURIComponent(project)}` : ''}`;
+  terminalWs = new WebSocket(wsUrl);
+  terminalWs.binaryType = 'arraybuffer';
+
+  // PTY 输出 → xterm 渲染
+  terminalWs.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      terminalInstance.write(new Uint8Array(event.data));
+    } else {
+      try {
+        const ctrl = JSON.parse(event.data);
+        if (ctrl.type === 'ready') {
+          setTerminalStatus(`已连接 · ${ctrl.cwd}`);
+          terminalInstance.focus();
+        } else if (ctrl.type === 'exit') {
+          setTerminalStatus('会话已结束');
+          terminalInstance.write('\r\n\x1b[33m[会话已结束，点击重连可开启新会话]\x1b[0m\r\n');
+        }
+      } catch (e) { /* 忽略非 JSON 文本 */ }
+    }
+  };
+
+  terminalWs.onopen = () => {
+    sendTerminalResize();
+  };
+
+  terminalWs.onclose = (event) => {
+    if (event.code === 4029) {
+      setTerminalStatus('会话数已达上限');
+      terminalInstance.write('\r\n\x1b[31m[终端会话数已达上限，请稍后重试]\x1b[0m\r\n');
+    } else if (event.code === 4003) {
+      setTerminalStatus('连接被拒绝');
+    } else if (terminalOpen) {
+      setTerminalStatus('连接已断开');
+    }
+  };
+
+  terminalWs.onerror = () => {
+    setTerminalStatus('连接错误');
+  };
+
+  // 键盘输入 → PTY
+  terminalInstance.onData((data) => {
+    if (terminalWs && terminalWs.readyState === WebSocket.OPEN) {
+      terminalWs.send(new TextEncoder().encode(data));
+    }
+  });
+
+  // 窗口 resize → PTY 尺寸同步（ioctl TIOCSWINSZ）
+  window.addEventListener('resize', sendTerminalResize);
+}
+
+function sendTerminalResize() {
+  if (!terminalInstance || !terminalFitAddon || !terminalWs) return;
+  if (terminalWs.readyState !== WebSocket.OPEN) return;
+  try {
+    terminalFitAddon.fit();
+    const { cols, rows } = terminalInstance;
+    terminalWs.send(JSON.stringify({ type: 'resize', cols, rows }));
+  } catch (e) { /* 忽略 */ }
+}
+
+function disconnectTerminal() {
+  window.removeEventListener('resize', sendTerminalResize);
+  if (terminalWs) {
+    try { terminalWs.close(); } catch (e) { /* 忽略 */ }
+    terminalWs = null;
+  }
+  if (terminalInstance) {
+    try { terminalInstance.dispose(); } catch (e) { /* 忽略 */ }
+    terminalInstance = null;
+  }
+  if (terminalOpen) setTerminalStatus('未连接');
+}
+
+function reconnectTerminal() {
+  connectTerminal();
+}
+
+// 项目下拉切换时重连（新 cwd）
+document.getElementById('terminalProject')?.addEventListener('change', () => {
+  if (terminalOpen) connectTerminal();
+});
 </script>
 </body>
 </html>
