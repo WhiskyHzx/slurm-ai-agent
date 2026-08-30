@@ -37,6 +37,7 @@ Thumbs.db
 *.backup
 .tmp/
 .slurm-agent/
+logs/
 
 
 #downloads

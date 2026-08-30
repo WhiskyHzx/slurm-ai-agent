@@ -30,7 +30,7 @@ from typing import Optional
 
 import requests
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -4089,6 +4089,25 @@ def managed_file_content(path: str):
     except Exception as e:
         logger.exception("读取文件失败")
         return JSONResponse({"error": f"读取文件失败: {e}"}, status_code=500)
+
+
+@app.get("/api/files/download")
+def managed_file_download(path: str):
+    """下载文件（任意类型，非目录）。"""
+    try:
+        target = _managed_path(path)
+        if not target.is_file():
+            return JSONResponse({"error": "目标不是文件"}, status_code=400)
+        return FileResponse(
+            str(target),
+            filename=target.name,
+            media_type="application/octet-stream",
+        )
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("下载文件失败")
+        return JSONResponse({"error": f"下载文件失败: {e}"}, status_code=500)
 
 
 @app.post("/api/files/content")

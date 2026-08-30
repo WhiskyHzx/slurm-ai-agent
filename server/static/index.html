@@ -655,6 +655,11 @@
                 transform .34s cubic-bezier(.32, 1.2, .5, 1);
   }
 
+  .upload-fab .upload-child .upload-icon {
+    display: block;
+    margin: auto;
+  }
+
   .upload-fab.split .upload-child {
     opacity: 1;
     transform: none;
@@ -665,17 +670,22 @@
     width: 42px;
     min-width: 42px;
     height: 42px;
+    padding: 0;
+    display: grid;
+    place-items: center;
     border-radius: 999px;
-    background: var(--blue);
-    border-color: var(--blue);
+    border-color: transparent;
+    background: linear-gradient(180deg, #3b82f6, #2563eb);
     color: #fff;
     font-size: 22px;
-    box-shadow: 0 10px 24px rgba(0, 0, 0, .18);
+    line-height: 1;
+    box-shadow: 0 3px 10px rgba(37, 99, 235, 0.32);
   }
 
   :root[data-theme="dark"] .upload-fab .upload-main {
-    background: var(--blue);
     border-color: var(--blue);
+    background: #6366f1;
+    color: #ffffff;
   }
 
   .project-list {
@@ -2690,9 +2700,17 @@
     flex: 1;
     min-height: 0;
     padding: 8px;
-    background: #1e1e1e;
+    background: var(--terminal-bg, #1e1e1e);
     border-radius: 0 0 12px 12px;
     overflow: hidden;
+  }
+
+  /* 亮色主题：终端底色用浅色，避免黑边突兀 */
+  :root:not([data-theme="dark"]) .terminal-container {
+    --terminal-bg: #fafafa;
+  }
+  :root[data-theme="dark"] .terminal-container {
+    --terminal-bg: #1a1b26;
   }
 
   .terminal-container .xterm {
@@ -2751,6 +2769,7 @@
     margin: 5px 4px;
     background: var(--line);
   }
+
 </style>
 </head>
 <body>
@@ -2797,8 +2816,21 @@
         <div id="docsTree" class="docs-tree"></div>
         <div class="sidebar-fab-dock">
           <div class="upload-fab" id="uploadFab">
-            <button class="btn collapse-btn upload-child" onclick="closeUploadSplit(); chooseUploadFolder()" title="上传文件夹">▣</button>
-            <button class="btn collapse-btn upload-child" onclick="closeUploadSplit(); chooseUploadFiles()" title="上传文件">↑</button>
+            <button class="btn collapse-btn upload-child" onclick="closeUploadSplit(); chooseUploadFolder()" title="上传文件夹">
+              <svg class="upload-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <path d="M12 11v6"/>
+                <path d="M9 14l3-3 3 3"/>
+              </svg>
+            </button>
+            <button class="btn collapse-btn upload-child" onclick="closeUploadSplit(); chooseUploadFiles()" title="上传文件">
+              <svg class="upload-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>
+                <path d="M14 3v5h5"/>
+                <path d="M12 12v6"/>
+                <path d="M9 15l3-3 3 3"/>
+              </svg>
+            </button>
             <button class="btn collapse-btn upload-main" id="uploadMainBtn" onclick="toggleUploadSplit()" title="展开上传按钮；再次点击新建项目">+</button>
           </div>
         </div>
@@ -3016,6 +3048,7 @@
           <option value="">$HOME</option>
         </select>
         <button class="btn" onclick="reconnectTerminal()" title="重新连接">重连</button>
+        <button class="btn" onclick="hideTerminalPanel()" title="隐藏窗口但保持连接">隐藏</button>
         <button class="btn" onclick="toggleTerminalPanel(false)" title="关闭终端">关闭</button>
       </div>
     </div>
@@ -3284,6 +3317,8 @@ function applyTheme(theme) {
   themeToggle.textContent = nextTheme === 'dark' ? '☀' : '☾';
   themeToggle.title = nextTheme === 'dark' ? '切换到日间模式' : '切换暗夜模式';
   localStorage.setItem('slurmAgentTheme', nextTheme);
+  // 同步终端配色（若终端处于打开状态）
+  reapplyTerminalTheme();
 }
 
 function toggleTheme() {
@@ -5287,10 +5322,28 @@ function shortJobName(name) {
 }
 
 function renderDashboard(data) {
-  window.lastDashboardData = data;
-  const summary = data.summary || {};
+  // 容错：若本次拉取因后端瞬时失败返回空节点/作业，保留上一次成功的数据，
+  // 避免“节点数/作业偶尔加载不出来”时表格被清空。
+  const prev = window.lastDashboardData || {};
+  const nodes = (data.nodes && data.nodes.length) ? data.nodes
+    : (prev.nodes || []);
+  const jobs = (data.jobs && data.jobs.length) ? data.jobs
+    : (prev.jobs || []);
+
+  const effective = {
+    ...data,
+    nodes,
+    jobs,
+    summary: {
+      ...(data.summary || {}),
+      node_count: nodes.length,
+      job_count: jobs.length,
+    },
+  };
+  window.lastDashboardData = effective;
+
+  const summary = effective.summary || {};
   const updatedText = formatUpdateTime(data.updated_at);
-  const nodes = data.nodes || [];
   const gpuUsageText = formatGpuUsage(summarizeGpuUsage(nodes));
   document.getElementById('nodeUsageSummary').textContent =
     `${summary.node_count || 0} 台节点 · CPU ${formatUsage(summary.alloc_cpus || 0, summary.total_cpus || 0)} · GPU ${gpuUsageText}`;
@@ -5303,13 +5356,12 @@ function renderDashboard(data) {
 
   document.getElementById('nodesTable').innerHTML = renderNodeGroups(nodes);
   if (document.getElementById('nodeDetailOverlay')?.classList.contains('open')) {
-    renderNodeDetailOverlay(data);
+    renderNodeDetailOverlay(effective);
   }
 
-  const jobs = data.jobs || [];
   document.getElementById('jobsTable').innerHTML = renderJobGroups(jobs);
   if (document.getElementById('jobDetailOverlay')?.classList.contains('open')) {
-    renderJobDetailOverlay(data);
+    renderJobDetailOverlay(effective);
   }
 
   if (data.errors && data.errors.length) {
@@ -7098,10 +7150,28 @@ function toggleTerminalPanel(force) {
   terminalOpen = open;
   if (open) {
     loadTerminalProjectOptions();
-    connectTerminal();
+    // 已有连接（隐藏后重新打开）则复用，不重连
+    if (terminalWs && terminalWs.readyState === WebSocket.OPEN) {
+      if (terminalInstance) {
+        terminalFitAddon && terminalFitAddon.fit();
+        terminalInstance.focus();
+      }
+    } else {
+      connectTerminal();
+    }
   } else {
     disconnectTerminal();
   }
+}
+
+function hideTerminalPanel() {
+  // 隐藏窗口但保持 WebSocket 连接不断开
+  const overlay = document.getElementById('terminalOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('open');
+  overlay.setAttribute('aria-hidden', 'true');
+  terminalOpen = false;
+  // 注意：不调用 disconnectTerminal()，连接保持
 }
 
 async function loadTerminalProjectOptions() {
@@ -7124,6 +7194,70 @@ async function loadTerminalProjectOptions() {
   } catch (e) { /* 下拉加载失败不阻塞终端 */ }
 }
 
+// 终端配色：返回一套完整 ANSI 调色板（暗色系 / 亮色系）
+function terminalTheme(dark) {
+  if (dark) {
+    return {
+      background: '#1a1b26',
+      foreground: '#c0caf5',
+      cursor: '#7aa2f7',
+      cursorAccent: '#1a1b26',
+      selectionBackground: '#33467c',
+      black: '#15161e',
+      red: '#f7768e',
+      green: '#9ece6a',
+      yellow: '#e0af68',
+      blue: '#7aa2f7',
+      magenta: '#bb9af7',
+      cyan: '#7dcfff',
+      white: '#a9b1d6',
+      brightBlack: '#414868',
+      brightRed: '#ff9e64',
+      brightGreen: '#c3e88d',
+      brightYellow: '#ffd700',
+      brightBlue: '#89b4fa',
+      brightMagenta: '#c0a8f7',
+      brightCyan: '#67d6f0',
+      brightWhite: '#d4d9f2',
+    };
+  }
+  // 亮色系（阳光下可读）
+  return {
+    background: '#fafafa',
+    foreground: '#24292e',
+    cursor: '#d4a72c',
+    cursorAccent: '#fafafa',
+    selectionBackground: '#dde7f3',
+    black: '#24292e',
+    red: '#d1242f',
+    green: '#1a7f37',
+    yellow: '#9a6700',
+    blue: '#0969da',
+    magenta: '#8250df',
+    cyan: '#1b7c85',
+    white: '#57606a',
+    brightBlack: '#57606a',
+    brightRed: '#d1242f',
+    brightGreen: '#1a7f37',
+    brightYellow: '#9a6700',
+    brightBlue: '#0969da',
+    brightMagenta: '#8250df',
+    brightCyan: '#1b7c85',
+    brightWhite: '#6e7781',
+  };
+}
+
+// 重上色：主题切换后，把当前已建 xterm 实例换成新的配色
+function reapplyTerminalTheme() {
+  // terminalInstance 用 let 声明在文件后部（TDZ 影响），
+  // 页面加载早期调用 applyTheme 时可能尚未初始化，需 try 包裹避免抛错中断脚本。
+  try {
+    if (!terminalInstance) return;
+    const dark = document.documentElement.dataset.theme === 'dark';
+    terminalInstance.options.theme = terminalTheme(dark);
+  } catch (e) { /* 忽略（终端尚未创建） */ }
+}
+
 function connectTerminal() {
   disconnectTerminal();
   const container = document.getElementById('terminalContainer');
@@ -7140,11 +7274,7 @@ function connectTerminal() {
   terminalInstance = new Terminal({
     cursorBlink: true,
     fontSize: 13,
-    theme: {
-      background: '#1e1e1e',
-      foreground: '#d4d4d4',
-      cursor: '#aeafad',
-    },
+    theme: terminalTheme(document.documentElement.dataset.theme === 'dark'),
   });
   terminalFitAddon = new FitAddon.FitAddon();
   terminalInstance.loadAddon(terminalFitAddon);
@@ -7249,6 +7379,10 @@ function openManagedContextMenu(event, path, type) {
   event.preventDefault();
   event.stopPropagation();
   managedCtxTarget = { path, type };
+  // 右键时选中该节点（黄色高亮）
+  selectedManagedPath = path;
+  selectedManagedType = type;
+  renderManagedTree();
   const menu = document.getElementById('managedContextMenu');
   if (!menu) return;
 
@@ -7256,16 +7390,26 @@ function openManagedContextMenu(event, path, type) {
   const hasClipboard = !!managedClipboard;
   const items = [];
 
-  // 剪切 / 复制 / 复制路径（根目录不可剪切/复制）
+  // 下载 / 复制路径：独立的一小组（普通菜单项，不带外框），放在最上面
   if (!isRoot) {
-    items.push(`<button class="ctx-item" onclick="managedCut()">剪切</button>`);
-    items.push(`<button class="ctx-item" onclick="managedCopy()">复制</button>`);
-    items.push(`<button class="ctx-item" onclick="managedCopyPath()">复制路径</button>`);
+    items.push(`<button class="ctx-item" onclick="managedDownload()">下载</button>`);
   }
+  items.push(`<button class="ctx-item" onclick="managedCopyPath()">复制路径</button>`);
 
+  // 编辑操作区：剪切 / 复制 / 粘贴
+  const editItems = [];
+  // 剪切 / 复制（根目录不可剪切/复制）
+  if (!isRoot) {
+    editItems.push(`<button class="ctx-item" onclick="managedCut()">剪切</button>`);
+    editItems.push(`<button class="ctx-item" onclick="managedCopy()">复制</button>`);
+  }
   // 粘贴（有剪贴板时可用，目标必须是目录）
   if (type === 'dir') {
-    items.push(`<button class="ctx-item" ${hasClipboard ? '' : 'disabled'} onclick="managedPaste()">粘贴</button>`);
+    editItems.push(`<button class="ctx-item" ${hasClipboard ? '' : 'disabled'} onclick="managedPaste()">粘贴</button>`);
+  }
+  if (editItems.length) {
+    items.push(`<div class="ctx-divider"></div>`);
+    items.push(editItems.join(''));
   }
 
   // 删除（根目录不可删除）
@@ -7349,6 +7493,19 @@ async function managedCopyPath() {
       addNotice('复制路径失败: ' + e2.message, 'error');
     }
   }
+}
+
+function managedDownload() {
+  if (!managedCtxTarget || managedCtxTarget.path === '') return;
+  const path = managedCtxTarget.path;
+  closeManagedContextMenu();
+  // 通过隐藏 iframe/a 标签触发下载，避免页面跳转
+  const a = document.createElement('a');
+  a.href = '/api/files/download?path=' + encodeURIComponent(path);
+  a.download = path.split('/').pop() || 'download';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 async function managedPaste() {
