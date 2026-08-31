@@ -7254,7 +7254,14 @@ function reapplyTerminalTheme() {
   try {
     if (!terminalInstance) return;
     const dark = document.documentElement.dataset.theme === 'dark';
-    terminalInstance.options.theme = terminalTheme(dark);
+    const theme = terminalTheme(dark);
+    // xterm.js 5.x 移除了 setOption，直接替换 options.theme 对象不会触发重绘；
+    // 需逐属性写入现有 theme 对象，xterm 会在下次渲染时应用新配色。
+    const cur = terminalInstance.options.theme || {};
+    for (const key of Object.keys(theme)) {
+      cur[key] = theme[key];
+    }
+    terminalInstance.refresh(0, terminalInstance.rows - 1);
   } catch (e) { /* 忽略（终端尚未创建） */ }
 }
 

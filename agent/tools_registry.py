@@ -488,6 +488,62 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_project_files",
+            "description": (
+                "列出当前项目目录的文件结构（目录树）。"
+                "当用户询问'项目里有哪些文件''目录结构''有哪些脚本'时调用。"
+                "读取具体文件内容前，通常先调用本工具了解有哪些文件。"
+                "只列出当前选中项目目录内的文件，不包含 .slurm-agent 等内部目录。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subdir": {
+                        "type": "string",
+                        "description": "可选，只列出项目内某个子目录，如 src 或 data。不传则列出整个项目。",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "目录树最大深度，默认 3。目录很深时可减小避免输出过长。",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_project_file",
+            "description": (
+                "读取当前项目目录里某个文件的内容，可按行号区间读取。"
+                "当用户说'看看 train.py''读一下 main.py 第 300-340 行'"
+                "'这个脚本写了什么'时调用。"
+                "返回内容带行号，方便引用。只能读取项目目录内的文本文件。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "文件相对路径（相对于项目目录），如 train.py 或 src/model.py。",
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "起始行号（1-based，含）。不传则从第 1 行开始。",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "结束行号（1-based，含）。不传则读到文件末尾。",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
 ]
 
 # =========================================================================
@@ -512,6 +568,8 @@ TOOL_DESCRIPTIONS = {
     "list_templates": "列出可用作业脚本模板",
     "generate_script": "根据模板生成 sbatch 脚本",
     "read_job_log": "读取作业的输出/错误日志文件",
+    "list_project_files": "列出项目目录的文件结构",
+    "read_project_file": "按行读取项目里的文件内容",
 }
 
 
@@ -685,12 +743,160 @@ class ToolExecutor:
                     tail_lines=arguments.get("tail_lines", 100),
                 )
 
+            elif tool_name == "list_project_files":
+                return self._list_project_files(arguments)
+
+            elif tool_name == "read_project_file":
+                return self._read_project_file(arguments)
+
             else:
                 return f"未知工具: {tool_name}"
 
         except Exception as e:
             logger.error("工具执行失败: %s", e)
             return f"工具 {tool_name} 执行出错: {e}"
+
+    # ---- 项目文件读取 ----
+
+    def _project_dir(self) -> "Path":
+        """解析当前会话绑定的项目目录；未绑定项目时抛错。"""
+        from pathlib import Path
+        from core.file_transfer import project_workspace
+        project_name = self.submission_context.get("project_name", "")
+        if not project_name:
+            raise RuntimeError("当前会话未绑定项目，无法读取项目文件。请先在左侧选择作业目录。")
+        _, project_dir, _ = project_workspace(project_name)
+        return project_dir
+
+    def _resolve_project_path(self, rel_path: str) -> "Path":
+        """把相对路径安全解析到项目目录内，拒绝路径穿越。"""
+        from pathlib import Path
+        from core.file_transfer import safe_relative_path
+        project_dir = self._project_dir()
+        rel = safe_relative_path(rel_path)
+        target = (project_dir / rel).resolve()
+        try:
+            target.relative_to(project_dir)
+        except ValueError:
+            raise RuntimeError("路径不在项目目录内")
+        return target
+
+    def _list_project_files(self, arguments: Dict[str, Any]) -> str:
+        from pathlib import Path
+        project_dir = self._project_dir()
+        subdir = (arguments.get("subdir") or "").strip().strip("/")
+        max_depth = int(arguments.get("max_depth") or 3)
+        max_depth = max(1, min(max_depth, 8))
+
+        base = project_dir
+        if subdir:
+            base = self._resolve_project_path(subdir)
+            if not base.is_dir():
+                return f"子目录不存在: {subdir}"
+
+        # 内部目录/文件，不展示
+        SKIP_DIRS = {".slurm-agent", ".git", "__pycache__", ".venv", "venv", "runs", "logs"}
+        SKIP_FILES = {".DS_Store"}
+        MAX_ENTRIES = 300
+
+        lines: list[str] = []
+        count = 0
+
+        def walk(directory: Path, prefix: str, depth: int) -> None:
+            nonlocal count
+            if depth > max_depth or count >= MAX_ENTRIES:
+                return
+            try:
+                entries = sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            except OSError:
+                return
+            for entry in entries:
+                if count >= MAX_ENTRIES:
+                    return
+                if entry.name in SKIP_DIRS or entry.name in SKIP_FILES:
+                    continue
+                if entry.name.startswith(".") and entry.name not in {".gitignore", ".env"}:
+                    continue
+                rel = entry.relative_to(project_dir)
+                if entry.is_dir():
+                    lines.append(f"{prefix}{entry.name}/")
+                    count += 1
+                    walk(entry, prefix + "  ", depth + 1)
+                else:
+                    try:
+                        size = entry.stat().st_size
+                    except OSError:
+                        size = 0
+                    lines.append(f"{prefix}{entry.name}  ({size} B)")
+                    count += 1
+
+        walk(base, "", 1)
+        if not lines:
+            return f"项目目录 {project_dir} 下没有可列出的文件。"
+        header = f"## 项目文件结构（{project_dir}）\n\n"
+        if count >= MAX_ENTRIES:
+            header += f"（文件过多，仅列出前 {MAX_ENTRIES} 项）\n\n"
+        return header + "\n".join(lines)
+
+    def _read_project_file(self, arguments: Dict[str, Any]) -> str:
+        rel_path = (arguments.get("path") or "").strip()
+        if not rel_path:
+            return "（read_project_file 需要提供 path 参数）"
+        target = self._resolve_project_path(rel_path)
+        if not target.is_file():
+            return f"文件不存在: {rel_path}"
+        # 已知二进制扩展名直接拒绝（压缩/图片/库等，内容检测不可靠）
+        BINARY_SUFFIXES = {
+            ".pak", ".dylib", ".so", ".a", ".o", ".bin", ".exe", ".dll",
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".webp",
+            ".zip", ".gz", ".tar", ".xz", ".bz2", ".7z", ".rar",
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+            ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv",
+            ".npy", ".npz", ".pkl", ".pickle", ".pt", ".pth", ".ckpt",
+            ".h5", ".hdf5", ".parquet", ".feather", ".onnx",
+        }
+        if target.suffix.lower() in BINARY_SUFFIXES:
+            return f"该文件是二进制文件（{target.suffix}），无法按文本读取: {rel_path}"
+        # 内容兜底：控制字节比例过高也判为二进制
+        try:
+            head = target.read_bytes()[:8192]
+        except OSError as e:
+            return f"读取文件失败: {e}"
+        if head:
+            control_bytes = sum(1 for b in head if b < 9 or (13 < b < 32))
+            if control_bytes / len(head) > 0.08:
+                return f"该文件是二进制文件，无法按文本读取: {rel_path}"
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            return f"读取文件失败: {e}"
+
+        lines = text.splitlines()
+        total = len(lines)
+        start = int(arguments.get("start_line") or 1)
+        end = int(arguments.get("end_line") or total)
+        start = max(1, min(start, total))
+        end = max(start, min(end, total))
+
+        # 单次最多读 400 行，防止撑爆上下文
+        MAX_LINES = 400
+        if end - start + 1 > MAX_LINES:
+            end = start + MAX_LINES - 1
+
+        selected = lines[start - 1:end]
+        numbered = "\n".join(
+            f"{i + start:>5} | {line}" for i, line in enumerate(selected)
+        )
+        header = (
+            f"## {rel_path}\n"
+            f"总行数: {total}，显示第 {start}-{end} 行\n\n"
+        )
+        if start > 1:
+            header += f"...（省略前 {start - 1} 行）...\n"
+        body = header + numbered
+        if end < total:
+            body += f"\n...（省略后 {total - end} 行）..."
+        return body
 
     # ---- 结果格式化 ----
 
