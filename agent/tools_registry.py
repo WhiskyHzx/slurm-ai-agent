@@ -795,7 +795,7 @@ class ToolExecutor:
                 return f"子目录不存在: {subdir}"
 
         # 内部目录/文件，不展示
-        SKIP_DIRS = {".slurm-agent", ".git", "__pycache__", ".venv", "venv", "runs", "logs"}
+        SKIP_DIRS = {".slurm-agent", ".git", "__pycache__", ".venv", "venv"}
         SKIP_FILES = {".DS_Store"}
         MAX_ENTRIES = 300
 

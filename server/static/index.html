@@ -1530,7 +1530,10 @@
     border-radius: 0;
     max-height: calc(76vh - 2px);
   }
-  #dependencyModal .modal { overflow: hidden; }
+  #dependencyModal .modal {
+    width: min(1180px, 100%);
+    overflow: hidden;
+  }
 
   .dependency-actions {
     display: flex;
@@ -1546,7 +1549,44 @@
 
   .dependency-table th,
   .dependency-table td {
-    padding: 8px 9px;
+    padding: 10px 9px;
+  }
+
+  .dependency-name-heading {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+  }
+
+  .dependency-sort-btn {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    color: var(--muted);
+    background: transparent;
+    cursor: pointer;
+    display: inline-grid;
+    place-items: center;
+    font: inherit;
+    line-height: 1;
+  }
+
+  .dependency-sort-btn:hover,
+  .dependency-sort-btn:focus-visible,
+  .dependency-sort-btn.active {
+    color: var(--blue);
+    background: var(--surface-soft);
+    outline: none;
+  }
+
+  .dependency-sort-chevron {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 700;
+    transform: scaleX(1.15) rotate(90deg);
   }
 
   .dependency-table.installing th:nth-child(n+5),
@@ -1557,6 +1597,10 @@
   .dependency-check {
     width: 18px;
     height: 18px;
+    min-width: 18px;
+    max-width: 18px;
+    min-height: 18px;
+    max-height: 18px;
     appearance: none;
     -webkit-appearance: none;
     margin: 0;
@@ -1566,6 +1610,7 @@
     cursor: pointer;
     display: inline-grid;
     place-items: center;
+    position: relative;
     flex: none;
     transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   }
@@ -1587,17 +1632,41 @@
 
   .dependency-check:checked::after {
     content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
     width: 4.5px;
     height: 8.5px;
     border: solid var(--primary-ink);
     border-width: 0 2px 2px 0;
     border-radius: 1px;
-    transform: rotate(45deg) translateY(-1px);
+    transform: translate(-50%, -50%) rotate(45deg);
   }
 
   /* 选择列 + 行悬停：让勾选状态一目了然 */
-  #dependencyReviewTable td:first-child { width: 44px; text-align: center; }
+  #dependencyReviewTable th:first-child,
+  #dependencyReviewTable td:first-child {
+    width: 44px;
+    min-width: 44px;
+    max-width: 44px;
+    text-align: center;
+  }
   #dependencyReviewTable tbody tr:hover td { background: var(--surface-soft); }
+  #dependencyReviewTable tbody tr.dependency-selectable-row {
+    cursor: pointer;
+    user-select: none;
+  }
+  #dependencyReviewTable tbody tr.dependency-selectable-row:focus-visible td {
+    background: var(--surface-soft);
+    outline: none;
+  }
+  #dependencyReviewTable tbody tr.dependency-selectable-row .dependency-check {
+    pointer-events: none;
+  }
+  body.dependency-row-selecting,
+  body.dependency-row-selecting * {
+    user-select: none !important;
+  }
 
   /* 安装中：弹窗顶部的整体进度横幅（真实 SSE 百分比） */
   .install-progress-banner {
@@ -3293,6 +3362,8 @@ let pendingDependencyFiles = [];
 let dependencyItems = [];
 let selectedDependencyItems = [];
 let dependencyReviewMode = 'review';
+let dependencyNameSortEnabled = false;
+let dependencyRowDragState = null;
 let dependencyPlanReady = false;
 let depsState = 'unknown'; // unknown=未检查 checked=清单已确认未安装 installed=已安装 failed=安装失败
 let dependencyCheckReason = 'missing'; // missing=未分析 changed=项目已修改 current=缓存有效
@@ -5717,11 +5788,87 @@ function versionSuggestionMarkup(item, index) {
   return ` <button type="button" class="use-suggested-btn" onclick="applySuggestedVersion(${index})" title="${escapeHtml(item.precheck_detail || '')}">改用 ${escapeHtml(item.suggested_version)}</button>`;
 }
 
+function dependencyNameHeaderMarkup() {
+  const title = dependencyNameSortEnabled ? '恢复默认排序' : '按依赖名称排序';
+  return `<span class="dependency-name-heading">依赖
+    <button type="button" class="dependency-sort-btn ${dependencyNameSortEnabled ? 'active' : ''}" onclick="toggleDependencyNameSort()" aria-label="${title}" aria-pressed="${dependencyNameSortEnabled}" title="${title}">
+      <span class="dependency-sort-chevron" aria-hidden="true">&gt;</span>
+    </button>
+  </span>`;
+}
+
+function toggleDependencyNameSort() {
+  dependencyNameSortEnabled = !dependencyNameSortEnabled;
+  renderDependencyReview();
+}
+
+function setDependencyRowSelected(index, selected) {
+  const item = dependencyItems[index];
+  if (!item) return;
+  item.selected = selected;
+  const row = dependencyReviewBody.querySelector(`tr[data-dependency-index="${index}"]`);
+  if (!row) return;
+  row.setAttribute('aria-checked', String(selected));
+  const checkbox = row.querySelector('.dependency-check');
+  if (checkbox) checkbox.checked = selected;
+}
+
+function beginDependencyRowSelection(event, index) {
+  if (event.button !== 0 || dependencyReviewMode !== 'review') return;
+  if (event.target.closest('.use-suggested-btn')) return;
+  const item = dependencyItems[index];
+  if (!item) return;
+  event.preventDefault();
+  dependencyRowDragState = {
+    startIndex: index,
+    lastIndex: index,
+    moved: false,
+    targetSelected: !item.selected,
+  };
+  document.body.classList.add('dependency-row-selecting');
+}
+
+function continueDependencyRowSelection(event, index) {
+  const state = dependencyRowDragState;
+  if (!state || (event.buttons & 1) === 0 || index === state.lastIndex) return;
+  if (!state.moved) {
+    state.moved = true;
+    setDependencyRowSelected(state.startIndex, state.targetSelected);
+  }
+  state.lastIndex = index;
+  setDependencyRowSelected(index, state.targetSelected);
+}
+
+function finishDependencyRowSelection(event) {
+  const state = dependencyRowDragState;
+  if (!state || (event && event.button !== 0)) return;
+  if (!state.moved) {
+    setDependencyRowSelected(state.startIndex, state.targetSelected);
+  }
+  dependencyRowDragState = null;
+  document.body.classList.remove('dependency-row-selecting');
+}
+
+function cancelDependencyRowSelection() {
+  dependencyRowDragState = null;
+  document.body.classList.remove('dependency-row-selecting');
+}
+
+function handleDependencyRowKeydown(event, index) {
+  if (event.key !== ' ' && event.key !== 'Enter') return;
+  event.preventDefault();
+  const item = dependencyItems[index];
+  if (item) setDependencyRowSelected(index, !item.selected);
+}
+
+document.addEventListener('mouseup', finishDependencyRowSelection);
+window.addEventListener('blur', cancelDependencyRowSelection);
+
 function renderDependencyReviewHead() {
   if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed') {
     dependencyReviewHead.innerHTML = `<tr>
       <th>选择</th>
-      <th>依赖</th>
+      <th>${dependencyNameHeaderMarkup()}</th>
       <th>版本</th>
       <th>安装与验证</th>
     </tr>`;
@@ -5730,7 +5877,7 @@ function renderDependencyReviewHead() {
   }
   dependencyReviewHead.innerHTML = `<tr>
     <th>选择</th>
-    <th>依赖</th>
+    <th>${dependencyNameHeaderMarkup()}</th>
     <th>版本</th>
     <th>安装器</th>
     <th>来源</th>
@@ -5778,7 +5925,13 @@ function renderDependencyReview() {
     dependencyReviewBody.innerHTML = '<tr><td colspan="8" class="empty">没有识别到依赖项，请补充依赖清单或算力要求后重试。</td></tr>';
     return;
   }
-  dependencyReviewBody.innerHTML = dependencyItems.map((item, index) => {
+  const renderedItems = dependencyItems.map((item, index) => ({ item, index }));
+  if (dependencyNameSortEnabled) {
+    renderedItems.sort((left, right) => String(left.item.name || '').localeCompare(
+      String(right.item.name || ''), undefined, { sensitivity: 'base', numeric: true }
+    ));
+  }
+  dependencyReviewBody.innerHTML = renderedItems.map(({ item, index }) => {
     const statusClass = (item.precheck_status === 'ok' || item.precheck_status === 'installed') ? 'status-ok' : (item.precheck_status === 'missing' ? 'status-missing' : 'status-unknown');
     const version = item.version || '需确认';
     if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed') {
@@ -5789,8 +5942,8 @@ function renderDependencyReview() {
         <td class="dependency-progress-cell">${dependencyProgressMarkup(item)}</td>
       </tr>`;
     }
-    return `<tr>
-      <td><input class="dependency-check" type="checkbox" ${item.selected ? 'checked' : ''} onchange="toggleDependencyItem(${index}, this.checked)" title="选择 ${escapeHtml(item.name)}"></td>
+    return `<tr class="dependency-selectable-row" data-dependency-index="${index}" role="checkbox" aria-checked="${item.selected}" aria-label="选择 ${escapeHtml(item.name)}" tabindex="0" onmousedown="beginDependencyRowSelection(event, ${index})" onmouseenter="continueDependencyRowSelection(event, ${index})" onkeydown="handleDependencyRowKeydown(event, ${index})">
+      <td><input class="dependency-check" type="checkbox" ${item.selected ? 'checked' : ''} tabindex="-1" aria-hidden="true" title="选择 ${escapeHtml(item.name)}"></td>
       <td class="dependency-name">${escapeHtml(item.name)}</td>
       <td class="dependency-version" title="${escapeHtml(item.precheck_detail || '')}">${escapeHtml(version)}${versionSuggestionMarkup(item, index)}</td>
       <td>${escapeHtml(item.manager || 'conda')}</td>
@@ -6061,6 +6214,7 @@ async function generateProjectReport() {
     lastProjectReport = data.report || '';
     lastProjectDir = data.project_dir || '';
     dependencyItems = Array.isArray(data.dependency_items) ? data.dependency_items : [];
+    dependencyNameSortEnabled = false;
     selectedDependencyItems = [];
     dependencyPlanReady = false;
     dependencyCheckReason = 'current';
