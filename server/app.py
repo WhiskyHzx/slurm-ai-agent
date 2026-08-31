@@ -91,6 +91,7 @@ chat_history_lock = threading.Lock()
 dependency_state_lock = threading.RLock()
 
 DEPENDENCY_STATE_FILENAME = "dependency-analysis.json"
+DEPENDENCY_STATE_VERSION = 3
 
 
 def _dependency_state_path(project_dir: Path) -> Path:
@@ -100,14 +101,14 @@ def _dependency_state_path(project_dir: Path) -> Path:
 def _read_dependency_state_unlocked(project_dir: Path) -> dict:
     path = _dependency_state_path(project_dir)
     if not path.is_file():
-        return {"version": 1, "revision": 0, "analyzed_revision": -1}
+        return {"version": DEPENDENCY_STATE_VERSION, "revision": 0, "analyzed_revision": -1}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
         logger.warning("依赖分析状态文件损坏，将按未检查处理: %s", path)
-        return {"version": 1, "revision": 0, "analyzed_revision": -1}
+        return {"version": DEPENDENCY_STATE_VERSION, "revision": 0, "analyzed_revision": -1}
     return data if isinstance(data, dict) else {
-        "version": 1, "revision": 0, "analyzed_revision": -1
+        "version": DEPENDENCY_STATE_VERSION, "revision": 0, "analyzed_revision": -1
     }
 
 
@@ -127,7 +128,8 @@ def _dependency_cache_status(project_dir: Path) -> dict:
     revision = int(state.get("revision", 0) or 0)
     analyzed_revision = int(state.get("analyzed_revision", -1))
     has_cached_result = (
-        isinstance(state.get("report"), str)
+        state.get("version") == DEPENDENCY_STATE_VERSION
+        and isinstance(state.get("report"), str)
         and isinstance(state.get("dependency_items"), list)
     )
     needs_check = not has_cached_result or analyzed_revision != revision
@@ -152,7 +154,7 @@ def _dependency_cache_status(project_dir: Path) -> dict:
 def _mark_dependency_analysis_dirty(project_dir: Path) -> None:
     with dependency_state_lock:
         state = _read_dependency_state_unlocked(project_dir)
-        state["version"] = 1
+        state["version"] = DEPENDENCY_STATE_VERSION
         state["revision"] = int(state.get("revision", 0) or 0) + 1
         state["changed_at"] = datetime.now().isoformat(timespec="seconds")
         _write_dependency_state_unlocked(project_dir, state)
@@ -169,7 +171,7 @@ def _save_dependency_analysis(
         revision = int(state.get("revision", 0) or 0)
         completed_revision = revision if analyzed_revision is None else analyzed_revision
         state.update({
-            "version": 1,
+            "version": DEPENDENCY_STATE_VERSION,
             "revision": revision,
             "analyzed_revision": completed_revision,
             "analyzed_at": datetime.now().isoformat(timespec="seconds"),
@@ -177,6 +179,55 @@ def _save_dependency_analysis(
             "dependency_items": dependency_items,
         })
         _write_dependency_state_unlocked(project_dir, state)
+
+
+def _refresh_cached_dependency_environment(
+    cache: dict, conda_env_dir: Path
+) -> tuple[str, list[dict]]:
+    """Refresh cached dependency statuses with one lightweight conda-list snapshot."""
+    raw_items = cache.get("dependency_items", [])
+    installed = installed_packages_snapshot(conda_env_dir)
+    # A ready Conda environment always contains base packages. An empty result
+    # therefore means the snapshot failed; preserve the cache instead of
+    # incorrectly marking every previously installed dependency as missing.
+    if not installed:
+        return str(cache.get("report", "")), raw_items
+
+    fields = DependencyItem.__dataclass_fields__
+    items: list[DependencyItem] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            item = DependencyItem(**{
+                key: value for key, value in raw.items() if key in fields
+            })
+        except TypeError:
+            continue
+        key = item.name.lower().replace("_", "-")
+        installed_version = installed.get(key)
+        if installed_version:
+            item.precheck_status = "installed"
+            item.precheck_detail = (
+                f"当前项目环境已安装 {item.name} {installed_version}，无需重复安装"
+            )
+            item.selected = False
+        elif item.precheck_status == "installed":
+            # The package was present when the cache was written but has since
+            # been removed. Restore its normal selectable state without doing
+            # package-index queries or rescanning the project.
+            item.precheck_status = "ok" if item.available_versions else "unknown"
+            item.precheck_detail = "当前项目环境未安装"
+            item.selected = item.source_kind == "trusted"
+        items.append(item)
+
+    refreshed_items = serialize_items(items)
+    report = items_to_markdown(
+        items,
+        "下面是根据依赖文件、脚本、源码 import 和用户补充需求得到的安装清单。"
+        "请在弹窗中确认勾选项后再安装。",
+    )
+    return report, refreshed_items
 
 
 def _conda_env_ready(conda_env_dir: Path) -> bool:
@@ -1023,13 +1074,13 @@ def _build_ai_dependency_json_prompt(
 {notes_text}
 </用户输入记录>
 
-<当前运行目录树（根目录就是命令执行位置）>
-{_project_tree(run_dir)}
-</当前运行目录树>
+<项目目录树>
+{_project_tree(workspace.project_dir)}
+</项目目录树>
 
-<当前运行目录内可直接阅读的文本文件内容>
-{_collect_readable_text_files(run_dir)}
-</当前运行目录内可直接阅读的文本文件内容>
+<项目目录内可直接阅读的文本文件内容>
+{_collect_readable_text_files(workspace.project_dir)}
+</项目目录内可直接阅读的文本文件内容>
 """
     return _trim_text(context, MAX_CONTEXT_TEXT_CHARS)
 
@@ -1107,10 +1158,16 @@ def _normalize_install_command(command: str, conda_env_dir: Path) -> list[str]:
         ]
 
     if head == "pip" and len(parts) >= 2 and parts[1].lower() == "install":
-        return [conda_exe, "run", "-p", str(conda_env_dir), "python", "-m", "pip", "install", *parts[2:]]
+        env_python = conda_env_dir / "bin" / "python"
+        if not env_python.is_file():
+            raise FileTransferError(f"项目环境 Python 不存在：{env_python}")
+        return [str(env_python), "-m", "pip", "install", *parts[2:]]
 
     if lowered[:4] == ["python", "-m", "pip", "install"]:
-        return [conda_exe, "run", "-p", str(conda_env_dir), "python", "-m", "pip", "install", *parts[4:]]
+        env_python = conda_env_dir / "bin" / "python"
+        if not env_python.is_file():
+            raise FileTransferError(f"项目环境 Python 不存在：{env_python}")
+        return [str(env_python), "-m", "pip", "install", *parts[4:]]
 
     raise FileTransferError(f"不支持的安装命令：{command}")
 
@@ -2725,6 +2782,9 @@ def project_report(req: ProjectReportRequest):
         if not req.extra_notes.strip():
             cache = _dependency_cache_status(project_dir)
             if not cache["needs_check"]:
+                report, dependency_items = _refresh_cached_dependency_environment(
+                    cache, conda_env_dir
+                )
                 return {
                     "status": "ok",
                     "cached": True,
@@ -2733,8 +2793,8 @@ def project_report(req: ProjectReportRequest):
                     "conda_env_dir": str(conda_env_dir),
                     "conda_created": False,
                     "notes_path": str(project_dir / PROJECT_NOTES_FILENAME),
-                    "report": cache["report"],
-                    "dependency_items": cache["dependency_items"],
+                    "report": report,
+                    "dependency_items": dependency_items,
                     "analyzed_at": cache["analyzed_at"],
                 }
 

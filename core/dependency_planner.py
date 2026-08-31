@@ -13,6 +13,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
+
 from core.file_transfer import FileTransferError, find_conda_executable, get_conda_channels
 
 try:
@@ -90,7 +93,12 @@ def _clean_name(value: str) -> str:
 
 
 def _split_requirement(value: str) -> tuple[str, str]:
-    raw = value.strip().strip("\"'")
+    raw = value.strip()
+    # Only remove a matching pair that wraps the whole requirement. PEP 508
+    # markers often end in a quote (for example: python_version >= '3.11');
+    # stripping each edge independently corrupts that valid marker.
+    if len(raw) >= 2 and raw[0] in {"\"", "'"} and raw[-1] == raw[0]:
+        raw = raw[1:-1].strip()
     raw = raw.split("#", 1)[0].strip()
     if not raw or raw.startswith(("-", "http://", "https://", "git+")):
         return "", ""
@@ -496,6 +504,48 @@ def _installed_packages(conda_exe: str, conda_env_dir: Path | None) -> dict[str,
     return installed
 
 
+def _version_specifier(version: str) -> SpecifierSet | None:
+    """Parse a project version requirement according to PEP 440.
+
+    Environment markers belong to the requirement rather than its version
+    constraint, so only the part before ``;`` is evaluated here. Bare and
+    conda-style exact versions are converted to PEP 440 equality constraints.
+    """
+    raw = str(version or "").split(";", 1)[0].strip()
+    if not raw:
+        return SpecifierSet()
+
+    # Conda may express an exact build as ``version=build``. Availability is
+    # checked at version level here; build selection is handled separately.
+    if not raw.startswith(("<", ">", "!", "~", "=")) and "=" in raw:
+        raw = raw.split("=", 1)[0].strip()
+    if raw.startswith("=") and not raw.startswith(("==", "===")):
+        raw = "==" + raw[1:].strip()
+    elif not raw.startswith(("<", ">", "!", "~", "=")):
+        raw = "==" + raw
+
+    try:
+        return SpecifierSet(raw)
+    except InvalidSpecifier:
+        return None
+
+
+def _matching_versions(requested: str, available: list[str]) -> list[str]:
+    """Return source versions satisfying the complete requested range."""
+    specifier = _version_specifier(requested)
+    if specifier is None:
+        return []
+    valid_candidates: list[str] = []
+    for candidate in available:
+        try:
+            Version(candidate)
+        except InvalidVersion:
+            continue
+        valid_candidates.append(candidate)
+    # SpecifierSet.filter applies PEP 440's prerelease fallback semantics.
+    return list(specifier.filter(valid_candidates))
+
+
 def _normalize_requested_version(version: str) -> str:
     """把各种写法归一成纯版本号：'==1.2', '=1.2', '1.2.*' → '1.2'。"""
     v = str(version or "").strip()
@@ -519,17 +569,8 @@ def _version_key(version: str):
 
 
 def _version_matches(requested: str, available: list[str]) -> bool:
-    """requested 是否能在 available 中命中（支持裸版本与前缀通配）。"""
-    target = _normalize_requested_version(requested)
-    if not target:
-        return True
-    wildcard = str(requested).strip().endswith(".*") or str(requested).strip().endswith("*")
-    for v in available:
-        if v == target:
-            return True
-        if wildcard and v.startswith(target):
-            return True
-    return False
+    """Whether at least one source version satisfies the complete requirement."""
+    return bool(_matching_versions(requested, available))
 
 
 def _suggest_version(requested: str, available: list[str]) -> str:
@@ -537,6 +578,9 @@ def _suggest_version(requested: str, available: list[str]) -> str:
     target = _normalize_requested_version(requested)
     if not available:
         return ""
+    matching = _matching_versions(requested, available)
+    if matching:
+        return matching[-1]
     if target:
         segments = re.split(r"[._-]", target)
         if len(segments) >= 2:
@@ -714,7 +758,11 @@ def precheck_dependencies(items: list[DependencyItem], conda_env_dir: Path | Non
                 item.available_versions = ", ".join(versions[-10:])
                 if _version_matches(item.version, versions):
                     item.precheck_status = "ok"
-                    item.precheck_detail = f"软件源可用，最新版本 {versions[-1]}"
+                    matching = _matching_versions(item.version, versions)
+                    item.precheck_detail = (
+                        f"版本要求 {item.version or '(未指定)'} 可满足，"
+                        f"匹配范围内最新版本 {matching[-1]}"
+                    )
                 else:
                     item.precheck_status = "version_mismatch"
                     item.suggested_version = _suggest_version(item.version, versions)
@@ -746,13 +794,15 @@ def precheck_dependencies(items: list[DependencyItem], conda_env_dir: Path | Non
             continue
         if _version_matches(item.version, versions):
             item.precheck_status = "ok"
-            # 展示该版本下的构建变体（nompi/cuda/openmpi 等），供 LLM 与用户选择
-            requested = _normalize_requested_version(item.version)
-            matching_builds = [b for b in builds if b.split("=", 1)[0] == requested]
+            matching = _matching_versions(item.version, versions)
+            matching_version_set = set(matching)
+            # 展示满足约束的最近构建变体（nompi/cuda/openmpi 等）。
+            matching_builds = [b for b in builds if b.split("=", 1)[0] in matching_version_set]
+            detail = f"版本要求 {item.version} 可满足，匹配范围内最新版本 {matching[-1]}"
             if matching_builds:
-                item.precheck_detail = f"版本 {requested} 可用，构建：{', '.join(matching_builds)}"
+                item.precheck_detail = f"{detail}，最近构建：{', '.join(matching_builds)}"
             else:
-                item.precheck_detail = f"版本 {requested} 可用"
+                item.precheck_detail = detail
         else:
             item.precheck_status = "version_mismatch"
             item.suggested_version = _suggest_version(item.version, versions)
