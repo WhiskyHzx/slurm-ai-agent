@@ -150,9 +150,14 @@ async def terminal_websocket(
         await websocket.accept()
 
         # 启动 PTY 中的登录 shell
+        # 设置 TERM=xterm-256color，让 bash 的彩色提示符（PS1）正常染色，
+        # 否则 TERM=dumb 时 .bashrc 会退化为无颜色提示符。
+        env = dict(os.environ)
+        env["TERM"] = "xterm-256color"
         proc = ptyprocess.PtyProcess.spawn(
             ["bash", "--login"],
             cwd=cwd,
+            env=env,
             dimensions=(DEFAULT_ROWS, DEFAULT_COLS),
         )
         fd = proc.fd

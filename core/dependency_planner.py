@@ -341,6 +341,87 @@ def _scan_shell(path: Path, rel: str) -> list[DependencyItem]:
     return items
 
 
+def _scan_markdown(path: Path, rel: str) -> list[DependencyItem]:
+    """扫描 Markdown（README 等）里的依赖声明。
+
+    识别两类内容：
+      1. 安装命令：`pip install xxx` / `conda install xxx` / `python -m pip install xxx`
+      2. Requirements/依赖 小节下的依赖列表（- numpy、numpy==1.2 等）
+    """
+    items: list[DependencyItem] = []
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    lines = text.splitlines()
+
+    # 1) 安装命令（整篇扫描，含代码块）
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # 去掉 markdown 代码块围栏和行内反引号
+        cleaned = stripped.strip("`").strip()
+        try:
+            parts = shlex.split(cleaned)
+        except ValueError:
+            continue
+        if len(parts) < 3:
+            continue
+        lowered = [p.lower() for p in parts]
+        manager = ""
+        start = 0
+        if lowered[:2] in (["pip", "install"], ["conda", "install"], ["mamba", "install"]):
+            manager = "pip" if lowered[0] == "pip" else "conda"
+            start = 2
+        elif lowered[:4] == ["python", "-m", "pip", "install"]:
+            manager = "pip"
+            start = 4
+        if not manager:
+            continue
+        skip_next = False
+        for token in parts[start:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if token in {"-c", "--channel", "-p", "--prefix", "-n", "--name", "-r", "--requirement"}:
+                skip_next = True
+                continue
+            if token.startswith("-"):
+                continue
+            name, version = _split_requirement(token.replace("=", "==", 1) if manager == "pip" else token)
+            item = _make_item(name, version, manager, rel, "trusted", "high", "来自 README/文档中的安装命令")
+            if item:
+                items.append(item)
+
+    # 2) Requirements/依赖 小节下的列表项
+    in_req_section = False
+    for line in lines:
+        stripped = line.strip()
+        # 标题：## Requirements / ## 依赖 / ## Dependencies 等
+        if re.match(r"^#{1,6}\s+", stripped):
+            heading = re.sub(r"^#{1,6}\s+", "", stripped).lower()
+            in_req_section = any(
+                kw in heading
+                for kw in ("requirement", "dependenc", "依赖", "环境", "安装")
+            )
+            continue
+        if not in_req_section:
+            continue
+        # 列表项：- numpy、* pandas==1.2、1. numpy 等
+        m = re.match(r"^(?:[-*+]|\d+[.)])\s+(.+)$", stripped)
+        if not m:
+            continue
+        value = m.group(1).strip()
+        # 去掉行内代码反引号
+        value = value.strip("`").strip()
+        if not value or value.startswith(("http://", "https://", "git+")):
+            continue
+        name, version = _split_requirement(value)
+        item = _make_item(name, version, "pip", rel, "trusted", "high", "来自 README/文档的依赖列表")
+        if item:
+            items.append(item)
+
+    return items
+
+
 def _scan_python_imports(project_dir: Path) -> list[DependencyItem]:
     items: list[DependencyItem] = []
     seen: set[str] = set()
@@ -402,6 +483,8 @@ def scan_project_dependencies(project_dir: Path) -> list[DependencyItem]:
                 items.extend(_scan_setup_py(path, rel_text))
             elif path.suffix.lower() in {".sh", ".bash", ".sbatch"}:
                 items.extend(_scan_shell(path, rel_text))
+            elif path.suffix.lower() == ".md":
+                items.extend(_scan_markdown(path, rel_text))
         except OSError:
             continue
     items.extend(_scan_python_imports(project_dir))

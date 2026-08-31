@@ -47,7 +47,9 @@ from core.file_transfer import (
     ensure_project_workspace,
     find_conda_executable,
     get_max_upload_bytes,
+    get_max_upload_files,
     get_remote_projects_base,
+    human_size,
     project_lock,
     project_workspace,
     safe_relative_path,
@@ -3743,6 +3745,57 @@ def _failure_message_summary(stderr: str, state: str) -> str:
     return candidate[:180] + ("…" if len(candidate) > 180 else "")
 
 
+# 常见"缺依赖"报错模式 → 提取缺失的包名/命令（确定性，不依赖 LLM）
+_MISSING_MODULE_PATTERNS = [
+    re.compile(r"ModuleNotFoundError:\s*No module named\s+['\"]([^'\"]+)['\"]"),
+    re.compile(r"ImportError:\s*No module named\s+['\"]([^'\"]+)['\"]"),
+    re.compile(r"ImportError:\s*cannot import name\s+['\"][^'\"]+['\"]\s+from\s+['\"]([^'\"]+)['\"]"),
+    re.compile(r"ModuleNotFoundError:\s*No module named\s+([A-Za-z0-9_.]+)"),
+    re.compile(r"ImportError:\s*No module named\s+([A-Za-z0-9_.]+)"),
+]
+_MISSING_COMMAND_PATTERNS = [
+    re.compile(r"(?:bash|sh):\s*([A-Za-z0-9_.+-]+):\s*command not found"),
+    re.compile(r"([A-Za-z0-9_.+-]+):\s*command not found"),
+    re.compile(r"([A-Za-z0-9_.+-]+):\s*No such file or directory"),
+]
+# 这些是常见误报：不是依赖包，而是路径/文件/系统命令
+_MISSING_DEP_BLOCKLIST = {
+    "main", "train", "run", "python", "python3", "bash", "sh", "conda", "pip",
+    "cd", "ls", "cat", "echo", "mkdir", "rm", "cp", "mv", "source", "export",
+    "nvidia-smi", "hostname", "pwd", "exit", "time", "date", "sleep",
+}
+
+
+def _extract_missing_deps_from_logs(stderr: str, stdout: str) -> list[str]:
+    """从失败日志里确定性提取缺失的依赖（模块名/命令名）。
+
+    只认明确的报错模式（ModuleNotFoundError / ImportError / command not found），
+    不靠 LLM，避免误报。返回去重后的包名列表（保持出现顺序）。
+    """
+    text = (stderr or "") + "\n" + (stdout or "")
+    # 去掉 ANSI 颜色码，避免干扰匹配
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    found: list[str] = []
+    seen: set[str] = set()
+
+    for pattern in _MISSING_MODULE_PATTERNS:
+        for m in pattern.finditer(text):
+            name = m.group(1).strip().split(".", 1)[0]  # 只取顶层模块名
+            name = name.replace("_", "-").lower()
+            if name and name not in _MISSING_DEP_BLOCKLIST and name not in seen:
+                seen.add(name)
+                found.append(name)
+
+    for pattern in _MISSING_COMMAND_PATTERNS:
+        for m in pattern.finditer(text):
+            name = m.group(1).strip().lower()
+            if name and name not in _MISSING_DEP_BLOCKLIST and name not in seen:
+                seen.add(name)
+                found.append(name)
+
+    return found
+
+
 def _fallback_job_report(
     record: dict, slurm_text: str, stdout: str, stderr: str, error: Exception
 ) -> str:
@@ -3831,6 +3884,26 @@ def _run_job_analysis(record: dict) -> None:
             summary = _failure_message_summary(
                 err_text + "\n" + out_text, record.get("final_state", "")
             )
+            # 从失败日志确定性提取缺失依赖，写回项目需求记录，
+            # 让下次「检查依赖」能自动纳入，避免反复因缺依赖失败。
+            missing_deps = _extract_missing_deps_from_logs(err_text, out_text)
+            if missing_deps:
+                try:
+                    project_name = record.get("project_name", "")
+                    if project_name:
+                        _, project_dir, _ = project_workspace(project_name)
+                        notes_path = project_dir / PROJECT_NOTES_FILENAME
+                        dep_line = " ".join(missing_deps)
+                        with notes_path.open("a", encoding="utf-8") as f:
+                            f.write(
+                                f"\n## 作业 {job_id} 失败缺失依赖（自动提取）\n\n"
+                                f"pip install {dep_line}\n\n"
+                            )
+                        logger.info(
+                            "作业 %s 缺失依赖已写回项目记录: %s", job_id, missing_deps
+                        )
+                except Exception as e:
+                    logger.warning("写回缺失依赖失败: %s", e)
             message = (
                 f"作业 {job_id} 训练失败，异常终止，报错信息为：{summary}\n\n"
                 f"[[JOB_REPORT:{job_id}]]"
@@ -4357,6 +4430,12 @@ async def managed_files_upload(
     if not files:
         return JSONResponse({"error": "请选择至少一个文件"}, status_code=400)
     max_bytes = get_max_upload_bytes()
+    max_files = get_max_upload_files()
+    if len(files) > max_files:
+        return JSONResponse(
+            {"error": f"文件数量超过限制：单次最多上传 {max_files} 个文件（本次 {len(files)} 个）"},
+            status_code=400,
+        )
     total_bytes = 0
     try:
         target_dir = _managed_path(target_path)
@@ -4379,7 +4458,9 @@ async def managed_files_upload(
                         break
                     total_bytes += len(chunk)
                     if total_bytes > max_bytes:
-                        raise FileTransferError(f"上传总大小超过限制：{max_bytes} bytes")
+                        raise FileTransferError(
+                            f"上传总大小超过限制：{human_size(max_bytes)}（已上传 {human_size(total_bytes)}）"
+                        )
                     out.write(chunk)
             file_count += 1
         _mark_managed_project_dirty(target_dir)
@@ -4418,6 +4499,12 @@ async def files_upload(
         return JSONResponse({"error": "请选择至少一个文件"}, status_code=400)
 
     max_bytes = get_max_upload_bytes()
+    max_files = get_max_upload_files()
+    if len(files) > max_files:
+        return JSONResponse(
+            {"error": f"文件数量超过限制：单次最多上传 {max_files} 个文件（本次 {len(files)} 个）"},
+            status_code=400,
+        )
     total_bytes = 0
 
     try:
@@ -4438,7 +4525,7 @@ async def files_upload(
                         total_bytes += len(chunk)
                         if total_bytes > max_bytes:
                             raise FileTransferError(
-                                f"上传总大小超过限制：{max_bytes} bytes"
+                                f"上传总大小超过限制：{human_size(max_bytes)}（已上传 {human_size(total_bytes)}）"
                             )
                         out.write(chunk)
                 file_count += 1

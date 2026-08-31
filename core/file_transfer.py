@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover - non-POSIX platform fallback
 
 DEFAULT_REMOTE_PROJECTS_BASE = "~/projects"
 DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_MAX_UPLOAD_FILES = 1000
 DEFAULT_CONDA_PYTHON_VERSION = "3.10"
 DEFAULT_CONDA_CREATE_TIMEOUT = 900
 DEFAULT_CONDA_CHANNELS = "conda-forge"
@@ -65,6 +66,26 @@ def get_max_upload_bytes() -> int:
         return max(1024, int(raw))
     except ValueError:
         return DEFAULT_MAX_UPLOAD_BYTES
+
+
+def get_max_upload_files() -> int:
+    """单次上传允许的最大文件数量（默认 1000）。"""
+    raw = os.environ.get("SLURM_UPLOAD_MAX_FILES", str(DEFAULT_MAX_UPLOAD_FILES))
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_UPLOAD_FILES
+
+
+def human_size(num_bytes: int) -> str:
+    """把字节数转成人类可读的 MB/GB 字符串。"""
+    if num_bytes >= 1024 * 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024 * 1024):.1f} GB"
+    if num_bytes >= 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    if num_bytes >= 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    return f"{num_bytes} B"
 
 
 def get_remote_projects_base() -> str:
