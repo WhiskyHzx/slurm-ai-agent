@@ -255,9 +255,26 @@ def _write_activate_script(project_dir: Path, conda_env_dir: Path) -> None:
 
 set -u
 
-CONDA_BASE="$(conda info --base 2>/dev/null)"
-if [ -z "$CONDA_BASE" ]; then
+# 定位 conda：优先用 PATH 里的 conda，否则按常见安装位置探测
+# （非交互式 SSH 会话里 conda 往往不在 PATH，需要显式探测）。
+CONDA_BIN="$(command -v conda 2>/dev/null || true)"
+if [ -z "$CONDA_BIN" ]; then
+  for _c in "$HOME/miniconda3/bin/conda" "$HOME/miniforge3/bin/conda" "$HOME/anaconda3/bin/conda"; do
+    if [ -x "$_c" ]; then
+      CONDA_BIN="$_c"
+      break
+    fi
+  done
+fi
+
+if [ -z "$CONDA_BIN" ]; then
   echo "错误：找不到 conda，请先安装 Miniconda 或把 conda 加入 PATH。" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+CONDA_BASE="$("$CONDA_BIN" info --base 2>/dev/null)"
+if [ -z "$CONDA_BASE" ]; then
+  echo "错误：无法确定 conda base 路径。" >&2
   return 1 2>/dev/null || exit 1
 fi
 
@@ -265,7 +282,7 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "{conda_env_dir}"
 
 echo "已激活项目环境：{conda_env_dir}"
-echo "当前 python：$(which python)"
+echo "当前 python：$(command -v python)"
 """
     target = project_dir / ACTIVATE_SCRIPT_FILENAME
     target.write_text(script, encoding="utf-8")
