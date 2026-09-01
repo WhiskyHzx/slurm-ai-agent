@@ -2868,6 +2868,103 @@
     background: var(--line);
   }
 
+  /* ===== 文件管理上传模态框 ===== */
+  .managed-upload-dropzone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 32px 20px;
+    border: 2px dashed var(--line);
+    border-radius: 12px;
+    color: var(--muted);
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s ease, background .2s ease, color .2s ease;
+  }
+
+  .managed-upload-dropzone:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+
+  .managed-upload-dropzone.drag-over {
+    border-color: var(--accent);
+    background: var(--group-hover);
+    color: var(--ink);
+  }
+
+  .managed-upload-dropzone-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .managed-upload-dropzone-hint {
+    font-size: 12px;
+  }
+
+  .managed-upload-pick-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .managed-upload-pick-row .btn {
+    flex: 1;
+  }
+
+  .managed-upload-list {
+    margin-top: 12px;
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .managed-upload-list:empty {
+    display: none;
+  }
+
+  .managed-upload-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: var(--group-hover);
+    font-size: 13px;
+  }
+
+  .managed-upload-item .mu-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .managed-upload-item .mu-size {
+    color: var(--muted);
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+
+  .managed-upload-item .mu-remove {
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 2px;
+  }
+
+  .managed-upload-item .mu-remove:hover {
+    color: var(--red);
+  }
+
 </style>
 </head>
 <body>
@@ -3158,6 +3255,33 @@
 
 <div id="managedContextMenu" class="managed-context-menu" aria-hidden="true"></div>
 
+<div id="managedUploadModal" class="modal-backdrop" onclick="closeManagedUploadModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">上传到 <span id="managedUploadTargetLabel"></span></div>
+    <div class="modal-body">
+      <div id="managedUploadDropzone" class="managed-upload-dropzone">
+        <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 16V4m0 0L7 9m5-5l5 5"></path>
+          <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path>
+        </svg>
+        <div class="managed-upload-dropzone-title">拖拽文件或文件夹到这里</div>
+        <div class="managed-upload-dropzone-hint">或点击下方按钮选择，支持多选</div>
+      </div>
+      <div class="managed-upload-pick-row">
+        <button class="btn" onclick="managedUploadPickFiles()">选择文件</button>
+        <button class="btn" onclick="managedUploadPickFolder()">选择文件夹</button>
+      </div>
+      <div id="managedUploadList" class="managed-upload-list"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeManagedUploadModal(event)">取消</button>
+      <button id="managedUploadConfirmBtn" class="btn primary" onclick="managedUploadConfirm()" disabled>上传</button>
+    </div>
+  </div>
+</div>
+
+<input id="managedFilePickInput" type="file" multiple hidden>
+<input id="managedFolderPickInput" type="file" multiple webkitdirectory hidden>
 
 <script src="/static/vendor/xterm/xterm.js"></script>
 <script src="/static/vendor/xterm/xterm-fit.js"></script>
@@ -4708,13 +4832,25 @@ function readEntryDirectory(reader) {
   });
 }
 
+// 读取目录下的子项，兼容两种来源：
+// 1) webkitGetAsEntry 的 FileSystemDirectoryEntry（有 createReader()）
+// 2) showDirectoryPicker 的 FileSystemDirectoryHandle（有 entries() 异步迭代器）
+async function readDirectoryChildren(entry) {
+  if (typeof entry.entries === 'function') {
+    const all = [];
+    for await (const child of entry.entries()) all.push(child);
+    return all;
+  }
+  return readEntryDirectory(entry.createReader());
+}
+
 async function collectEntryFiles(entry, prefix, out) {
   if (!entry) return;
   if (entry.isFile) {
     const file = await new Promise((res, rej) => entry.file(res, rej));
     out.push({ file, path: prefix + entry.name });
   } else if (entry.isDirectory) {
-    const children = await readEntryDirectory(entry.createReader());
+    const children = await readDirectoryChildren(entry);
     for (const child of children) await collectEntryFiles(child, prefix + entry.name + '/', out);
   }
 }
@@ -7800,27 +7936,163 @@ async function managedCopyPath() {
   }
 }
 
-function managedUploadFromContext() {
-  // 右键菜单里的「上传」：上传到右键选中的目录。
-  // 右键打开时 selectedManagedPath/selectedManagedType 已指向该目录，
-  // managedUploadTargetPath() 会正确返回它。
-  if (!managedCtxTarget || managedCtxTarget.type !== 'dir') return;
-  closeManagedContextMenu();
-  if (isUploading) return;
-  fileUploadInput.value = '';
-  fileUploadInput.click();
-}
+// ---------------------------------------------------------------------------
+// 文件管理上传模态框：一个入口同时支持文件 / 文件夹 / 拖拽 / 多选
+// ---------------------------------------------------------------------------
+let managedUploadQueue = [];   // 待上传项 { file, path }
 
 function managedUploadFromContext() {
-  // 右键菜单「上传」：上传到右键选中的目录（managedCtxTarget 已记录目标）
+  // 右键菜单里的「上传」：打开上传模态框，上传到右键选中的目录。
   if (!managedCtxTarget || managedCtxTarget.type !== 'dir') return;
   closeManagedContextMenu();
   if (isUploading) return;
-  // 复用现有文件选择输入，上传目标由 managedUploadTargetPath() 决定
-  // （右键时已设置 selectedManagedPath/selectedManagedType 为选中目录）
-  fileUploadInput.value = '';
-  fileUploadInput.click();
+  managedUploadQueue = [];
+  const targetPath = managedUploadTargetPath();
+  const label = document.getElementById('managedUploadTargetLabel');
+  if (label) label.textContent = targetPath ? targetPath : '（用户根目录）';
+  renderManagedUploadList();
+  const modal = document.getElementById('managedUploadModal');
+  if (modal) modal.classList.add('open');
 }
+
+function closeManagedUploadModal(event) {
+  if (event && event.target && event.target.id !== 'managedUploadModal') return;
+  const modal = document.getElementById('managedUploadModal');
+  if (modal) modal.classList.remove('open');
+  managedUploadQueue = [];
+  renderManagedUploadList();
+}
+
+function renderManagedUploadList() {
+  const list = document.getElementById('managedUploadList');
+  const confirmBtn = document.getElementById('managedUploadConfirmBtn');
+  if (!list) return;
+  list.innerHTML = managedUploadQueue.map((item, i) => `
+    <div class="managed-upload-item">
+      <span class="mu-name" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span>
+      <span class="mu-size">${formatBytes(item.file.size)}</span>
+      <button class="mu-remove" onclick="managedUploadRemove(${i})" title="移除">×</button>
+    </div>`).join('');
+  if (confirmBtn) confirmBtn.disabled = managedUploadQueue.length === 0;
+}
+
+function managedUploadRemove(index) {
+  managedUploadQueue.splice(index, 1);
+  renderManagedUploadList();
+}
+
+function managedUploadAddFiles(files) {
+  for (const file of files) {
+    managedUploadQueue.push({ file, path: file.webkitRelativePath || file.name });
+  }
+  renderManagedUploadList();
+}
+
+async function managedUploadPickFiles() {
+  if (isUploading) return;
+  // 优先用 File System Access API（可多选），不支持时回退到隐藏 input
+  if (window.showOpenFilePicker) {
+    try {
+      const handles = await window.showOpenFilePicker({ multiple: true });
+      const files = [];
+      for (const h of handles) files.push(await h.getFile());
+      managedUploadAddFiles(files);
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // 用户取消
+      // 其他错误回退到 input
+    }
+  }
+  const input = document.getElementById('managedFilePickInput');
+  input.value = '';
+  input.onchange = () => {
+    managedUploadAddFiles(Array.from(input.files || []));
+    input.value = '';
+  };
+  input.click();
+}
+
+async function managedUploadPickFolder() {
+  if (isUploading) return;
+  if (window.showDirectoryPicker) {
+    try {
+      const handle = await window.showDirectoryPicker();
+      const collected = [];
+      await collectEntryFiles(handle, '', collected);
+      managedUploadAddFiles(collected.map(c => c.file));
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      // 其他错误回退到 webkitdirectory input
+    }
+  }
+  const input = document.getElementById('managedFolderPickInput');
+  input.value = '';
+  input.onchange = () => {
+    managedUploadAddFiles(Array.from(input.files || []));
+    input.value = '';
+  };
+  input.click();
+}
+
+async function managedUploadConfirm() {
+  if (isUploading || !managedUploadQueue.length) return;
+  const targetPath = managedUploadTargetPath();
+  const formData = new FormData();
+  formData.append('target_path', targetPath);
+  for (const item of managedUploadQueue) {
+    formData.append('files', item.file, item.path);
+  }
+  const count = managedUploadQueue.length;
+  closeManagedUploadModal();
+  isUploading = true;
+  addNotice(`正在上传 ${count} 个文件到 /home/scc/.../${targetPath || ''} ...`);
+  try {
+    const resp = await fetch('/api/files/managed-upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) {
+      addNotice(data.error || '文件上传失败', 'error');
+      return;
+    }
+    addNotice(`上传完成：${data.file_count} 个文件，${formatBytes(data.total_bytes)}，目录 ${data.absolute_target_dir}`);
+    if (targetPath) fileExpandedPaths.add(targetPath);
+    await refreshDirectoryDisplays(targetPath);
+  } catch (e) {
+    addNotice('文件上传失败: ' + e.message, 'error');
+  } finally {
+    isUploading = false;
+  }
+}
+
+// 拖拽上传：绑定到虚线框
+function initManagedUploadDropzone() {
+  const dz = document.getElementById('managedUploadDropzone');
+  if (!dz) return;
+  dz.addEventListener('click', () => managedUploadPickFiles());
+  dz.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dz.classList.add('drag-over');
+  });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dz.classList.remove('drag-over');
+    if (isUploading) return;
+    const entries = Array.from(e.dataTransfer.items || [])
+      .map(item => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
+      .filter(Boolean);
+    if (!entries.length) return;
+    const collected = [];
+    for (const entry of entries) await collectEntryFiles(entry, '', collected);
+    if (!collected.length) {
+      addNotice('拖入的内容没有可上传的文件', 'error');
+      return;
+    }
+    managedUploadAddFiles(collected.map(c => c.file));
+  });
+}
+
+initManagedUploadDropzone();
 
 function managedDownload() {
   if (!managedCtxTarget || managedCtxTarget.path === '') return;

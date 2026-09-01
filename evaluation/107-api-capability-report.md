@@ -1,15 +1,12 @@
 # 107 算力平台 Slurm 命令行能力实测报告
 
 日期：2026-08-21  
-测试方式：Mac 本地通过 SSH（`ssh 107.ustc.edu.cn`，ControlMaster 复用连接）在登录节点远程执行  
-本地项目：`/Users/mac/work/slurm-ai-agent`（与远程 `/home/scc/pb25111697/slurm-ai-agent` 绑定）
 
 ## 1. 测试环境
 
 | 项目 | 值 |
 |---|---|
 | 登录节点 | `tradmin-02` |
-| 测试用户 | `pb25111697` |
 | 测试时间 | 2026-08-21 02:45 CST |
 | Slurm 版本 | `slurm 25.11.2`（smd 发行版） |
 | 已安装包 | `slurm-smd` `slurm-smd-client` `slurm-smd-slurmctld` `slurm-smd-slurmd` `slurm-smd-slurmdbd` `slurm-smd-slurmrestd` |

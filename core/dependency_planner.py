@@ -24,9 +24,15 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     tomllib = None
 
 
-# 永远不是依赖包名的词：包管理器自带项 + 常见软件源 channel 名。
+# 永远不是依赖包名的词：包管理器自带项 + 常见软件源 channel 名 + 说明性动词。
 # conda install -c bioconda gromacs 里的 "bioconda" 是 channel，不是包。
-PACKAGE_NAME_BLOCKLIST = {"python", "pip", "setuptools", "wheel", "conda-forge", "bioconda", "defaults", "pypi"}
+# README 里 "Install modeller with conda" 这类说明句会被列表项扫描误当成包名，
+# 因此把 install/conda/mamba 等词也列入黑名单。
+PACKAGE_NAME_BLOCKLIST = {
+    "python", "pip", "setuptools", "wheel", "conda-forge", "bioconda", "defaults", "pypi",
+    "install", "conda", "mamba", "download", "run", "set", "use", "clone",
+    "copy", "create", "make", "get", "see", "refer", "add", "remove", "update", "upgrade",
+}
 
 TRUSTED_SOURCE_FILES = {
     "requirements.txt",
@@ -414,6 +420,11 @@ def _scan_markdown(path: Path, rel: str) -> list[DependencyItem]:
         value = value.strip("`").strip()
         if not value or value.startswith(("http://", "https://", "git+")):
             continue
+        # 过滤说明性句子：以动词开头、后面跟空格/标点的整句（如 "Install modeller with conda"、
+        # "Download SOAP library"、"Set the KEY_MODELLER ..."）不是依赖声明，跳过。
+        # 依赖项通常是单个包名（可能带版本约束），不会以这些动词开头。
+        if re.match(r"^(?:install|download|run|set|use|clone|copy|create|make|get|see|refer|add|remove|update|upgrade)\b", value, re.IGNORECASE):
+            continue
         name, version = _split_requirement(value)
         item = _make_item(name, version, "pip", rel, "trusted", "high", "来自 README/文档的依赖列表")
         if item:
@@ -709,6 +720,8 @@ def search_package_versions(
         cached_at, cached = _SEARCH_CACHE[cache_key]
         if now - cached_at < SEARCH_CACHE_TTL_SECONDS:
             return dict(cached)
+        # 过期条目主动删除，避免缓存字典只增不减
+        _SEARCH_CACHE.pop(cache_key, None)
 
     result: dict[str, Any] = {"ok": False, "versions": [], "builds": [], "error": ""}
     try:

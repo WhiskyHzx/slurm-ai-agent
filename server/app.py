@@ -13,6 +13,7 @@ server/app.py — FastAPI 后端入口。
 """
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import zipfile
 import getpass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -4154,6 +4156,29 @@ def _is_editable_managed_file(path: Path) -> bool:
     return False
 
 
+def _is_previewable_managed_file(path: Path) -> bool:
+    """判断文件是否可只读预览（文本文件，但可能超过可编辑大小限制）。
+
+    与 _is_editable_managed_file 的区别：不检查大小限制，只判断是否为文本。
+    用于超大文本文件（如数据库导出）的只读预览。
+    """
+    if not path.is_file():
+        return False
+    # 已知二进制扩展名直接拒绝
+    BINARY_SUFFIXES = {
+        ".pak", ".dylib", ".so", ".a", ".o", ".bin", ".exe", ".dll",
+        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".webp",
+        ".zip", ".gz", ".tar", ".xz", ".bz2", ".7z", ".rar",
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv",
+        ".npy", ".npz", ".pkl", ".pickle", ".pt", ".pth", ".ckpt",
+        ".h5", ".hdf5", ".parquet", ".feather", ".onnx",
+    }
+    if path.suffix.lower() in BINARY_SUFFIXES:
+        return False
+    return _is_probably_text(path) and _looks_decodable_text(path)
+
+
 def _managed_tree_node(path: Path) -> dict:
     is_dir = path.is_dir()
     item = {
@@ -4165,6 +4190,7 @@ def _managed_tree_node(path: Path) -> dict:
         item["has_children"] = True
     else:
         item["editable"] = _is_editable_managed_file(path)
+        item["previewable"] = _is_previewable_managed_file(path)
         try:
             item["size"] = path.stat().st_size
         except OSError:
@@ -4224,18 +4250,86 @@ def managed_file_content(path: str):
         return JSONResponse({"error": f"读取文件失败: {e}"}, status_code=500)
 
 
-@app.get("/api/files/download")
-def managed_file_download(path: str):
-    """下载文件（任意类型，非目录）。"""
+@app.get("/api/files/preview")
+def managed_file_preview(path: str, lines: int = 200):
+    """只读预览文本文件的前 N 行（用于超大文本文件，不加载全部内容）。"""
     try:
         target = _managed_path(path)
         if not target.is_file():
             return JSONResponse({"error": "目标不是文件"}, status_code=400)
-        return FileResponse(
-            str(target),
-            filename=target.name,
-            media_type="application/octet-stream",
-        )
+        if not _is_previewable_managed_file(target):
+            return JSONResponse({"error": "该文件不是文本文件，无法预览"}, status_code=400)
+        # 限制预览行数，防止超大文件撑爆内存/响应
+        max_lines = max(1, min(int(lines), 500))
+        preview_lines: list[str] = []
+        total_lines = 0
+        with target.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                total_lines += 1
+                if len(preview_lines) < max_lines:
+                    preview_lines.append(line.rstrip("\n"))
+        content = "\n".join(preview_lines)
+        truncated = total_lines > max_lines
+        return {
+            "status": "ok",
+            "root": str(MANAGED_FILES_ROOT),
+            "path": _managed_rel(target),
+            "name": target.name,
+            "content": content,
+            "size": target.stat().st_size,
+            "total_lines": total_lines,
+            "preview_lines": len(preview_lines),
+            "truncated": truncated,
+        }
+    except FileTransferError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("预览文件失败")
+        return JSONResponse({"error": f"预览文件失败: {e}"}, status_code=500)
+
+
+@app.get("/api/files/download")
+def managed_file_download(path: str):
+    """下载文件或文件夹（文件夹打包为 zip）。"""
+    try:
+        target = _managed_path(path)
+        if not target.exists():
+            return JSONResponse({"error": "目标不存在"}, status_code=400)
+
+        # 文件：直接返回
+        if target.is_file():
+            return FileResponse(
+                str(target),
+                filename=target.name,
+                media_type="application/octet-stream",
+            )
+
+        # 文件夹：打包成 zip 后返回（排除敏感/内部文件）
+        if target.is_dir():
+            # 不打包的目录/文件：密钥、git 内部、缓存、运行产物
+            SKIP_DIRS = {".git", ".slurm-agent", "__pycache__", ".venv", "venv", "runs", "logs", ".embedding_cache"}
+            SKIP_FILES = {".env", ".DS_Store"}
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for file_path in sorted(target.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    # 跳过敏感/内部文件
+                    if any(part in SKIP_DIRS for part in file_path.relative_to(target).parts):
+                        continue
+                    if file_path.name in SKIP_FILES:
+                        continue
+                    arcname = file_path.relative_to(target.parent)
+                    zf.write(file_path, arcname)
+            zip_buffer.seek(0)
+            zip_name = f"{target.name}.zip"
+            return StreamingResponse(
+                zip_buffer,
+                media_type="application/zip",
+                headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+            )
+
+        return JSONResponse({"error": "目标既不是文件也不是文件夹"}, status_code=400)
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:

@@ -259,7 +259,7 @@ PYTHONPATH=. python agent/agent_loop.py -i
 - `GET /api/dashboard`：资源和作业概览
 - `POST /api/slurm/refresh`：在登录节点刷新 Slurm JWT
 - `POST /api/projects`：创建作业目录、初始化项目 Conda 环境、记录需求
-- `POST /api/files/upload`：上传文件/文件夹并 SHA256 校验
+- `POST /api/files/upload`：上传文件/文件夹
 - `POST /api/projects/report`：生成提交前建议报告
 - `POST /chat`：智能体 SSE 聊天接口
 - `POST /reset`：重置智能体上下文
