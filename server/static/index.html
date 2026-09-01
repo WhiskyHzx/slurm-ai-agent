@@ -985,6 +985,20 @@
     flex-shrink: 0;
   }
 
+  /* 只读预览：超大文本文件的前 N 行，不可编辑 */
+  .preview-readonly {
+    user-select: text;
+    cursor: default;
+  }
+
+  .preview-note {
+    padding: 8px 16px;
+    border-top: 1px solid var(--line);
+    background: var(--surface-soft);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
   /* 小文件夹行展开：带阻尼淡入，不硬生生出现 */
   @keyframes rowIn {
     from { opacity: 0; transform: translateY(-6px) scale(0.97); }
@@ -1661,6 +1675,21 @@
     outline: none;
   }
   #dependencyReviewTable tbody tr.dependency-selectable-row .dependency-check {
+    pointer-events: none;
+  }
+  /* 已安装依赖：绿色锁死，不可选择，弱化整行视觉 */
+  #dependencyReviewTable tbody tr.dependency-installed-row {
+    cursor: not-allowed;
+    user-select: none;
+    opacity: 0.72;
+  }
+  #dependencyReviewTable tbody tr.dependency-installed-row td {
+    background: var(--notice-bg);
+  }
+  #dependencyReviewTable tbody tr.dependency-installed-row .dependency-name {
+    color: var(--green);
+  }
+  #dependencyReviewTable tbody tr.dependency-installed-row .dependency-check {
     pointer-events: none;
   }
   body.dependency-row-selecting,
@@ -3801,7 +3830,7 @@ function docsTreeHtml(nodes, depth, animate) {
   return nodes.map(node => {
     if (node.type === 'dir') {
       const open = docsExpandedDirs.has(node.name);
-      const kids = open ? `<div class="docs-dir-children">${docsTreeHtml(node.children || [], depth + 1, animate)}</div>` : '';
+      const kids = open ? `<div class="docs-dir-children" id="docs-children-${escapeHtml(node.name)}">${docsTreeHtml(node.children || [], depth + 1, animate)}</div>` : '';
       return `<div class="docs-node${animate ? ' cascade' : ''}" style="--i:${depth}">
         <button class="docs-dir-label${open ? ' open' : ''}" onclick="toggleDocsDir('${escapeHtml(node.name)}')">
           <span class="caret"></span>${escapeHtml(node.name)}
@@ -3833,9 +3862,39 @@ function updateDocsTreeActive() {
 }
 
 function toggleDocsDir(name) {
-  if (docsExpandedDirs.has(name)) docsExpandedDirs.delete(name);
-  else docsExpandedDirs.add(name);
-  renderDocsTree(false);
+  // 只切换当前文件夹的展开/收起，不重绘整棵树，避免其它文件夹的
+  // docsDoorOpen 动画被重新触发导致"跳一下"。
+  const label = document.querySelector(`#docsTree .docs-dir-label[onclick="toggleDocsDir('${name}')"]`);
+  if (!label) return;
+  const node = label.parentElement;
+  const isOpen = docsExpandedDirs.has(name);
+  if (isOpen) {
+    docsExpandedDirs.delete(name);
+    label.classList.remove('open');
+    const children = node.querySelector('.docs-dir-children');
+    if (children) children.remove();
+  } else {
+    docsExpandedDirs.add(name);
+    label.classList.add('open');
+    // 找到该目录的 children 数据并局部插入
+    const dirNode = findDocsDirNode(docsTreeData, name);
+    if (dirNode && dirNode.children) {
+      const container = document.createElement('div');
+      container.className = 'docs-dir-children';
+      container.id = `docs-children-${name}`;
+      container.innerHTML = docsTreeHtml(dirNode.children, 0, false);
+      node.appendChild(container);
+    }
+  }
+}
+
+function findDocsDirNode(nodes, name) {
+  for (const node of nodes || []) {
+    if (node.type === 'dir' && node.name === name) return node;
+    const found = findDocsDirNode(node.children || [], name);
+    if (found) return found;
+  }
+  return null;
 }
 
 async function openDocsFile(path) {
@@ -3965,11 +4024,16 @@ function managedTreeHtml(nodes, depth = 0) {
     const active = !isDir && node.path === activeManagedFilePath;
     const selected = node.path === selectedManagedPath;
     const locked = !isDir && !node.editable;
+    const previewable = !isDir && !node.editable && node.previewable;
     const rowClass = `file-node-row${active ? ' active' : ''}${selected ? ' selected' : ''}${locked ? ' locked' : ''}`;
     const caretClass = isDir ? `file-caret${open ? ' open' : ''}` : `file-caret${node.editable ? ' file' : ' blank'}`;
     const click = isDir
       ? `toggleManagedDir('${escapeHtml(node.path)}')`
-      : `selectManagedFile('${escapeHtml(node.path)}', ${node.editable ? 'true' : 'false'})`;
+      : (node.editable
+        ? `selectManagedFile('${escapeHtml(node.path)}', true)`
+        : (previewable
+          ? `openManagedPreview('${escapeHtml(node.path)}')`
+          : `selectManagedFile('${escapeHtml(node.path)}', false)`));
     const ctx = `oncontextmenu="openManagedContextMenu(event, '${escapeHtml(node.path)}', '${isDir ? 'dir' : 'file'}')"`;
     const createRow = isDir && open && managedCreateDraft?.parentPath === node.path ? managedCreateRowHtml() : '';
     const kids = isDir && open && (node.children || createRow)
@@ -4170,11 +4234,64 @@ async function openManagedFile(path) {
       });
       editor.addEventListener('scroll', syncManagedFileLineScroll);
       updateManagedFileLineNumbers();
+      // 初始定位到文件开头：先 focus 再显式把光标/滚动归零，
+      // 否则 focus 会把光标定位到 value 末尾，导致停在右下角。
       editor.focus();
+      editor.setSelectionRange(0, 0);
+      editor.scrollTop = 0;
+      editor.scrollLeft = 0;
+      syncManagedFileLineScroll();
     }
     renderManagedTree();
   } catch (e) {
     addNotice('打开文件失败: ' + e.message, 'error');
+  }
+}
+
+async function openManagedPreview(path) {
+  // 只读预览超大文本文件的前 N 行（不加载全部内容，不显示编辑器/保存按钮）
+  if (activeManagedFileDirty && !window.confirm('当前文件有未保存修改，仍要切换文件？')) return;
+  try {
+    const res = await fetch('/api/files/preview?path=' + encodeURIComponent(path) + '&lines=200');
+    const data = await res.json();
+    if (!res.ok || data.status !== 'ok') throw new Error(data.error || '预览失败');
+    activeManagedFilePath = '';
+    activeManagedFileDirty = false;
+    selectedManagedPath = data.path;
+    selectedManagedType = 'file';
+    workspace.classList.add('docs-open');
+    workspace.classList.add('file-editor-open');
+    workspace.classList.add('right-collapsed');
+    workspace.classList.remove('right-open');
+    const reader = document.getElementById('docsReader');
+    if (reader) reader.setAttribute('aria-hidden', 'false');
+    const crumb = document.getElementById('docsBreadcrumb');
+    const content = document.getElementById('docsContent');
+    const saveBtn = document.getElementById('fileSaveBtn');
+    if (crumb) crumb.textContent = `${data.root}/${data.path}`;
+    if (saveBtn) saveBtn.style.display = 'none';  // 只读预览，不显示保存按钮
+    if (content) {
+      content.classList.add('file-editing');
+      const truncatedNote = data.truncated
+        ? `<div class="preview-note">文件过大（${formatBytes(data.size)}），仅显示前 ${data.preview_lines} 行（共 ${data.total_lines} 行）。如需查看完整内容，请使用「下载」或直连终端。</div>`
+        : '';
+      const previewText = data.content || '';
+      const lineCount = Math.max(1, previewText.split('\n').length);
+      const lineNumbers = Array.from({ length: lineCount }, (_, i) => i + 1).join('\n');
+      content.innerHTML = `<div class="file-editor-wrap">
+        <div id="managedFileLines" class="file-editor-lines">${lineNumbers}</div>
+        <pre id="managedFilePreview" class="file-editor preview-readonly">${escapeHtml(previewText)}</pre>
+      </div>${truncatedNote}`;
+      // 初始滚动到文件开头（pre 默认可能停在末尾）
+      const previewEl = document.getElementById('managedFilePreview');
+      if (previewEl) {
+        previewEl.scrollTop = 0;
+        previewEl.addEventListener('scroll', syncManagedFileLineScroll);
+      }
+    }
+    renderManagedTree();
+  } catch (e) {
+    addNotice('预览文件失败: ' + e.message, 'error');
   }
 }
 
@@ -4188,10 +4305,13 @@ function updateManagedFileLineNumbers() {
 }
 
 function syncManagedFileLineScroll() {
-  const editor = document.getElementById('managedFileEditor');
   const lines = document.getElementById('managedFileLines');
-  if (!editor || !lines) return;
-  lines.scrollTop = editor.scrollTop;
+  if (!lines) return;
+  const editor = document.getElementById('managedFileEditor');
+  const preview = document.getElementById('managedFilePreview');
+  const source = editor || preview;
+  if (!source) return;
+  lines.scrollTop = source.scrollTop;
 }
 
 async function saveManagedFile() {
@@ -5805,6 +5925,8 @@ function toggleDependencyNameSort() {
 function setDependencyRowSelected(index, selected) {
   const item = dependencyItems[index];
   if (!item) return;
+  // 已安装的依赖锁死，不可选择
+  if (item.precheck_status === 'installed') return;
   item.selected = selected;
   const row = dependencyReviewBody.querySelector(`tr[data-dependency-index="${index}"]`);
   if (!row) return;
@@ -5818,6 +5940,8 @@ function beginDependencyRowSelection(event, index) {
   if (event.target.closest('.use-suggested-btn')) return;
   const item = dependencyItems[index];
   if (!item) return;
+  // 已安装的依赖锁死，不可选择
+  if (item.precheck_status === 'installed') return;
   event.preventDefault();
   dependencyRowDragState = {
     startIndex: index,
@@ -5858,7 +5982,10 @@ function handleDependencyRowKeydown(event, index) {
   if (event.key !== ' ' && event.key !== 'Enter') return;
   event.preventDefault();
   const item = dependencyItems[index];
-  if (item) setDependencyRowSelected(index, !item.selected);
+  if (!item) return;
+  // 已安装的依赖锁死，不可选择
+  if (item.precheck_status === 'installed') return;
+  setDependencyRowSelected(index, !item.selected);
 }
 
 document.addEventListener('mouseup', finishDependencyRowSelection);
@@ -5942,6 +6069,19 @@ function renderDependencyReview() {
         <td class="dependency-progress-cell">${dependencyProgressMarkup(item)}</td>
       </tr>`;
     }
+    // 已安装的依赖：绿色锁死，不可选择（避免重复安装导致失败）
+    if (item.precheck_status === 'installed') {
+      return `<tr class="dependency-installed-row" data-dependency-index="${index}" title="${escapeHtml(item.precheck_detail || '已安装在项目环境，无需重复安装')}">
+        <td><input class="dependency-check" type="checkbox" disabled title="已安装，无需重复安装"></td>
+        <td class="dependency-name">${escapeHtml(item.name)}</td>
+        <td class="dependency-version" title="${escapeHtml(item.precheck_detail || '')}">${escapeHtml(version)}</td>
+        <td>${escapeHtml(item.manager || 'conda')}</td>
+        <td class="dependency-source" title="${escapeHtml(item.source || '')}">${escapeHtml(item.source || '-')}</td>
+        <td>${confidenceText(item.confidence)}</td>
+        <td class="${statusClass}" title="${escapeHtml(item.precheck_detail || '')}">${precheckText(item.precheck_status)}</td>
+        <td class="dependency-reason" title="${escapeHtml(item.reason || '')}">${escapeHtml(item.reason || '-')}</td>
+      </tr>`;
+    }
     return `<tr class="dependency-selectable-row" data-dependency-index="${index}" role="checkbox" aria-checked="${item.selected}" aria-label="选择 ${escapeHtml(item.name)}" tabindex="0" onmousedown="beginDependencyRowSelection(event, ${index})" onmouseenter="continueDependencyRowSelection(event, ${index})" onkeydown="handleDependencyRowKeydown(event, ${index})">
       <td><input class="dependency-check" type="checkbox" ${item.selected ? 'checked' : ''} tabindex="-1" aria-hidden="true" title="选择 ${escapeHtml(item.name)}"></td>
       <td class="dependency-name">${escapeHtml(item.name)}</td>
@@ -5982,7 +6122,8 @@ function toggleDependencyItem(index, selected) {
 }
 
 function selectedDependenciesFromReview() {
-  return dependencyItems.filter(item => item.selected);
+  // 已安装的依赖锁死，排除在选择之外（双保险，防止重复安装）
+  return dependencyItems.filter(item => item.selected && item.precheck_status !== 'installed');
 }
 
 async function confirmDependencySelection() {
@@ -6002,7 +6143,7 @@ async function confirmDependencySelection() {
     return;
   }
   dependencyPlanReady = true;
-  checkDepsBtn.textContent = '安装依赖';
+  checkDepsBtn.textContent = '检查依赖';
   userInput.placeholder = '还需更改';
   depsState = 'checked';
   await installProjectDependencies({ keepModalOpen: true });
@@ -6430,7 +6571,7 @@ async function installProjectDependencies(options = {}) {
   userInput.disabled = true;
   if (checkDepsBtn) {
     checkDepsBtn.disabled = true;
-    checkDepsBtn.textContent = '安装中';
+    checkDepsBtn.textContent = '检查依赖';
   }
   confirmRunBtn.disabled = true;
   dependencyReviewMode = 'installing';
@@ -7551,7 +7692,10 @@ function openManagedContextMenu(event, path, type) {
   const hasClipboard = !!managedClipboard;
   const items = [];
 
-  // 下载 / 复制路径：独立的一小组（普通菜单项，不带外框），放在最上面
+  // 上传 / 下载：独立的一小组（普通菜单项，不带外框），放在最上面
+  if (type === 'dir') {
+    items.push(`<button class="ctx-item" onclick="managedUploadFromContext()">上传</button>`);
+  }
   if (!isRoot) {
     items.push(`<button class="ctx-item" onclick="managedDownload()">下载</button>`);
   }
@@ -7654,6 +7798,28 @@ async function managedCopyPath() {
       addNotice('复制路径失败: ' + e2.message, 'error');
     }
   }
+}
+
+function managedUploadFromContext() {
+  // 右键菜单里的「上传」：上传到右键选中的目录。
+  // 右键打开时 selectedManagedPath/selectedManagedType 已指向该目录，
+  // managedUploadTargetPath() 会正确返回它。
+  if (!managedCtxTarget || managedCtxTarget.type !== 'dir') return;
+  closeManagedContextMenu();
+  if (isUploading) return;
+  fileUploadInput.value = '';
+  fileUploadInput.click();
+}
+
+function managedUploadFromContext() {
+  // 右键菜单「上传」：上传到右键选中的目录（managedCtxTarget 已记录目标）
+  if (!managedCtxTarget || managedCtxTarget.type !== 'dir') return;
+  closeManagedContextMenu();
+  if (isUploading) return;
+  // 复用现有文件选择输入，上传目标由 managedUploadTargetPath() 决定
+  // （右键时已设置 selectedManagedPath/selectedManagedType 为选中目录）
+  fileUploadInput.value = '';
+  fileUploadInput.click();
 }
 
 function managedDownload() {
