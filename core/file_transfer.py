@@ -229,6 +229,7 @@ def ensure_project_workspace(project_name: str) -> ProjectWorkspace:
     safe_project_name, project_dir, conda_env_dir = project_workspace(project_name)
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / ".slurm-agent").mkdir(parents=True, exist_ok=True)
+    _write_activate_script(project_dir, conda_env_dir)
     conda_created = ensure_conda_room(conda_env_dir)
     return ProjectWorkspace(
         project_name=safe_project_name,
@@ -238,11 +239,48 @@ def ensure_project_workspace(project_name: str) -> ProjectWorkspace:
     )
 
 
+ACTIVATE_SCRIPT_FILENAME = "activate.sh"
+
+
+def _write_activate_script(project_dir: Path, conda_env_dir: Path) -> None:
+    """在项目根目录生成 activate.sh，方便用户在命令行一键激活项目环境。
+
+    脚本不硬编码 conda 安装路径，而是用 `conda info --base` 动态定位 conda.sh，
+    因此对 miniconda3 / miniforge3 / anaconda3 等安装位置都适用。
+    """
+    script = f"""#!/usr/bin/env bash
+# 激活本项目专属的 Conda 环境（由 slurm-ai-agent 自动生成，可安全覆盖）。
+# 用法：在项目目录里执行  source activate.sh
+# 之后 `python` 即指向项目环境，`import numpy` 等依赖才能找到。
+
+set -u
+
+CONDA_BASE="$(conda info --base 2>/dev/null)"
+if [ -z "$CONDA_BASE" ]; then
+  echo "错误：找不到 conda，请先安装 Miniconda 或把 conda 加入 PATH。" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+source "$CONDA_BASE/etc/profile.d/conda.sh"
+conda activate "{conda_env_dir}"
+
+echo "已激活项目环境：{conda_env_dir}"
+echo "当前 python：$(which python)"
+"""
+    target = project_dir / ACTIVATE_SCRIPT_FILENAME
+    target.write_text(script, encoding="utf-8")
+    try:
+        target.chmod(0o644)
+    except OSError:
+        pass
+
+
 def ensure_project_directory(project_name: str) -> ProjectWorkspace:
     """Create only the project directory and metadata directory; do not create conda."""
     safe_project_name, project_dir, conda_env_dir = project_workspace(project_name)
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / ".slurm-agent").mkdir(parents=True, exist_ok=True)
+    _write_activate_script(project_dir, conda_env_dir)
     return ProjectWorkspace(
         project_name=safe_project_name,
         project_dir=project_dir,

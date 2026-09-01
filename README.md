@@ -130,8 +130,7 @@ export EMBEDDING_CACHE_DIR=".embedding_cache"  # 向量缓存目录
 ## 启动 Web 控制台
 
 服务以 **Unix Domain Socket 模式**启动：不监听任何 TCP 端口，只绑定项目目录内的
-`server.sock`。共享登录节点上其他用户既扫不到端口，也无法穿越 700 权限的家目录
-连接 socket——访问控制由文件系统权限在内核层强制执行。
+`server.sock`。共享登录节点上其他用户既扫不到端口，也无法穿越 700 权限的家目录连接 socket。
 
 ```bash
 cd slurm-ai-agent
@@ -188,6 +187,56 @@ Host 107.ustc.edu.cn
 - 程序结果：直接写在当前运行目录（项目根或所选子目录）
 - Slurm stdout：`logs/<作业名>-%j.out`
 - Slurm stderr：`logs/<作业名>-%j.err`
+
+## 在命令行里运行项目脚本（重要）
+
+每个项目都有自己独立的 conda 环境，位于：
+
+```text
+~/projects/<项目名>/.slurm-agent/conda-env
+```
+
+通过 Web 控制台「检查依赖 → 安装依赖」装进去的包（numpy、pandas 等）都装在这个
+环境里，**不会**装进 `base` 环境，也不会装进系统 Python。
+
+因此，如果你在登录节点的命令行里直接跑项目脚本，**不要用裸 `python`**——裸
+`python` 指向的是系统 Python（`/usr/bin/python`），它看不到项目环境里的包，会报
+`ModuleNotFoundError: No module named 'numpy'` 之类的错。
+
+正确做法是二选一：
+
+**方式 A：用项目自带的激活脚本（最方便，推荐）**
+
+每个项目目录里都自动生成了一个 `activate.sh`，进到项目目录后一行即可激活：
+
+```bash
+cd ~/projects/<项目名>
+source activate.sh
+python 你的脚本.py
+```
+
+`activate.sh` 会自动定位 conda 并激活本项目环境，不依赖 conda 的具体安装路径
+（miniconda3 / miniforge3 / anaconda3 都适用）。
+
+**方式 B：直接用项目环境的 Python（不激活，单次运行）**
+
+```bash
+cd ~/projects/<项目名>
+~/projects/<项目名>/.slurm-agent/conda-env/bin/python 你的脚本.py
+```
+
+**方式 C：手动激活项目环境**
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate ~/projects/<项目名>/.slurm-agent/conda-env
+cd ~/projects/<项目名>
+python 你的脚本.py
+```
+
+> 激活后 `which python` 会指向项目环境的 Python，此时 `import numpy` 等才能找到。
+> 判断是否用对了环境，可以执行 `which python` 确认路径里包含
+> `.slurm-agent/conda-env`。
 
 ## 终端模式
 
