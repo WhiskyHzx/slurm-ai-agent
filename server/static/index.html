@@ -2869,6 +2869,37 @@
   }
 
   /* ===== 文件管理上传模态框 ===== */
+  .managed-upload-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .managed-upload-send {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity .2s ease, transform .2s ease;
+  }
+
+  .managed-upload-send:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .managed-upload-send:disabled {
+    opacity: .35;
+    cursor: not-allowed;
+  }
+
   .managed-upload-dropzone {
     display: flex;
     flex-direction: column;
@@ -3257,7 +3288,14 @@
 
 <div id="managedUploadModal" class="modal-backdrop" onclick="closeManagedUploadModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-head">上传到 <span id="managedUploadTargetLabel"></span></div>
+    <div class="modal-head managed-upload-head">
+      <span>上传到 <span id="managedUploadTargetLabel"></span></span>
+      <button id="managedUploadConfirmBtn" class="managed-upload-send" onclick="managedUploadConfirm()" disabled title="上传">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 19V5m0 0l-6 6m6-6l6 6"></path>
+        </svg>
+      </button>
+    </div>
     <div class="modal-body">
       <div id="managedUploadDropzone" class="managed-upload-dropzone">
         <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -3272,10 +3310,6 @@
         <button class="btn" onclick="managedUploadPickFolder()">选择文件夹</button>
       </div>
       <div id="managedUploadList" class="managed-upload-list"></div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn" onclick="closeManagedUploadModal(event)">取消</button>
-      <button id="managedUploadConfirmBtn" class="btn primary" onclick="managedUploadConfirm()" disabled>上传</button>
     </div>
   </div>
 </div>
