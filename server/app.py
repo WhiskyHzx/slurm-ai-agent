@@ -35,6 +35,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from agent.agent_loop import AgentLoop, SYSTEM_PROMPT
 from agent.llm_provider import LLMProvider
@@ -4304,29 +4305,48 @@ def managed_file_download(path: str):
                 media_type="application/octet-stream",
             )
 
-        # 文件夹：打包成 zip 后返回（排除敏感/内部文件）
+        # 文件夹：在磁盘临时文件中构建 zip，避免大目录占满服务进程内存。
         if target.is_dir():
-            # 不打包的目录/文件：密钥、git 内部、缓存、运行产物
-            SKIP_DIRS = {".git", ".slurm-agent", "__pycache__", ".venv", "venv", "runs", "logs", ".embedding_cache"}
-            SKIP_FILES = {".env", ".DS_Store"}
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file_path in sorted(target.rglob("*")):
-                    if not file_path.is_file():
-                        continue
-                    # 跳过敏感/内部文件
-                    if any(part in SKIP_DIRS for part in file_path.relative_to(target).parts):
-                        continue
-                    if file_path.name in SKIP_FILES:
-                        continue
-                    arcname = file_path.relative_to(target.parent)
-                    zf.write(file_path, arcname)
-            zip_buffer.seek(0)
-            zip_name = f"{target.name}.zip"
-            return StreamingResponse(
-                zip_buffer,
+            skip_dirs = {
+                ".git", ".slurm-agent", ".ssh", "__pycache__",
+                ".venv", "venv", ".embedding_cache",
+            }
+            skip_files = {".env", ".DS_Store"}
+            temp_handle = tempfile.NamedTemporaryFile(
+                prefix="slurm-agent-download-", suffix=".zip", delete=False
+            )
+            zip_path = Path(temp_handle.name)
+            temp_handle.close()
+            try:
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    # 保留顶层目录和空目录；在遍历阶段直接剪枝大型内部目录。
+                    zf.writestr(f"{target.name}/", "")
+                    for current_root, dir_names, file_names in os.walk(
+                        target, topdown=True, followlinks=False
+                    ):
+                        current_dir = Path(current_root)
+                        dir_names[:] = sorted(
+                            name for name in dir_names
+                            if name not in skip_dirs and not (current_dir / name).is_symlink()
+                        )
+                        for dir_name in dir_names:
+                            directory = current_dir / dir_name
+                            arcname = directory.relative_to(target.parent).as_posix()
+                            zf.writestr(arcname.rstrip("/") + "/", "")
+                        for file_name in sorted(file_names):
+                            item = current_dir / file_name
+                            if item.is_symlink() or file_name in skip_files:
+                                continue
+                            arcname = item.relative_to(target.parent).as_posix()
+                            zf.write(item, arcname)
+            except Exception:
+                zip_path.unlink(missing_ok=True)
+                raise
+            return FileResponse(
+                str(zip_path),
+                filename=f"{target.name}.zip",
                 media_type="application/zip",
-                headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+                background=BackgroundTask(zip_path.unlink, missing_ok=True),
             )
 
         return JSONResponse({"error": "目标既不是文件也不是文件夹"}, status_code=400)

@@ -1,56 +1,100 @@
 # Slurm AI Agent
 
-面向 USTC 107 算力平台的 Slurm 智能助手。项目运行在算力平台登录节点上，提供 Web 控制台和智能体聊天窗口，用于查看资源/作业状态、创建计算项目、上传文件、生成提交前建议报告，并在用户确认后继续准备 Slurm 作业提交。
+Slurm AI Agent 是面向 USTC 107 算力平台的智能作业助手。它部署在平台登录节点上，将项目文件、Python 环境、Slurm 资源、作业提交和运行结果集中到一个 Web 工作区中，并通过大模型帮助用户理解平台、准备任务和排查问题。
+
+项目希望降低 Slurm 的使用门槛，同时保留批处理作业应有的可控性：用户始终决定安装哪些依赖、申请多少资源以及何时提交作业；系统负责整理上下文、生成建议、校验配置，并把任务从准备阶段持续跟踪到结果分析。
 
 ## 功能概览
 
-- 资源看板：展示节点、GPU/CPU 使用情况、作业列表和当前用户作业。
-- 智能助手：通过 OpenAI 兼容接口调用大模型，支持 Function Calling 调用 Slurm 工具。
-- Slurm 工具：查询作业、查询节点/QoS、提交/取消作业、读取日志、生成 sbatch 脚本。
-- 知识库检索：基于 embedding 向量检索，从 107 平台文档中检索与用户问题最相关的片段。
-- 项目工作流：新建作业目录、记录用户需求、自动准备 per-project conda 环境。
-- 文件上传：浏览器选择文件或文件夹，服务端打包、SHA256 校验并解压到项目目录。
-- 提交前报告：读取项目目录、用户需求记录和可阅读源码/脚本/配置文本，生成依赖和算力配置建议。
-- 确认执行：报告生成后由用户确认，再交给智能体继续生成提交命令或提交作业。
+- **集群资源与作业看板**：集中展示节点、CPU/GPU 使用情况、实时作业和个人历史作业，帮助用户在提交前了解资源状态，在提交后掌握任务进展。
+- **项目化工作空间**：以 `~/projects` 下的项目目录组织代码、数据、会话和运行结果。一个项目可以包含多个独立运行目录，各目录拥有自己的对话上下文，并共享项目级 Python 环境。
+- **智能助手**：支持自然语言查询集群信息、解释 Slurm 概念、检索平台文档、生成作业命令、读取项目文件和分析运行日志。模型可在 Web 界面中切换，并通过工具调用获取真实的项目与集群上下文。
+- **环境与依赖管理**：为每个项目准备独立的 Conda 环境，分析依赖清单、源码和配置文件，给出结构化依赖建议，并在用户确认后完成安装和验证。
+- **作业规划与提交**：用户可以选择账户、分区、QoS、CPU、GPU、内存和时限，结合 AI 建议或作业模板准备任务。系统在提交前统一校验运行目录、资源配置和执行命令。
+- **作业模板**：提供单卡 PyTorch、多卡 DDP、CPU 批处理、Job Array、Jupyter 和通用脚本等模板，也支持保存个人模板供不同项目复用。
+- **监控、报告与结果浏览**：持续跟踪已提交作业；任务结束后汇总 Slurm 状态和输出日志，生成成功或失败报告，并支持在线浏览文本结果或打包下载输出目录。
+- **文件、终端与平台文档**：内置文件管理器、登录节点终端和 107 平台文档阅读器，覆盖上传、编辑、下载、命令行操作以及独立的文档问答场景。
+- **面向共享节点的安全访问**：服务默认绑定 Unix Domain Socket，通过 SSH 隧道在本地浏览器访问，避免直接暴露登录节点上的 TCP 端口。
 
-## 项目结构
+## 典型使用场景
+
+- 第一次使用 Slurm，希望从项目上传、环境准备到作业提交获得完整引导。
+- 运行课程作业、深度学习训练、数值计算、数据处理或批量实验。
+- 不确定该选择哪个分区、QoS 或资源规格，需要结合平台现状进行配置。
+- 项目依赖复杂，希望先识别并确认依赖，再安装到隔离环境中。
+- 作业失败后，需要结合任务状态、标准输出和错误日志定位原因。
+- 希望在浏览器中统一管理远端文件、终端、平台文档和历史结果。
+
+## Web 控制台
+
+Web 控制台由三个协同区域组成：
+
+- 左侧管理项目、运行目录和文件，也可切换到平台文档或完整文件管理器。
+- 中间是智能助手，用于讨论需求、检查依赖、准备作业和查看分析结果。
+- 右侧展示节点与作业状态，提供资源详情和个人历史作业。
+
+顶部入口可以打开登录节点终端；帮助文档和文件管理器各自拥有独立问答会话，不会与项目作业的上下文混在一起。
+
+## 用户工作流程
+
+1. **进入控制台并选择项目**  
+   通过 SSH 隧道打开 Web 控制台，选择已有项目，或创建一个新的项目工作空间。需要时可在项目下建立多个运行目录，分别组织不同数据集、实验或任务。
+
+2. **准备代码、数据和环境**  
+   上传项目文件，或使用文件管理器和内置终端进行整理。系统为项目维护独立 Conda 环境，同一项目中的多个运行目录可以共享已经安装的依赖。
+
+3. **与智能助手确认需求**  
+   描述任务目标、依赖要求或算力需求。助手可以读取当前项目结构、搜索平台文档并查询集群状态，让建议建立在实际上下文之上。
+
+4. **检查并安装依赖**  
+   运行依赖检查，审阅系统识别出的包、版本要求和安装方式。确认需要安装的内容后，系统将它们安装到当前项目环境，并在界面中展示进度与结果。
+
+5. **布置作业**  
+   选择运行目录和 Slurm 资源，填写或生成实际执行命令。常见任务可以从内置模板或个人模板开始，也可以让助手结合项目文件生成建议。
+
+6. **确认并提交**  
+   检查作业名称、资源规格、运行目录和命令。确认后由服务统一生成并提交作业脚本，Web 提交和智能助手提交遵循相同的校验规则。
+
+7. **跟踪作业状态**  
+   在资源面板中查看排队、运行和结束状态；也可以向助手询问作业详情、调度优先级、资源占用或历史记录。
+
+8. **查看和分析结果**  
+   作业结束后，从会话消息进入报告阅读器，查看日志和输出文件，或下载完整结果。失败任务可以继续交给助手分析并给出修改建议。
+
+默认情况下，作业日志、提交脚本和分析报告保存在所选运行目录的 `logs/` 中；程序生成的模型、指标和其他产物由实际命令决定，建议统一写入 `runs/` 或其他固定输出目录。
+
+## 工作空间与环境模型
+
+项目数据默认位于 `~/projects/<项目名>`：
 
 ```text
-slurm-ai-agent/
-├── agent/
-│   ├── agent_loop.py          # Function Calling 主循环和终端交互
-│   ├── llm_provider.py        # OpenAI 兼容 LLM 客户端
-│   └── tools_registry.py      # Slurm/知识库/模板工具定义与执行调度
-├── config/
-│   ├── settings.py            # API、模型、分区和默认参数
-│   └── templates/             # sbatch 脚本模板
-├── core/
-│   ├── file_transfer.py       # 项目目录、上传归档、SHA 校验、conda 环境创建
-│   ├── knowledge_base.py      # 文档知识库向量检索（embedding）
-│   ├── slurm_client.py        # Slurm REST API 客户端和 JWT 刷新
-│   └── template_engine.py     # 作业脚本模板渲染
-├── server/
-│   ├── app.py                 # FastAPI 后端、Dashboard API、项目/上传/报告 API
-│   └── static/index.html      # Web 控制台和智能体界面
-├── docs/docs-main/            # 107 平台文档镜像，用于知识库
-├── evaluation/                # API 能力确认、比赛方案评估和使用说明
-├── requirements.txt
-└── README.md
+~/projects/<项目名>/
+├── activate.sh                    # 激活项目环境
+├── <代码、数据与配置>
+├── <运行目录>/                    # 可选；用于组织不同实验
+├── logs/                          # 作业脚本、标准输出、错误日志和报告
+├── runs/                          # 建议用于保存训练或计算产物
+└── .slurm-agent/
+    └── conda-env/                 # 项目独立 Conda 环境
 ```
 
-## 运行环境
+Web 服务和用户项目使用不同的 Python 环境：
 
-- Python 3.10+
-- Miniconda/conda 可用，用于为每个项目创建独立环境
-- 在 107 算力平台登录节点运行，例如 `tradmin-01` / `tradmin-02`
-- 可访问 Slurm REST API：`http://107.ustc.edu.cn:6820`
-- 可访问 LLM API：`https://api.llm.ustc.edu.cn/v1`（对话 + embedding）
+- 仓库根目录的 `.venv` 只运行 Slurm AI Agent 服务。
+- 每个用户项目的 `.slurm-agent/conda-env` 只承载该项目的计算依赖。
 
-## 准备 Miniconda（conda）环境
+这种划分可以避免污染系统 Python 或 Conda base，也让不同项目之间的依赖相互隔离。
 
-本项目为每个项目创建独立 conda 环境。如果登录节点上还没有 conda/mamba，请先安装 Miniconda。
+## 快速开始
 
-### 安装 Miniconda
+### 1. 运行要求
+
+- Python 3.10 或更高版本。
+- Miniconda、Miniforge 或 Anaconda，用于创建项目环境。
+- 在 USTC 107 算力平台登录节点上运行，例如 `tradmin-01` 或 `tradmin-02`。
+- 能够访问平台 Slurm REST API 和 OpenAI 兼容的大模型 API。
+
+如果登录节点还没有 Conda，可以安装 Miniconda：
 
 ```bash
 cd ~
@@ -60,30 +104,9 @@ bash Miniconda3-latest-Linux-x86_64.sh -b -p "$HOME/miniconda3"
 source ~/.bashrc
 ```
 
-> 如果 conda 提示需要接受 Anaconda 服务条款，先执行：
->
-> ```bash
-> conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
-> conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
-> ```
+如果 Conda 提示需要接受 Anaconda 服务条款，请按提示接受对应 channel 的条款。更完整的环境说明见 [环境配置文档](docs/docs-main/docs/basics/environments.md)。
 
-### 配置软件源（可选，加速国内下载）
-
-```bash
-cat > ~/.condarc <<'EOF'
-channels:
-  - https://mirrors.ustc.edu.cn/anaconda/cloud/conda-forge
-  - https://mirrors.ustc.edu.cn/anaconda/pkgs/main
-  - https://mirrors.ustc.edu.cn/anaconda/pkgs/r
-show_channel_urls: true
-EOF
-
-pip config set global.index-url https://mirrors.ustc.edu.cn/pypi/web/simple
-```
-
-更完整的 conda 环境配置说明见：`docs/docs-main/docs/basics/environments.md`。
-
-## 安装
+### 2. 安装服务依赖
 
 ```bash
 cd slurm-ai-agent
@@ -92,190 +115,169 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **环境边界**：服务自身的依赖固定用 venv + pip 管理（如上）；conda 只服务于用户项目的科学计算环境（`<项目>/.slurm-agent/conda-env`），不要把服务依赖装进 conda base，也不要用 conda base 的 Python 跑本服务。
+不要把服务依赖安装到 Conda base。项目计算环境会在创建 Web 项目时单独准备。
 
-## 配置
+### 3. 配置服务
 
-项目只从环境变量或本地 `.env` 读取密钥，`.env` 不会提交到 Git。
+密钥可以通过环境变量或仓库根目录下的 `.env` 提供；`.env` 已被 Git 忽略。
 
 ```bash
 export LLM_API_KEY="你的学校大模型 API Key"
 export LLM_MODEL="deepseek-v4-flash"
 
-# 可选。默认会在需要时通过 scontrol token 自动刷新。
+# 可选；未设置时，服务会在需要时通过 scontrol token 获取或刷新
 export SLURM_JWT="$(scontrol token lifespan=86400 | sed 's/SLURM_JWT=//')"
 ```
 
-常用可选变量：
+默认服务地址已经针对 107 平台配置。如部署环境不同，可通过下文的配置项覆盖。
 
-```bash
-export SLURM_API_BASE_URL="http://107.ustc.edu.cn:6820"
-export SLURM_REMOTE_PROJECTS_BASE="~/projects"
-export SLURM_CONDA_EXE="$HOME/miniconda3/bin/conda"
-export SLURM_PROJECT_CONDA_PYTHON="3.10"
-export SLURM_UPLOAD_MAX_BYTES="2147483648"
-```
-
-知识库检索使用 embedding 向量检索，相关可选变量：
-
-```bash
-export EMBEDDING_MODEL="qwen3-embedding"   # 默认 qwen3-embedding
-export RERANKER_MODEL="qwen3-reranker"    # 预留，未启用
-export EMBEDDING_CACHE_DIR=".embedding_cache"  # 向量缓存目录
-```
-
-> 知识库向量检索会在首次使用时自动构建索引并缓存到本地，之后直接读缓存；文档更新后可调用 `rebuild_index()` 或删除缓存目录重新构建。
-
-
-## 启动 Web 控制台
-
-服务以 **Unix Domain Socket 模式**启动：不监听任何 TCP 端口，只绑定项目目录内的
-`server.sock`。共享登录节点上其他用户既扫不到端口，也无法穿越 700 权限的家目录连接 socket。
+### 4. 启动服务
 
 ```bash
 cd slurm-ai-agent
-./start-server.sh   # 自动选择 .venv/miniconda 解释器，后台常驻运行
-
-# 等价的手动启动方式：
-# source .venv/bin/activate
-# PYTHONPATH=. uvicorn server.app:app --uds "$PWD/server.sock"
-# chmod 600 server.sock   # uvicorn 默认建 666，必须收紧
+./start-server.sh
 ```
 
-启动后约需 40 秒初始化，验证健康：
+启动脚本会在后台运行 FastAPI 服务，并创建权限受限的 `server.sock`。可以通过以下命令检查服务是否可用：
 
 ```bash
-curl --unix-socket server.sock http://localhost/api/dashboard
+curl --unix-socket server.sock http://localhost/health
 ```
 
-### 本地浏览器访问（SSH 隧道）
+服务启动日志写入 `server.log`。
 
-浏览器不能直接访问 Unix socket，需在本地 `~/.ssh/config` 中配置转发：
+### 5. 从本地浏览器访问
 
-```
+浏览器不能直接访问远端 Unix socket，需要在本地 `~/.ssh/config` 中配置转发：
+
+```sshconfig
 Host 107.ustc.edu.cn
-  LocalForward 8080 /home/<user>/slurm-ai-agent/server.sock
+  LocalForward 8080 /home/<用户名>/slurm-ai-agent/server.sock
 ```
 
-之后浏览器访问 `http://localhost:8080`。VS Code Remote-SSH 会自动执行该转发
-规则；注意修改 config 后需先 `ssh -O exit 107.ustc.edu.cn` 断开旧主连接
-（若启用了 ControlPersist），再重连才能生效。
+重新建立 SSH 连接后，在本地浏览器打开 <http://localhost:8080>。如果启用了 `ControlPersist`，修改 SSH 配置后需要先关闭旧主连接，再重新连接：
 
-> 历史版本曾用 `--host 0.0.0.0` / `--host 127.0.0.1` 监听 TCP 8080，在多用户
-> 共享的登录节点上存在被同节点其他用户直接访问的风险（回环地址全机共享，
-> TCP 端口无属主概念），已废弃。禁止再用任何 `--host` 方式启动。
-
-## Web 工作流
-
-1. 点击右上角 `+ 新作业`。
-2. 填写作业目录名称、环境依赖要求、算力特别需求。
-3. 后端创建 `~/projects/<作业目录名称>`，并初始化 `<作业目录>/.slurm-agent/conda-env`。
-4. 在智能体输入框上方点击 `文件` 或 `文件夹` 上传项目内容。
-5. 点击 `建议报告`。
-6. 后端读取：
-   - 作业目录名称和作业目录
-   - 用户输入记录 `PROJECT_NOTES.txt`
-   - 项目目录摘要
-   - 可直接阅读的文本/源码/脚本/配置文件
-   - conda 包查询结果
-7. 智能体返回依赖安装建议、算力配置建议、输出路径规范、待确认问题和 sbatch 草案。
-8. 如需修改，在输入框补充意见后再次点击 `建议报告`。
-9. 确认无误后点击 `确认执行`，智能体继续准备提交命令或调用提交工具。
-
-输出路径规范：
-
-- 程序结果：直接写在当前运行目录（项目根或所选子目录）
-- Slurm stdout：`logs/<作业名>-%j.out`
-- Slurm stderr：`logs/<作业名>-%j.err`
-
-## 在命令行里运行项目脚本（重要）
-
-每个项目都有自己独立的 conda 环境，位于：
-
-```text
-~/projects/<项目名>/.slurm-agent/conda-env
+```bash
+ssh -O exit 107.ustc.edu.cn
 ```
 
-通过 Web 控制台「检查依赖 → 安装依赖」装进去的包（numpy、pandas 等）都装在这个
-环境里，**不会**装进 `base` 环境，也不会装进系统 Python。
+> 不要改用 `uvicorn --host ...` 暴露 TCP 端口。共享登录节点上的本机端口并不只属于当前用户，项目默认的 Unix socket 方式提供了更合适的访问边界。
 
-因此，如果你在登录节点的命令行里直接跑项目脚本，**不要用裸 `python`**——裸
-`python` 指向的是系统 Python（`/usr/bin/python`），它看不到项目环境里的包，会报
-`ModuleNotFoundError: No module named 'numpy'` 之类的错。
+## 在命令行中使用项目环境
 
-正确做法是二选一：
-
-**方式 A：用项目自带的激活脚本（最方便，推荐）**
-
-每个项目目录里都自动生成了一个 `activate.sh`，进到项目目录后一行即可激活：
+通过 Web 控制台安装的依赖位于项目自己的 Conda 环境中。在登录节点手动运行项目脚本时，推荐先使用项目根目录下的激活脚本：
 
 ```bash
 cd ~/projects/<项目名>
 source activate.sh
-python 你的脚本.py
+python your_script.py
 ```
 
-`activate.sh` 会自动定位 conda 并激活本项目环境，不依赖 conda 的具体安装路径
-（miniconda3 / miniforge3 / anaconda3 都适用）。
-
-**方式 B：直接用项目环境的 Python（不激活，单次运行）**
+也可以直接调用项目环境中的 Python：
 
 ```bash
-cd ~/projects/<项目名>
-~/projects/<项目名>/.slurm-agent/conda-env/bin/python 你的脚本.py
+~/projects/<项目名>/.slurm-agent/conda-env/bin/python your_script.py
 ```
 
-**方式 C：手动激活项目环境**
+如果出现 `ModuleNotFoundError`，先运行 `which python`，确认路径中包含 `.slurm-agent/conda-env`。
 
-```bash
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate ~/projects/<项目名>/.slurm-agent/conda-env
-cd ~/projects/<项目名>
-python 你的脚本.py
-```
+## 命令行智能助手
 
-> 激活后 `which python` 会指向项目环境的 Python，此时 `import numpy` 等才能找到。
-> 判断是否用对了环境，可以执行 `which python` 确认路径里包含
-> `.slurm-agent/conda-env`。
-
-## 终端模式
+除了 Web 控制台，也可以直接启动交互式 Agent：
 
 ```bash
 PYTHONPATH=. python agent/agent_loop.py -i
 ```
 
-可直接输入自然语言问题，例如：
+示例问题：
 
 ```text
-帮我看看 P107-RTX5090 分区有哪些正在运行的作业
-帮我生成一个单 GPU PyTorch 训练脚本
-读取 40301 的错误日志并分析失败原因
+查看 P107-RTX5090 分区当前有哪些作业
+为这个项目生成一个单 GPU PyTorch 训练脚本
+读取作业 40301 的错误日志并分析失败原因
 ```
 
-## 主要 API
+命令行模式主要适合查询、诊断和脚本生成；完整的项目准备、依赖确认和结果浏览流程建议使用 Web 控制台。
 
-- `GET /`：Web 控制台
-- `GET /health`：健康检查
-- `GET /api/dashboard`：资源和作业概览
-- `POST /api/slurm/refresh`：在登录节点刷新 Slurm JWT
-- `POST /api/projects`：创建作业目录、初始化项目 Conda 环境、记录需求
-- `POST /api/files/upload`：上传文件/文件夹
-- `POST /api/projects/report`：生成提交前建议报告
-- `POST /chat`：智能体 SSE 聊天接口
-- `POST /reset`：重置智能体上下文
+## 配置参考
 
-## 安全说明
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `LLM_API_KEY` | 无 | OpenAI 兼容模型服务的 API Key，必填 |
+| `LLM_BASE_URL` | `https://api.llm.ustc.edu.cn/v1` | 对话与模型列表服务地址 |
+| `LLM_MODEL` | `deepseek-v4-flash` | 默认对话模型；也可在 Web 界面中切换 |
+| `EMBEDDING_MODEL` | `qwen3-embedding` | 平台文档向量检索模型 |
+| `SLURM_API_BASE_URL` | `http://107.ustc.edu.cn:6820` | Slurm REST API 地址 |
+| `SLURM_API_PREFIX` | `/slurm/v0.0.41` | Slurm REST API 版本前缀 |
+| `SLURM_JWT` | 自动获取 | Slurm REST API 认证令牌 |
+| `SLURM_REMOTE_PROJECTS_BASE` | `~/projects` | Web 项目工作空间根目录 |
+| `SLURM_CONDA_EXE` | 自动探测 | Conda 可执行文件路径 |
+| `SLURM_PROJECT_CONDA_PYTHON` | `3.10` | 新建项目环境的 Python 版本 |
+| `SLURM_UPLOAD_MAX_BYTES` | `2147483648` | 单次项目上传的总大小上限 |
 
-- 不提交 `.env`、Token、API Key、日志、运行输出和上传缓存。
-- 上传路径会拒绝绝对路径、`..` 和 `.slurm-agent` 目录。
-- 上传归档会在服务端保存后重新计算 SHA256。
-- 每个项目使用独立 conda 环境，避免污染全局环境。
-- 报告阶段不会自动安装依赖或提交作业，必须由用户点击 `确认执行`。
+还可以配置模型输出、安装超时、上传文件数量、Conda channel 和文件预览上限等参数，具体定义见 `config/settings.py`、`core/file_transfer.py` 和 `server/app.py`。
 
-## 验证
+## 系统架构
 
-```bash
-python3 -m py_compile server/app.py core/file_transfer.py core/slurm_client.py agent/agent_loop.py agent/tools_registry.py
+```text
+本地浏览器
+    │ SSH 隧道
+    ▼
+Unix Domain Socket
+    │
+    ▼
+FastAPI 服务 ── Web 控制台 / 文件管理 / 终端 / 作业监控
+    ├── Agent 与 OpenAI 兼容模型
+    ├── 平台文档知识库
+    ├── 项目目录与 Conda 环境
+    └── Slurm REST API 与只读 CLI 工具
 ```
 
-前端是纯 HTML/CSS/JS，无构建步骤；可以通过浏览器访问运行中的 FastAPI 服务验证。
+核心模块：
+
+```text
+slurm-ai-agent/
+├── agent/                       # 智能体循环、模型客户端和工具注册
+├── config/                      # 运行配置、模型选择和内置作业模板
+├── core/                        # Slurm、知识库、依赖、文件与模板能力
+├── server/
+│   ├── app.py                   # FastAPI 后端与主要业务流程
+│   ├── terminal.py              # WebSocket PTY 终端
+│   └── static/                  # 单页 Web 控制台与 xterm.js 资源
+├── docs/docs-main/docs/         # 内置 107 平台使用文档
+├── evaluation/                  # 平台能力实测和评估资料
+├── start-server.sh              # Unix socket 启动脚本
+└── requirements.txt             # 服务端 Python 依赖
+```
+
+## API 与开发
+
+FastAPI 会提供交互式接口文档。服务启动后，可通过同一 SSH 隧道访问 <http://localhost:8080/docs>。
+
+后端接口按能力分为以下几组：
+
+- 集群资源、Slurm 认证和历史作业。
+- 项目、会话、运行目录、上传和依赖管理。
+- 作业配置、模板、提交、监控、报告和结果下载。
+- 平台文档、用户文件管理和 WebSocket 终端。
+- 模型列表、模型切换和 SSE 流式智能体对话。
+
+前端使用原生 HTML、CSS 和 JavaScript，无需额外构建步骤。服务端依赖见 `requirements.txt`；API 实现集中在 `server/app.py`。
+
+## 安全边界
+
+- API Key、Slurm Token 和其他密钥只从环境变量或本地 `.env` 读取，不应提交到仓库。
+- Web 服务默认只监听项目目录内的 Unix socket，并将 socket 权限限制为当前用户可访问。
+- 文件操作限制在允许的工作目录中，并保护项目内部状态目录等关键路径。
+- 每个项目使用独立 Conda 环境，避免修改系统 Python、Conda base 或其他项目环境。
+- 依赖安装、作业提交和作业取消属于有副作用的操作，需要由用户明确发起。
+- 智能体提交作业时使用与 Web 控制台相同的资源和路径校验流程，不能通过生成任意完整脚本绕过提交边界。
+
+## 相关文档
+
+- [107 平台快速开始](docs/docs-main/docs/quickstart.md)
+- [环境配置](docs/docs-main/docs/basics/environments.md)
+- [提交任务](docs/docs-main/docs/basics/jobs.md)
+- [Slurm 速查](docs/docs-main/docs/basics/slurm.md)
+- [常见问题](docs/docs-main/docs/basics/faq.md)
+- [平台 API 与命令能力实测](evaluation/107-api-capability-report.md)
