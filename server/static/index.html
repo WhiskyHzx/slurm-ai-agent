@@ -1697,40 +1697,7 @@
     user-select: none !important;
   }
 
-  /* 安装中：弹窗顶部的整体进度横幅（真实 SSE 百分比） */
-  .install-progress-banner {
-    padding: 12px 14px 2px;
-  }
-
-  .install-progress-info {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    margin-bottom: 7px;
-  }
-
-  .install-progress-percent {
-    font-weight: 700;
-    font-size: 13px;
-    color: var(--blue);
-    font-variant-numeric: tabular-nums;
-    min-width: 40px;
-  }
-
-  .install-progress-percent.done { color: var(--green); }
-  .install-progress-percent.failed { color: var(--red); }
-
-  .install-progress-stage {
-    flex: 1;
-    min-width: 0;
-    font-size: 12px;
-    color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .install-progress-track { height: 8px; }
+  /* 安装中：弹窗顶部不再有总进度条，进度由命令列表状态 + 右侧真实终端承载 */
 
   .dependency-name {
     font-weight: 700;
@@ -1828,6 +1795,266 @@
 
   .dependency-status-mark.failed {
     color: var(--red);
+  }
+
+  /* 简化后的依赖项状态显示（替代假的进度条） */
+  .dependency-progress-simple {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 80px;
+  }
+
+  .dependency-status-icon {
+    font-size: 14px;
+    width: 16px;
+    text-align: center;
+    color: var(--muted);
+  }
+
+  .dependency-progress-simple.active .dependency-status-icon {
+    color: var(--blue);
+    animation: iconPulse 1.5s ease-in-out infinite;
+  }
+
+  .dependency-progress-simple.done .dependency-status-icon {
+    color: var(--green);
+  }
+
+  .dependency-progress-simple.failed .dependency-status-icon {
+    color: var(--red);
+  }
+
+  .dependency-status-text {
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .dependency-progress-simple.done .dependency-status-text {
+    color: var(--green);
+  }
+
+  .dependency-progress-simple.failed .dependency-status-text {
+    color: var(--red);
+  }
+
+  .dependency-progress-simple.active .dependency-status-text {
+    color: var(--blue);
+  }
+
+  @keyframes iconPulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+
+  /* 命令视图：安装期间展示实际执行的命令及其进度 */
+  .install-command-row .command-index {
+    width: 30px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  .install-command-row .command-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    white-space: normal;
+    word-break: break-all;
+    line-height: 1.5;
+    min-width: 160px;
+  }
+
+  /* 进度列：百分比 + 阶段两行显示，完整可见不截断 */
+  .install-command-row .dependency-progress-cell {
+    min-width: 170px;
+    max-width: 240px;
+  }
+
+  .install-command-row .dependency-progress-simple {
+    align-items: flex-start;
+  }
+
+  .install-command-row .dependency-progress-text {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .install-command-row .dependency-progress-percent {
+    font-weight: 700;
+    font-size: 12px;
+    line-height: 1.2;
+  }
+
+  .install-command-row .dependency-progress-simple.active .dependency-progress-percent { color: var(--blue); }
+  .install-command-row .dependency-progress-simple.done .dependency-progress-percent { color: var(--green); }
+  .install-command-row .dependency-progress-simple.failed .dependency-progress-percent { color: var(--red); }
+
+  .install-command-row .dependency-progress-stage {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.4;
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  .install-command-row.done .command-text { color: var(--green); }
+  .install-command-row.failed .command-text { color: var(--red); }
+
+  /* 命令视图两栏布局：左真实终端（xterm.js），右命令+进度列表；
+     按钮栏占列表一列的第二行，不横跨弹窗全宽 */
+  .dependency-main-area.command-view {
+    display: grid;
+    grid-template-columns: minmax(0, 9fr) minmax(0, 11fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 0 8px 8px;
+    align-items: stretch;
+    height: min(62vh, 540px);
+  }
+
+  .dependency-main-area.command-view > .install-terminal-view {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .dependency-main-area.command-view > .dependency-table-wrap {
+    grid-column: 2;
+    grid-row: 1;
+    max-height: none;
+    min-height: 0;
+  }
+
+  .dependency-main-area.command-view > .dependency-actions {
+    grid-column: 2;
+    grid-row: 2;
+    padding: 10px 0 0;
+  }
+
+  /* 真实终端：xterm.js 渲染 PTY 原始输出（颜色、进度条动画与真实终端一致），
+     命令视图中位于左栏 */
+  .install-terminal-view {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    min-height: 0;
+    background: var(--code-bg);
+  }
+
+  /* display:flex 会覆盖 hidden 属性的默认 display:none，必须显式关掉，
+     否则列表/审查模式下终端面板会带着残留内容显示出来 */
+  .install-terminal-view[hidden] {
+    display: none;
+  }
+
+  .install-terminal-mount {
+    flex: 1;
+    min-height: 0;
+    padding: 4px 6px;
+  }
+
+  .install-terminal-mount .xterm {
+    height: 100%;
+  }
+
+  /* 底部操作条：始终横跨弹窗全部宽度，位于所有内容之下 */
+  #dependencyModal .dependency-actions {
+    border-top: 1px solid var(--line);
+  }
+
+  .btn-danger {
+    color: var(--red);
+    border-color: var(--red);
+  }
+
+  .btn-danger:hover {
+    background: var(--red);
+    color: #fff;
+  }
+
+  /* AI 修正方案确认面板：出现在主区域与底部操作条之间 */
+  .dependency-fix-proposal {
+    margin: 0 8px 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--yellow, #d97706);
+    border-radius: 8px;
+    background: var(--code-bg);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .dependency-fix-proposal[hidden] { display: none; }
+
+  .fix-proposal-title {
+    font-weight: 700;
+    font-size: 12.5px;
+  }
+
+  .fix-proposal-original,
+  .fix-proposal-commands {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.5;
+    word-break: break-all;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--bg, rgba(127, 127, 127, 0.08));
+    white-space: pre-wrap;
+  }
+
+  .fix-proposal-original { color: var(--red); }
+  .fix-proposal-commands { color: var(--green); }
+
+  .fix-proposal-reason {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  /* 修正面板里的失败输出摘录：与终端同源的等宽字体，限高滚动 */
+  .fix-proposal-output-wrap[hidden] { display: none; }
+
+  .fix-proposal-output-label {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .fix-proposal-output {
+    margin: 4px 0 0;
+    padding: 8px;
+    max-height: 130px;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--bg-code, rgba(127, 127, 127, 0.12));
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .fix-proposal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  /* 命令视图里被 AI 修正过的命令徽标 */
+  .command-fix-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 16px;
+    vertical-align: 1px;
+    color: var(--yellow, #b45309);
+    border: 1px solid currentColor;
   }
 
   @keyframes progressPulse {
@@ -3361,41 +3588,51 @@
 <div id="dependencyModal" class="modal-backdrop">
   <div class="modal wide" onclick="event.stopPropagation()">
     <div class="modal-body dependency-review">
-    <div id="dependencyInstallProgress" class="install-progress-banner" hidden>
-      <div class="install-progress-info">
-        <span id="installProgressPercent" class="install-progress-percent">0%</span>
-        <span id="installProgressStage" class="install-progress-stage">正在准备安装...</span>
+      <div id="dependencyMainArea" class="dependency-main-area">
+        <div class="dependency-table-wrap">
+          <table id="dependencyReviewTable" class="dependency-table">
+            <thead id="dependencyReviewHead">
+              <tr>
+                <th>选择</th>
+                <th>依赖</th>
+                <th>版本</th>
+                <th>安装器</th>
+                <th>来源</th>
+                <th>置信度</th>
+                <th>预检</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody id="dependencyReviewBody">
+              <tr><td colspan="8" class="empty">暂无依赖项</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="installTerminalView" class="install-terminal-view" hidden>
+          <div id="installTerminalMount" class="install-terminal-mount"></div>
+        </div>
+        <!-- 按钮栏放在主区域内：命令视图下随网格落在依赖列表一列下方，
+             不再横跨弹窗全宽；审查视图下仍是块级堆叠，视觉与之前一致 -->
+        <div class="dependency-actions">
+          <button id="dependencyAbortBtn" class="btn btn-danger" hidden onclick="abortDependencyInstall()">终止安装</button>
+          <button id="dependencyCancelBtn" class="btn" onclick="closeDependencyModal()">取消</button>
+          <button id="dependencyAdjustBtn" class="btn" hidden onclick="backToDependencyReview()">调整勾选</button>
+          <button id="dependencyConfirmBtn" class="btn primary" onclick="confirmDependencySelection()">安装</button>
+        </div>
       </div>
-      <div class="progress-track install-progress-track"><div id="installProgressFill" class="progress-fill" style="width:0%"></div></div>
-    </div>
-      <div class="dependency-table-wrap">
-        <table id="dependencyReviewTable" class="dependency-table">
-          <thead id="dependencyReviewHead">
-            <tr>
-              <th>选择</th>
-              <th>依赖</th>
-              <th>版本</th>
-              <th>安装器</th>
-              <th>来源</th>
-              <th>置信度</th>
-              <th>预检</th>
-              <th>说明</th>
-            </tr>
-          </thead>
-          <tbody id="dependencyReviewBody">
-            <tr><td colspan="8" class="empty">暂无依赖项</td></tr>
-          </tbody>
-          <tfoot>
-            <tr class="dependency-actions-row">
-              <td colspan="8">
-                <div class="dependency-actions">
-                  <button id="dependencyCancelBtn" class="btn" onclick="closeDependencyModal()">取消</button>
-                  <button id="dependencyConfirmBtn" class="btn primary" onclick="confirmDependencySelection()">安装</button>
-                </div>
-              </td>
-            </tr>
-          </tfoot>
-        </table>
+      <div id="dependencyFixProposal" class="dependency-fix-proposal" hidden>
+        <div class="fix-proposal-title">安装失败，AI 生成了修正命令，请确认</div>
+        <div id="fixProposalOriginal" class="fix-proposal-original"></div>
+        <div id="fixProposalCommands" class="fix-proposal-commands"></div>
+        <div id="fixProposalReason" class="fix-proposal-reason"></div>
+        <div id="fixProposalOutputWrap" class="fix-proposal-output-wrap" hidden>
+          <div class="fix-proposal-output-label">失败输出（末尾）</div>
+          <pre id="fixProposalOutput" class="fix-proposal-output"></pre>
+        </div>
+        <div class="fix-proposal-actions">
+          <button class="btn" onclick="respondFixProposal(false)">放弃修正</button>
+          <button class="btn primary" onclick="respondFixProposal(true)">确认执行</button>
+        </div>
       </div>
     </div>
   </div>
@@ -3509,10 +3746,146 @@ const dependencyReviewHead = document.getElementById('dependencyReviewHead');
 const dependencyReviewBody = document.getElementById('dependencyReviewBody');
 const dependencyCancelBtn = document.getElementById('dependencyCancelBtn');
 const dependencyConfirmBtn = document.getElementById('dependencyConfirmBtn');
-const installProgressBanner = document.getElementById('dependencyInstallProgress');
-const installProgressPercent = document.getElementById('installProgressPercent');
-const installProgressStage = document.getElementById('installProgressStage');
-const installProgressFill = document.getElementById('installProgressFill');
+const dependencyAbortBtn = document.getElementById('dependencyAbortBtn');
+const dependencyAdjustBtn = document.getElementById('dependencyAdjustBtn');
+const dependencyFixProposal = document.getElementById('dependencyFixProposal');
+const fixProposalOriginal = document.getElementById('fixProposalOriginal');
+const fixProposalCommands = document.getElementById('fixProposalCommands');
+const fixProposalReason = document.getElementById('fixProposalReason');
+const fixProposalOutputWrap = document.getElementById('fixProposalOutputWrap');
+const fixProposalOutput = document.getElementById('fixProposalOutput');
+// 当前安装会话 id（后端 plan 事件下发，用于终止/修正确认回传）
+let currentInstallId = '';
+// 上次安装逐命令结果：重试时提取 returncode===0 的命令做增量跳过
+let lastFailedResults = [];
+const installTerminalView = document.getElementById('installTerminalView');
+const installTerminalMount = document.getElementById('installTerminalMount');
+const dependencyMainArea = document.getElementById('dependencyMainArea');
+
+// 安装终端：复用 shell 模块同一套 xterm.js + FitAddon，
+// 渲染后端 PTY 推来的原始字节流（SSE term 事件，base64 编码）
+let installTerm = null;
+let installTermFit = null;
+
+function ensureInstallTerminal() {
+  if (installTerm) return installTerm;
+  if (typeof Terminal === 'undefined' || !installTerminalMount) return null;
+  installTerm = new Terminal({
+    cursorBlink: false,
+    disableStdin: true,
+    fontSize: 11,
+    theme: terminalTheme(document.documentElement.dataset.theme === 'dark'),
+  });
+  installTermFit = new FitAddon.FitAddon();
+  installTerm.loadAddon(installTermFit);
+  installTerm.open(installTerminalMount);
+  try { installTermFit.fit(); } catch (e) { /* 容器未渲染时忽略 */ }
+  return installTerm;
+}
+
+function resetInstallTerminal() {
+  const term = ensureInstallTerminal();
+  if (!term) return;
+  term.reset();
+}
+
+function writeInstallTerminal(bytes) {
+  const term = ensureInstallTerminal();
+  if (!term) return;
+  term.write(bytes);
+  if (installTerminalView) installTerminalView.scrollTop = installTerminalView.scrollHeight;
+}
+
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function dependencyAbortBtnSetVisible(visible) {
+  if (dependencyAbortBtn) dependencyAbortBtn.hidden = !visible;
+}
+
+function dependencyAdjustBtnSetVisible(visible) {
+  if (dependencyAdjustBtn) dependencyAdjustBtn.hidden = !visible;
+}
+
+// 显示 AI 修正方案，等待用户确认/放弃（后端挂起等待，无超时；终止安装可退出）
+function showFixProposal(evt) {
+  if (!dependencyFixProposal) return;
+  if (fixProposalOriginal) fixProposalOriginal.textContent = `原命令：${evt.original_command || ''}`;
+  if (fixProposalCommands) fixProposalCommands.textContent = `修正为：\n${(evt.commands || []).join('\n')}`;
+  const failureText = evt.failure && evt.failure.message ? `\n失败原因：${evt.failure.message}` : '';
+  if (fixProposalReason) fixProposalReason.textContent = `修正原因：${evt.reason || '（未说明）'}${failureText}`;
+  // 附失败输出摘录：确认时不必去终端翻报错
+  if (fixProposalOutputWrap) fixProposalOutputWrap.hidden = !evt.output_tail;
+  if (fixProposalOutput) fixProposalOutput.textContent = evt.output_tail || '';
+  dependencyFixProposal.hidden = false;
+  // 无论弹窗当前是否打开（后台运行场景），都强制弹开并滚动到修正面板
+  dependencyModal.classList.add('open');
+  renderDependencyReview();
+  requestAnimationFrame(() => {
+    if (dependencyFixProposal) dependencyFixProposal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+}
+
+function hideFixProposal() {
+  if (dependencyFixProposal) dependencyFixProposal.hidden = true;
+}
+
+async function respondFixProposal(accept) {
+  hideFixProposal();
+  if (!currentInstallId) return;
+  try {
+    const resp = await fetch(`/api/projects/install-deps/${currentInstallId}/fix-decision`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accept }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      addNotice(data.error || '提交修正决定失败', 'error');
+      return;
+    }
+    if (!accept) addNotice('已放弃修正，安装将继续失败');
+  } catch (e) {
+    addNotice('提交修正决定失败: ' + e.message, 'error');
+  }
+}
+
+// 终止安装：通知后端 kill 当前命令进程
+async function abortDependencyInstall() {
+  if (!currentInstallId) return;
+  if (dependencyAbortBtn) dependencyAbortBtn.disabled = true;
+  try {
+    const resp = await fetch(`/api/projects/install-deps/${currentInstallId}/cancel`, { method: 'POST' });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      addNotice(data.error || '终止请求失败', 'error');
+    } else {
+      addNotice('已请求终止安装，正在等待当前命令退出...');
+    }
+  } catch (e) {
+    addNotice('终止请求失败: ' + e.message, 'error');
+  }
+}
+
+// 失败后回到审查模式：允许改勾选/改版本后再装
+function backToDependencyReview() {
+  dependencyReviewMode = 'review';
+  dependencyAdjustBtnSetVisible(false);
+  if (dependencyConfirmBtn) {
+    dependencyConfirmBtn.disabled = false;
+    dependencyConfirmBtn.textContent = '安装';
+  }
+  if (dependencyCancelBtn) {
+    dependencyCancelBtn.disabled = false;
+    dependencyCancelBtn.textContent = '取消';
+  }
+  renderDependencyReview();
+}
+
 const noticesEl = document.getElementById('notices');
 const messagesEl = document.getElementById('messages');
 const userInput = document.getElementById('userInput');
@@ -3552,6 +3925,9 @@ let dependencyReviewMode = 'review';
 let dependencyNameSortEnabled = false;
 let dependencyRowDragState = null;
 let dependencyPlanReady = false;
+// 安装期间的“命令视图”状态：[{command, status: pending|running|done|failed, percent, stage}]
+// 与后端合并后的实际安装命令一一对应，所见即所执行
+let installCommandsState = [];
 let depsState = 'unknown'; // unknown=未检查 checked=清单已确认未安装 installed=已安装 failed=安装失败
 let dependencyCheckReason = 'missing'; // missing=未分析 changed=项目已修改 current=缓存有效
 let lastCondaEnvDir = '';
@@ -5839,7 +6215,10 @@ function startCondaPolling(projectName, messageEl = null) {
         }
         addNotice('项目 Conda 环境已就绪');
         stopCondaPolling();
-        await runPendingCondaAction(projectName);
+        // 恢复动作不放进本 try：若它失败会被下方 catch 重新拉起轮询，
+        // 而 ready 分支又不停轮询 → "ready→恢复失败→再轮询"死循环，
+        // 界面会永远停在初始化提示上
+        runPendingCondaAction(projectName).catch(() => {});
         return;
       }
       if (data.conda_status === 'failed') {
@@ -6199,7 +6578,17 @@ document.addEventListener('mouseup', finishDependencyRowSelection);
 window.addEventListener('blur', cancelDependencyRowSelection);
 
 function renderDependencyReviewHead() {
-  if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed') {
+  // 安装中/失败后且已收到命令列表：命令视图（所见即所执行，失败后保留供排查）
+  if ((dependencyReviewMode === 'installing' || dependencyReviewMode === 'failed') && installCommandsState.length) {
+    dependencyReviewHead.innerHTML = `<tr>
+      <th>#</th>
+      <th>安装命令</th>
+      <th>进度</th>
+    </tr>`;
+    dependencyReviewTable.classList.add('installing');
+    return;
+  }
+  if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed' || dependencyReviewMode === 'failed') {
     dependencyReviewHead.innerHTML = `<tr>
       <th>选择</th>
       <th>${dependencyNameHeaderMarkup()}</th>
@@ -6228,16 +6617,22 @@ function dependencyProgressMarkup(item) {
     pending: '等待',
     installing: '安装中',
     validating: '查验中',
-    done: '完成✅',
+    done: '完成',
     failed: '失败',
     skipped: '未选择',
   };
-  const fillClass = state === 'done' ? 'done' : (state === 'failed' ? 'failed' : (state === 'installing' || state === 'validating' ? 'running' : ''));
-  const width = state === 'pending' || state === 'skipped' ? '0%' : (state === 'done' || state === 'failed' ? '100%' : '');
-  const markClass = state === 'done' ? 'done' : (state === 'failed' ? 'failed' : '');
-  return `<div class="dependency-progress" title="${escapeHtml(item.install_detail || '')}">
-    <div class="progress-track"><div class="progress-fill ${fillClass}" style="${width ? `width:${width}` : ''}"></div></div>
-    <span class="dependency-status-mark ${markClass}">${labelMap[state] || '等待'}</span>
+  const iconMap = {
+    pending: '○',
+    installing: '◌',
+    validating: '◌',
+    done: '●',
+    failed: '✕',
+    skipped: '–',
+  };
+  const stateClass = state === 'done' ? 'done' : (state === 'failed' ? 'failed' : (state === 'installing' || state === 'validating' ? 'active' : ''));
+  return `<div class="dependency-progress-simple ${stateClass}" title="${escapeHtml(item.install_detail || labelMap[state] || '')}">
+    <span class="dependency-status-icon">${iconMap[state] || '○'}</span>
+    <span class="dependency-status-text">${labelMap[state] || '等待'}</span>
   </div>`;
 }
 
@@ -6252,9 +6647,56 @@ function applySuggestedVersion(index) {
   addNotice(`已将 ${item.name} 的版本改为 ${item.suggested_version}`);
 }
 
+// 命令视图：安装期间展示每条实际执行的安装命令及其状态
+function installCommandsMarkup() {
+  const labelMap = { pending: '等待', running: '执行中', done: '完成', failed: '失败' };
+  const iconMap = { pending: '○', running: '◌', done: '●', failed: '✕' };
+  return installCommandsState.map((cmd, i) => {
+    const state = cmd.status || 'pending';
+    const stateClass = state === 'done' ? 'done' : (state === 'failed' ? 'failed' : (state === 'running' ? 'active' : ''));
+    // 修正/去版本重试产生的命令缩进展示，与原失败命令形成父子关系
+    const indent = cmd.fixed ? ' style="padding-left:18px"' : '';
+    return `<tr class="install-command-row ${stateClass}">
+      <td class="command-index">${i + 1}</td>
+      <td class="command-text"${indent} title="${escapeHtml(cmd.command || '')}">${escapeHtml(cmd.command || '(生成命令中...)')}${cmd.fixed ? `<span class="command-fix-badge" title="${escapeHtml(cmd.fix_reason || '已由 AI 修正')}">已修正</span>` : ''}</td>
+      <td class="dependency-progress-cell">
+        <div class="dependency-progress-simple ${stateClass}" title="${escapeHtml(cmd.command || '')}">
+          <span class="dependency-status-icon">${iconMap[state] || '○'}</span>
+          <div class="dependency-progress-text">
+            <span class="dependency-progress-percent">${labelMap[state] || '等待'}</span>
+          </div>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// 命令视图布局切换：安装中且已收到命令列表时，主区域变为左右两栏（左命令+进度，右真实终端）
+function syncCommandViewLayout(active) {
+  if (dependencyMainArea) dependencyMainArea.classList.toggle('command-view', Boolean(active));
+  if (installTerminalView) {
+    const changed = installTerminalView.hidden === Boolean(active);
+    installTerminalView.hidden = !active;
+    if (active && changed) {
+      // 容器从 hidden 变可见后才能正确测量尺寸，下一帧再 fit
+      requestAnimationFrame(() => {
+        if (!installTermFit) return;
+        try { installTermFit.fit(); } catch (e) { /* 忽略 */ }
+      });
+    }
+  }
+}
+
 function renderDependencyReview() {
   if (!dependencyReviewBody) return;
   renderDependencyReviewHead();
+  // 安装中/失败后且已收到命令列表：命令视图（失败后保留终端与命令状态供排查）
+  if ((dependencyReviewMode === 'installing' || dependencyReviewMode === 'failed') && installCommandsState.length) {
+    syncCommandViewLayout(true);
+    dependencyReviewBody.innerHTML = installCommandsMarkup();
+    return;
+  }
+  syncCommandViewLayout(false);
   if (!dependencyItems.length) {
     dependencyReviewBody.innerHTML = '<tr><td colspan="8" class="empty">没有识别到依赖项，请补充依赖清单或算力要求后重试。</td></tr>';
     return;
@@ -6268,7 +6710,7 @@ function renderDependencyReview() {
   dependencyReviewBody.innerHTML = renderedItems.map(({ item, index }) => {
     const statusClass = (item.precheck_status === 'ok' || item.precheck_status === 'installed') ? 'status-ok' : (item.precheck_status === 'missing' ? 'status-missing' : 'status-unknown');
     const version = item.version || '需确认';
-    if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed') {
+    if (dependencyReviewMode === 'installing' || dependencyReviewMode === 'installed' || dependencyReviewMode === 'failed') {
       return `<tr>
         <td><input class="dependency-check" type="checkbox" ${item.selected ? 'checked' : ''} disabled title="${item.selected ? '已选择' : '未选择'}"></td>
         <td class="dependency-name">${escapeHtml(item.name)}</td>
@@ -6318,8 +6760,10 @@ function openDependencyModal() {
 
 function closeDependencyModal(event) {
   if (event && event.target !== dependencyModal) return;
-  if (dependencyReviewMode === 'installing') return;
+  const wasInstalling = dependencyReviewMode === 'installing';
   dependencyModal.classList.remove('open');
+  // 安装期间也允许关闭：安装继续在后台进行，进度可在聊天区查看，不能把用户锁死在弹窗里
+  if (wasInstalling) addNotice('安装仍在后台进行，进度可在下方聊天区查看。');
 }
 
 function toggleDependencyItem(index, selected) {
@@ -6472,6 +6916,12 @@ async function fetchProjectDependencyState(projectName) {
 }
 
 async function generateProjectReport() {
+  // 安装进行中：不重新分析，只重新打开安装视图（后台安装时找回弹窗的入口）
+  if (dependencyReviewMode === 'installing' && installCommandsState.length) {
+    renderDependencyReview();
+    dependencyModal.classList.add('open');
+    return;
+  }
   const projectName = currentProjectName();
   if (!projectName) {
     addNotice('请先输入作业目录名称', 'error');
@@ -6481,6 +6931,12 @@ async function generateProjectReport() {
   if (isProcessing) return;
 
   const extraNotes = userInput.value.trim();
+  // 输入框有字会触发全量重分析（LLM 推断，且重置上次勾选），先确认避免误触
+  if (extraNotes && (lastProjectReport || dependencyItems.length)) {
+    if (!window.confirm('输入框有补充说明，将重新进行依赖分析（耗时较长，且会重置上次的勾选）。继续吗？')) {
+      return;
+    }
+  }
   let dependencyStatus = null;
   try {
     dependencyStatus = await fetchProjectDependencyState(projectName);
@@ -6621,62 +7077,37 @@ function applyDependencyValidationResults(validationResults) {
   renderDependencyReview();
 }
 
-function installProgressBar(percent) {
-  if (typeof percent !== 'number' || isNaN(percent)) return '';
-  const clamped = Math.max(0, Math.min(100, Math.floor(percent)));
-  const filled = Math.round(clamped / 5);
-  return `\`[${'█'.repeat(filled)}${'░'.repeat(20 - filled)}] ${clamped}%\``;
-}
-
-function updateInstallProgress(pending, evt) {
-  const percent = typeof evt.percent === 'number' ? evt.percent : null;
-  const stage = evt.stage || '';
-  const bar = installProgressBar(percent);
+// 聊天区安装进度消息：只同步命令列表状态（真实进度看弹窗里的终端）
+function updateInstallProgress(pending) {
   const lines = ['正在安装依赖到当前项目 Conda 环境...'];
-  if (bar) lines.push('', bar);
-  if (stage) lines.push('', stage + '...');
+  // 命令状态：与弹窗命令视图同步，聊天区也能看到每条命令的执行情况
+  if (installCommandsState.length) {
+    lines.push('');
+    for (const cmd of installCommandsState) {
+      const state = cmd.status || 'pending';
+      if (state === 'pending') { lines.push(`○ ${cmd.command}`); continue; }
+      if (state === 'running') { lines.push(`◌ ${cmd.command}`); continue; }
+      lines.push(`${state === 'done' ? '●' : '✕'} ${cmd.command}`);
+    }
+  }
   setMessageContent(pending, lines.join('\n'), 'ai');
-  updateDependencyInstallProgress(evt);
-}
-
-// 把后端 SSE 的真实进度同步到依赖弹窗顶部的整体进度横幅
-function updateDependencyInstallProgress(evt) {
-  if (!installProgressBanner) return;
-  installProgressBanner.hidden = false;
-  if (typeof evt.percent === 'number') {
-    const pct = Math.max(0, Math.min(100, evt.percent));
-    if (installProgressPercent) {
-      installProgressPercent.textContent = `${Math.floor(pct)}%`;
-      installProgressPercent.className = 'install-progress-percent';
-    }
-    if (installProgressFill) {
-      installProgressFill.className = 'progress-fill';
-      installProgressFill.style.width = `${pct}%`;
-    }
-  }
-  if (evt.stage && installProgressStage) installProgressStage.textContent = evt.stage;
-}
-
-function finishDependencyInstallProgress(ok) {
-  if (!installProgressBanner || installProgressBanner.hidden) return;
-  if (installProgressFill) {
-    installProgressFill.className = `progress-fill ${ok ? 'done' : 'failed'}`;
-    installProgressFill.style.width = '100%';
-  }
-  if (installProgressPercent) {
-    installProgressPercent.textContent = ok ? '100%' : '失败';
-    installProgressPercent.className = `install-progress-percent ${ok ? 'done' : 'failed'}`;
-  }
-  if (installProgressStage) installProgressStage.textContent = ok ? '安装完成' : '安装失败';
-  // 收尾后自动收起，避免下次打开弹窗时残留旧进度
-  setTimeout(() => { if (installProgressBanner) installProgressBanner.hidden = true; }, 4000);
 }
 
 function handleAutoFixEvent(evt) {
   if (evt.status === 'analyzing') {
-    addNotice('安装失败，正在根据软件源真实可用版本生成修正命令...', 'info');
+    addNotice('安装失败，正在生成修正命令...', 'info');
   } else if (evt.status === 'retry') {
-    addNotice(`已自动修正安装命令并重试：${evt.reason || ''}`, 'info');
+    if (evt.strategy === 'unpin') {
+      // 确定性策略：去掉版本约束让求解器自选，全自动无需确认
+      addNotice(`已自动去掉版本约束重试：${evt.reason || ''}`, 'info');
+    } else {
+      addNotice(`修正方案已确认，继续安装：${evt.reason || ''}`, 'info');
+    }
+  } else if (evt.status === 'terminated') {
+    // 分类器判定为不可修（网络/磁盘/包不存在/构建失败）：直接给出精确原因
+    addNotice(evt.reason || '安装已终止', 'error');
+  } else if (evt.status === 'rejected') {
+    addNotice('已放弃 AI 修正方案，安装终止', 'error');
   } else if (evt.status === 'failed') {
     addNotice('未能自动修复安装命令，请手动调整版本后重试', 'error');
   }
@@ -6684,14 +7115,24 @@ function handleAutoFixEvent(evt) {
 
 function handleInstallFailure(pending, data) {
   depsState = 'failed';
+  dependencyPlanReady = false;
+  // 记录逐命令结果：重试安装时据此只重跑失败及未执行的命令
+  lastFailedResults = Array.isArray(data.results) ? data.results : [];
+  const failureText = data.failure && data.failure.message
+    ? `\n\n**失败原因**：${data.failure.message}`
+    : '';
   const detail = data.results ? `\n\n${formatInstallResults(data.results)}` : '';
   const autoFixText = data.auto_fix && data.auto_fix.reason
     ? `\n\n**自动修复**：${data.auto_fix.reason}（仍失败，请手动调整版本）`
     : '';
-  setMessageContent(pending, (data.error || '依赖安装失败') + detail + autoFixText, 'ai');
+  setMessageContent(pending, (data.error || '依赖安装失败') + failureText + detail + autoFixText, 'ai');
   setDependencyInstallState('failed', data.error || '依赖安装失败');
-  finishDependencyInstallProgress(false);
-  dependencyReviewMode = 'installed';
+  // 失败后保留命令视图（命令状态 + 终端输出），便于排查后再重试
+  dependencyReviewMode = 'failed';
+  hideFixProposal();
+  dependencyAbortBtnSetVisible(false);
+  dependencyAdjustBtnSetVisible(true);
+  if (checkDepsBtn) checkDepsBtn.textContent = '检查依赖';
   if (dependencyConfirmBtn) {
     dependencyConfirmBtn.disabled = false;
     dependencyConfirmBtn.textContent = '重试安装';
@@ -6724,15 +7165,43 @@ async function consumeInstallStream(resp, pending) {
         }
       }
       if (!evt) continue;
-      if (evt.type === 'progress') {
-        updateInstallProgress(pending, evt);
+      if (evt.type === 'plan') {
+        // 后端发来完整命令列表：初始化命令视图
+        currentInstallId = evt.install_id || '';
+        installCommandsState = (evt.commands || []).map(c => ({
+          command: c, status: 'pending', fixed: false, fix_reason: '',
+        }));
+        renderDependencyReview();
+      } else if (evt.type === 'fix_proposal') {
+        // AI 修正方案：展示面板等待用户确认（后端挂起，无超时，终止安装可退出）
+        showFixProposal(evt);
+        addNotice('AI 生成了安装修正方案，请在弹窗中确认', 'info');
+      } else if (evt.type === 'term') {
+        // 命令在 PTY 里的原始输出字节流：交给 xterm.js 真实终端渲染
+        try { writeInstallTerminal(base64ToBytes(evt.data || '')); } catch (e) { /* 忽略 */ }
       } else if (evt.type === 'command_start') {
-        updateInstallProgress(pending, { percent: null, stage: `开始执行：${evt.command}` });
+        // 以命令文本定位槽位：修正/去版本重试产生的命令不在初始 plan 里，
+        // 插入到首个待执行命令之前（紧跟原失败命令，形成父子展示）
+        let slot = installCommandsState.find(s => s.status === 'pending' && s.command === evt.command);
+        if (!slot) {
+          const firstPending = installCommandsState.findIndex(s => s.status === 'pending');
+          slot = { command: evt.command, status: 'pending', fixed: Boolean(evt.fixed), fix_reason: evt.fix_reason || '' };
+          if (firstPending >= 0) installCommandsState.splice(firstPending, 0, slot);
+          else installCommandsState.push(slot);
+        }
+        slot.command = evt.command || slot.command;
+        slot.status = 'running';
+        slot.fixed = Boolean(evt.fixed);
+        slot.fix_reason = evt.fix_reason || '';
+        renderDependencyReview();
+        updateInstallProgress(pending);
+        writeInstallTerminal(new TextEncoder().encode(`\r\n\x1b[36m$ ${evt.command}\x1b[0m\r\n`));
         setDependencyInstallState('installing', `正在执行：${evt.command}`);
       } else if (evt.type === 'command_done') {
-        if (evt.returncode === 0) {
-          updateInstallProgress(pending, { percent: null, stage: '命令执行完成' });
-        }
+        const slot = installCommandsState.find(s => s.status === 'running' && s.command === evt.command);
+        if (slot) slot.status = evt.returncode === 0 ? 'done' : 'failed';
+        renderDependencyReview();
+        updateInstallProgress(pending);
       } else if (evt.type === 'auto_fix') {
         handleAutoFixEvent(evt);
       } else if (evt.type === 'done' || evt.type === 'error') {
@@ -6777,20 +7246,29 @@ async function installProjectDependencies(options = {}) {
   isProcessing = true;
   userInput.disabled = true;
   if (checkDepsBtn) {
-    checkDepsBtn.disabled = true;
-    checkDepsBtn.textContent = '检查依赖';
+    // 保持可点：安装期间作为“后台运行后找回弹窗”的入口
+    checkDepsBtn.disabled = false;
+    checkDepsBtn.textContent = '查看安装';
   }
   confirmRunBtn.disabled = true;
   dependencyReviewMode = 'installing';
-  if (dependencyCancelBtn) dependencyCancelBtn.disabled = true;
+  // 安装期间取消按钮改为“后台运行”：可随时关闭弹窗，安装继续在后台进行
+  if (dependencyCancelBtn) {
+    dependencyCancelBtn.disabled = false;
+    dependencyCancelBtn.textContent = '后台运行';
+  }
   if (dependencyConfirmBtn) {
     dependencyConfirmBtn.disabled = true;
     dependencyConfirmBtn.textContent = '安装中';
   }
   if (options.keepModalOpen) dependencyModal.classList.add('open');
+  installCommandsState = [];
+  resetInstallTerminal();
+  hideFixProposal();
+  dependencyAbortBtnSetVisible(true);
+  if (dependencyAbortBtn) dependencyAbortBtn.disabled = false;
+  dependencyAdjustBtnSetVisible(false);
   setDependencyInstallState('installing', '正在执行安装命令');
-  // 重置并展示弹窗顶部的真实进度横幅（后续由 SSE 事件驱动）
-  updateDependencyInstallProgress({ percent: 0, stage: '正在准备安装...' });
   const pending = addChatMessage('正在安装依赖到当前项目 Conda 环境...', 'ai');
   try {
     const resp = await fetch('/api/projects/install-deps', {
@@ -6800,6 +7278,10 @@ async function installProjectDependencies(options = {}) {
         name: projectName,
         plan: lastProjectReport,
         selected_items: selectedDependencyItems,
+        // 增量重试：跳过上次已成功的命令
+        skip_commands: lastFailedResults
+          .filter(r => r && r.returncode === 0 && r.command)
+          .map(r => r.command),
       }),
     });
     const contentType = resp.headers.get('content-type') || '';
@@ -6826,7 +7308,6 @@ async function installProjectDependencies(options = {}) {
     }
     const data = finalEvent.payload || {};
     setDependencyInstallState('validating', '安装完成，正在查验环境');
-    updateDependencyInstallProgress({ percent: 100, stage: '安装完成，正在查验环境' });
     applyDependencyValidationResults(data.validation_results || []);
     const content = `### 依赖安装完成
 
@@ -6849,6 +7330,11 @@ ${formatValidationResults(data.validation_results || [])}
     depsState = 'installed';
     if (data.conda_env_dir) lastCondaEnvDir = data.conda_env_dir;
     dependencyReviewMode = 'installed';
+    // 全量成功后清空增量重试记录
+    lastFailedResults = [];
+    dependencyAbortBtnSetVisible(false);
+    dependencyAdjustBtnSetVisible(false);
+    hideFixProposal();
     if (dependencyConfirmBtn) {
       dependencyConfirmBtn.disabled = true;
       dependencyConfirmBtn.textContent = '安装完成';
@@ -6857,14 +7343,19 @@ ${formatValidationResults(data.validation_results || [])}
       dependencyCancelBtn.disabled = false;
       dependencyCancelBtn.textContent = '关闭';
     }
-    finishDependencyInstallProgress(true);
     renderDependencyReview();
   } catch (e) {
     depsState = 'failed';
     setMessageContent(pending, '依赖安装失败: ' + e.message, 'ai');
     setDependencyInstallState('failed', e.message);
-    finishDependencyInstallProgress(false);
-    dependencyReviewMode = 'installed';
+    dependencyPlanReady = false;
+    // 流意外中断拿不到逐命令结果，清空避免误跳过
+    lastFailedResults = [];
+    dependencyReviewMode = 'failed';
+    hideFixProposal();
+    dependencyAbortBtnSetVisible(false);
+    dependencyAdjustBtnSetVisible(true);
+    if (checkDepsBtn) checkDepsBtn.textContent = '检查依赖';
     if (dependencyConfirmBtn) {
       dependencyConfirmBtn.disabled = false;
       dependencyConfirmBtn.textContent = '重试安装';

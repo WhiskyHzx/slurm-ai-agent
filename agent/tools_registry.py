@@ -503,7 +503,10 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                 "properties": {
                     "subdir": {
                         "type": "string",
-                        "description": "可选，只列出项目内某个子目录，如 src 或 data。不传则列出整个项目。",
+                        "description": (
+                            "可选，只列出项目内某个子目录。必须是相对项目根目录的路径，"
+                            "不要以 / 开头，不要用绝对路径，如 src 或 data。不传则列出整个项目。"
+                        ),
                     },
                     "max_depth": {
                         "type": "integer",
@@ -529,7 +532,11 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "文件相对路径（相对于项目目录），如 train.py 或 src/model.py。",
+                        "description": (
+                            "文件路径，相对项目根目录（不要以 / 开头，不要用绝对路径），"
+                            "如 train.py 或 src/model.py。路径层级以 list_project_files"
+                            "的输出为准。"
+                        ),
                     },
                     "start_line": {
                         "type": "integer",
@@ -769,17 +776,60 @@ class ToolExecutor:
         return project_dir
 
     def _resolve_project_path(self, rel_path: str) -> "Path":
-        """把相对路径安全解析到项目目录内，拒绝路径穿越。"""
-        from pathlib import Path
-        from core.file_transfer import safe_relative_path
+        """把路径安全解析到项目目录内，拒绝路径穿越。
+
+        对 LLM 常见写法容错：前导 / 视为相对项目根；完整绝对路径若
+        落在项目目录内也直接接受（LLM 常复制 list 输出头部的绝对路径）。
+        .. 穿越与越出项目目录一律拒绝。
+        """
+        from pathlib import Path, PurePosixPath
         project_dir = self._project_dir()
-        rel = safe_relative_path(rel_path)
-        target = (project_dir / rel).resolve()
+
+        cleaned = (rel_path or "").replace("\\", "/").strip()
+        if not cleaned:
+            raise RuntimeError("路径为空")
+
+        original = Path(cleaned)
+        if original.is_absolute():
+            resolved = original.resolve()
+            try:
+                resolved.relative_to(project_dir)
+            except ValueError:
+                pass  # 不在项目内则退回相对解析（前导 / 视为项目根）
+            else:
+                return resolved
+
+        rel = PurePosixPath(cleaned.lstrip("/"))
+        # 过滤空段（双斜杠产生），拒绝 . 和 ..
+        parts = [p for p in rel.parts if p]
+        if any(p in (".", "..") for p in parts):
+            raise RuntimeError(f"路径不允许包含 . 或 ..: {rel_path}")
+        if not parts:
+            raise RuntimeError("路径为空")
+
+        target = (project_dir / Path(*parts)).resolve()
         try:
             target.relative_to(project_dir)
         except ValueError:
-            raise RuntimeError("路径不在项目目录内")
+            raise RuntimeError(f"路径不在项目目录内: {rel_path}（项目目录: {project_dir}）")
         return target
+
+    def _top_level_hint(self) -> str:
+        """项目根目录顶层条目摘要，附在“不存在”类错误里帮 LLM 自行纠错
+        （如 zip 解压产生的嵌套同名目录：路径需以 MQAB4AF2/ 开头）。"""
+        from pathlib import Path
+        try:
+            project_dir = self._project_dir()
+            entries = sorted(
+                p.name + ("/" if p.is_dir() else "")
+                for p in project_dir.iterdir()
+                if not p.name.startswith(".")
+            )
+            if not entries:
+                return ""
+            return f"项目根目录顶层条目: {', '.join(entries[:12])}"
+        except Exception:
+            return ""
 
     def _list_project_files(self, arguments: Dict[str, Any]) -> str:
         from pathlib import Path
@@ -792,7 +842,8 @@ class ToolExecutor:
         if subdir:
             base = self._resolve_project_path(subdir)
             if not base.is_dir():
-                return f"子目录不存在: {subdir}"
+                hint = self._top_level_hint()
+                return f"子目录不存在: {subdir}" + (f"（{hint}）" if hint else "")
 
         # 内部目录/文件，不展示
         SKIP_DIRS = {".slurm-agent", ".git", "__pycache__", ".venv", "venv"}
@@ -833,7 +884,7 @@ class ToolExecutor:
         walk(base, "", 1)
         if not lines:
             return f"项目目录 {project_dir} 下没有可列出的文件。"
-        header = f"## 项目文件结构（{project_dir}）\n\n"
+        header = f"## 项目文件结构（根目录: {project_dir}）\n\n以下路径均相对于项目根目录。\n\n"
         if count >= MAX_ENTRIES:
             header += f"（文件过多，仅列出前 {MAX_ENTRIES} 项）\n\n"
         return header + "\n".join(lines)
@@ -844,7 +895,8 @@ class ToolExecutor:
             return "（read_project_file 需要提供 path 参数）"
         target = self._resolve_project_path(rel_path)
         if not target.is_file():
-            return f"文件不存在: {rel_path}"
+            hint = self._top_level_hint()
+            return f"文件不存在: {rel_path}" + (f"（{hint}）" if hint else "")
         # 已知二进制扩展名直接拒绝（压缩/图片/库等，内容检测不可靠）
         BINARY_SUFFIXES = {
             ".pak", ".dylib", ".so", ".a", ".o", ".bin", ".exe", ".dll",

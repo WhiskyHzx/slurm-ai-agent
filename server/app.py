@@ -13,6 +13,7 @@ server/app.py — FastAPI 后端入口。
 """
 
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -24,6 +25,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import uuid
 import zipfile
 import getpass
 from datetime import datetime, timedelta
@@ -60,6 +62,8 @@ from core.file_transfer import (
 from core.dependency_planner import (
     DependencyItem,
     _extract_json_object,
+    classify_install_failure,
+    ensure_conda_tos_accepted,
     installed_packages_snapshot,
     items_to_markdown,
     merge_dependency_items,
@@ -192,10 +196,12 @@ def _refresh_cached_dependency_environment(
     """Refresh cached dependency statuses with one lightweight conda-list snapshot."""
     raw_items = cache.get("dependency_items", [])
     installed = installed_packages_snapshot(conda_env_dir)
-    # A ready Conda environment always contains base packages. An empty result
-    # therefore means the snapshot failed; preserve the cache instead of
-    # incorrectly marking every previously installed dependency as missing.
-    if not installed:
+    # 环境存在（理应有 base 包）但快照为空 = conda list 执行失败：
+    # 保留缓存，避免把已装依赖误标为缺失。
+    # 环境不存在（未创建/被删除/重建中）时快照为空是真实状态，
+    # 继续走刷新逻辑：缓存里的“已安装”标记会被清掉、包恢复可勾选——
+    # 这正是手动重建环境后应该看到的结果。
+    if not installed and conda_env_dir.exists():
         return str(cache.get("report", "")), raw_items
 
     fields = DependencyItem.__dataclass_fields__
@@ -236,7 +242,13 @@ def _refresh_cached_dependency_environment(
 
 
 def _conda_env_ready(conda_env_dir: Path) -> bool:
-    return (conda_env_dir / "conda-meta" / "history").exists()
+    """环境就绪 = 事务记录与解释器都在：conda create 中途被杀
+    （服务重启、手动 kill）会留下 history 已落盘但 python 未链接完的
+    半成品环境，只查 history 会把坏环境误判为就绪。"""
+    return (
+        (conda_env_dir / "conda-meta" / "history").exists()
+        and (conda_env_dir / "bin" / "python").exists()
+    )
 
 
 def _conda_status_for(project_name: str) -> dict:
@@ -450,6 +462,12 @@ class ProjectInstallRequest(BaseModel):
     name: str
     plan: str
     selected_items: list[dict] = []
+    # 增量重试：上次已成功执行的命令（display 命令原文），重试时跳过
+    skip_commands: list[str] = []
+
+
+class FixDecisionRequest(BaseModel):
+    accept: bool
 
 
 class JobBodyRequest(BaseModel):
@@ -2825,6 +2843,8 @@ def project_report(req: ProjectReportRequest):
             scan_project_dependencies(workspace.project_dir)
             + scan_user_dependency_notes(notes_text)
         )
+        # conda 25.x 需要 accept ToS 才能访问软件源：分析前自动代为接受（幂等）
+        ensure_conda_tos_accepted()
         # 先对静态扫描结果做版本感知预检，把真实可用版本/构建喂给 LLM，
         # 避免 LLM 凭旧知识（或其它集群的 module 版本号）指定不存在的版本
         scanned_items = precheck_dependencies(scanned_items, workspace.conda_env_dir)
@@ -2883,174 +2903,130 @@ def project_report(req: ProjectReportRequest):
 
 INSTALL_COMMAND_TIMEOUT = int(os.environ.get("SLURM_INSTALL_TIMEOUT", "1800"))
 
+# 进行中的安装会话：install_id → {"proc": 子进程/PTY, "cancelled": bool, "fix_decisions": Queue}
+# 供终止安装端点 kill 当前命令、修正确认端点投递用户决定
+_install_sessions: dict[str, dict] = {}
+
 # ---------------------------------------------------------------------------
-# 安装引擎：预取下载进度 + SSE 事件流
+# 安装引擎：PTY 执行 + SSE 事件流
 # ---------------------------------------------------------------------------
 
-
-def _conda_pkgs_dir(conda_exe: str) -> Optional[Path]:
-    """解析 conda 包缓存目录（取第一个 pkgs_dirs），预取下载会写到那里。"""
-    try:
-        result = subprocess.run(
-            [conda_exe, "info", "--json"],
-            capture_output=True, text=True, timeout=60,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    data = _extract_json_object((result.stdout or "") + "\n" + (result.stderr or ""))
-    if isinstance(data, dict):
-        dirs = data.get("pkgs_dirs") or []
-        if dirs:
-            try:
-                pkgs = Path(str(dirs[0])).expanduser()
-                pkgs.mkdir(parents=True, exist_ok=True)
-                return pkgs
-            except OSError:
-                return None
-    return None
+# 终端输出去 ANSI 转义：PTY 输出会携带颜色/光标控制序列，
+# 返回给 LLM 修复与聊天记录前需要清洗成纯文本
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[A-Za-z]"                 # CSI 序列（颜色、光标控制）
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"   # OSC 序列（终端标题等）
+    r"|\x1b[@-Z\\-_]"                          # 其余单字符转义
+)
 
 
-def _prefetch_conda_packages(conda_exe: str, install_argv: list[str], on_progress) -> Optional[str]:
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _strip_version_constraints(command: str) -> str:
     """
-    先 dry-run 拿事务计划，再自己流式下载 FETCH 列表到 conda pkgs 缓存目录。
+    去掉命令中的版本/构建约束，让包管理器自行求解兼容组合。
 
-    背景：conda 25.x 的 --json 只在结束时输出一个 JSON 对象，没有增量进度；
-    而 conda 看到包已在 pkgs 缓存里就会跳过下载。因此用字节级自下载实现真实百分比，
-    之后再执行真正的 conda install（全部命中缓存，秒级完成）。
-
-    返回 None 表示成功或无需预取；返回错误字符串表示失败（调用方回退直接安装）。
+    conda: gromacs=2026.3=cuda → gromacs；pip: numpy==1.2 → numpy。
+    保留 -c/--channel 等选项。无约束可去时原样返回（调用方据此跳过重试）。
     """
-    dry_argv = [*install_argv, "--dry-run", "--json"]
     try:
-        proc = subprocess.run(dry_argv, capture_output=True, text=True, timeout=300)
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return f"dry-run 执行失败： {e}"
-    if proc.returncode != 0:
-        return "dry-run 返回非零"
-    data = _extract_json_object((proc.stdout or "") + "\n" + (proc.stderr or ""))
-    if not isinstance(data, dict) or not isinstance(data.get("actions"), dict):
-        return "dry-run 未返回事务计划"
-    fetch_list = [p for p in (data["actions"].get("FETCH") or []) if isinstance(p, dict)]
-    if not fetch_list:
-        return None
-
-    pkgs_dir = _conda_pkgs_dir(conda_exe)
-    if pkgs_dir is None:
-        return "无法解析 pkgs 缓存目录"
-    pending = [
-        p for p in fetch_list
-        if p.get("fn") and p.get("url") and not (pkgs_dir / str(p["fn"])).exists()
-    ]
-    if not pending:
-        return None
-
-    total_bytes = sum(int(p.get("size") or 0) for p in pending)
-    done_bytes = 0
-    for pkg in pending:
-        fn = str(pkg["fn"])
-        target = pkgs_dir / fn
-        tmp = pkgs_dir / f"{fn}.agent-{os.getpid()}.part"
-        try:
-            with requests.get(str(pkg["url"]), stream=True, timeout=(15, 120)) as resp:
-                resp.raise_for_status()
-                with tmp.open("wb") as out:
-                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                        if not chunk:
-                            continue
-                        out.write(chunk)
-                        done_bytes += len(chunk)
-                        on_progress(done_bytes, total_bytes, fn)
-            os.replace(tmp, target)
-        except Exception as e:  # 预取失败不阻断安装，回退给 conda 自己下载
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            return f"预取 {fn} 失败： {e}"
-    return None
-
-
-def _emit_pip_stage(line: str, emit_stage) -> None:
-    """从 pip 输出中解析粗粒度阶段，推送进度文本。"""
-    stripped = line.strip()
-    lowered = stripped.lower()
-    if lowered.startswith("collecting "):
-        emit_stage(f"解析 {stripped.split()[1]}", 30)
-    elif lowered.startswith("downloading "):
-        emit_stage(f"下载 {stripped.split()[1]}", 50)
-    elif lowered.startswith("installing collected packages"):
-        emit_stage("安装包到环境", 70)
-    elif lowered.startswith("successfully installed"):
-        emit_stage("安装完成", 95)
+        parts = shlex.split(command)
+    except ValueError:
+        return command
+    out: list[str] = []
+    changed = False
+    skip_next = False
+    for part in parts:
+        if skip_next:
+            out.append(part)
+            skip_next = False
+            continue
+        if part.startswith("-"):
+            out.append(part)
+            if part in {"-c", "--channel", "-p", "--prefix", "-n", "--name"}:
+                skip_next = True
+            continue
+        name = re.split(r"[=<>=!~;@]", part, 1)[0].strip()
+        if name and name != part:
+            out.append(name)
+            changed = True
+        else:
+            out.append(part)
+    return " ".join(out) if changed else command
 
 
 def _run_install_command(
-    command: str,
     argv: list[str],
     cwd: Path,
-    emit_stage,
+    emit_term,
+    on_spawn=None,
 ) -> tuple[int, str]:
     """
-    执行单条安装命令。
+    在 PTY 中执行单条安装命令（与 terminal.py 同一套机制）。
 
-    conda 命令：先预取（带字节级下载进度），再正式安装（命中缓存）。
-    返回 (returncode, output)。
+    原始终端字节流逐块回调 emit_term，前端 xterm.js 渲染真实终端
+    （conda/pip 自带的下载进度条、颜色都是真实输出）。
+    on_spawn 在进程创建后回调（注册到安装会话，供终止端点 kill）。
+    返回 (returncode, output)，output 已去 ANSI，供失败分类与 LLM 修复使用。
     """
-    is_conda = "install" in [part.lower() for part in argv[:3]] and not argv[0].endswith("python")
-    if is_conda:
-        emit_stage("求解依赖中（生成事务计划）", 5)
+    import ptyprocess
 
-        def _on_download(done: int, total: int, fn: str) -> None:
-            if total > 0:
-                emit_stage(f"下载 {fn}（{_fmt_bytes(done)}/{_fmt_bytes(total)}）", 5 + 85.0 * done / total)
-            else:
-                emit_stage(f"下载 {fn}（{_fmt_bytes(done)}）", None)
-
-        prefetch_error = _prefetch_conda_packages(argv[0], argv, _on_download)
-        if prefetch_error:
-            logger.info("conda 预取跳过，回退直接安装：%s", prefetch_error)
-        emit_stage("解包并安装到项目环境", 90)
-
-    proc = subprocess.Popen(
-        argv,
-        cwd=str(cwd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        errors="replace",
+    env = dict(os.environ)
+    env["TERM"] = "xterm-256color"
+    proc = ptyprocess.PtyProcess.spawn(
+        argv, cwd=str(cwd), env=env, dimensions=(32, 80),
     )
-    output_lines: list[str] = []
+    if on_spawn:
+        try:
+            on_spawn(proc)
+        except Exception:
+            pass
+    output_parts: list[str] = []
+    text_tail = ""
+    timed_out = False
 
-    def _reader() -> None:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            output_lines.append(line)
-            if not is_conda:
-                try:
-                    _emit_pip_stage(line, emit_stage)
-                except Exception:
-                    pass
+    def _feed_text(chunk: str) -> None:
+        """按 \r / \n 切行收集清洗后的输出，供失败分类使用。"""
+        nonlocal text_tail
+        text_tail += chunk
+        parts = re.split(r"[\r\n]", text_tail)
+        text_tail = parts[-1]
+        for line in parts[:-1]:
+            clean = _strip_ansi(line)
+            if clean.strip():
+                output_parts.append(clean.rstrip())
 
-    reader = threading.Thread(target=_reader, daemon=True)
+    def _pty_reader() -> None:
+        while proc.isalive():
+            try:
+                data = os.read(proc.fd, 8192)
+            except OSError:
+                break
+            if not data:
+                break
+            try:
+                emit_term(data)
+            except Exception:
+                pass
+            _feed_text(data.decode("utf-8", errors="replace"))
+
+    reader = threading.Thread(target=_pty_reader, daemon=True)
     reader.start()
     try:
         proc.wait(timeout=INSTALL_COMMAND_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        output_lines.append("\n[安装命令超时，已被终止]")
+    except Exception:
+        timed_out = True
+        try:
+            proc.terminate(force=True)
+        except Exception:
+            pass
+        output_parts.append("[安装命令超时，已被终止]")
     reader.join(timeout=10)
-    return proc.returncode, "".join(output_lines)
-
-
-def _fmt_bytes(value: int) -> str:
-    value = max(0, int(value))
-    if value >= 1024 * 1024 * 1024:
-        return f"{value / 1024 / 1024 / 1024:.1f} GB"
-    if value >= 1024 * 1024:
-        return f"{value / 1024 / 1024:.1f} MB"
-    if value >= 1024:
-        return f"{value / 1024:.0f} KB"
-    return f"{value} B"
+    _feed_text("\n")  # 冲刷 tail 中残留的最后一行（如 successfully installed 提示）
+    returncode = 1 if timed_out else (proc.exitstatus or 0)
+    return returncode, "\n".join(output_parts)
 
 
 def _package_names_from_command(command: str) -> list[str]:
@@ -3080,10 +3056,13 @@ def _llm_fix_install_commands(
     failed_command: str,
     output: str,
     selected_items: list[dict],
+    failure: Optional[dict] = None,
 ) -> Optional[tuple[list[str], str]]:
     """
-    安装失败后的自动修复：查询软件源真实版本 → LLM 重新选版 → 返回修正命令。
+    安装失败后的 LLM 兑底修复：查询软件源真实版本 → LLM 重新选版 → 返回修正命令。
 
+    仅在确定性策略（去版本约束重试）无法解决、且失败分类器判定为可修正类时调用。
+    failure 是 classify_install_failure 的返回值，提供结构化的失败类型与细节。
     返回 (commands, reason)；失败返回 None。命令会经过 _extract_install_commands
     白名单过滤与 _normalize_install_command 归一化，保证安全。
     """
@@ -3106,10 +3085,19 @@ def _llm_fix_install_commands(
         for item in selected_items[:40] if isinstance(item, dict)
     ) or "（无）"
 
+    failure_details_text = ""
+    if failure:
+        detail_lines = [
+            f"- {key}: {value}" for key, value in failure.get("details", {}).items() if value
+        ]
+        failure_details_text = f"\n失败细节：\n" + "\n".join(detail_lines) if detail_lines else ""
+
     prompt = f"""conda/pip 安装命令执行失败了。请根据包管理器的真实查询结果修正安装命令。
 
 失败的命令：
 {failed_command}
+
+失败原因分类：{failure.get("type", "other") if failure else "other"}{failure_details_text}
 
 失败输出（截断）：
 {_trim_text(output, 3000)}
@@ -3189,65 +3177,60 @@ def install_project_dependencies(req: ProjectInstallRequest):
         workspace = ensure_project_workspace(req.name)
         selected_items = req.selected_items or []
         commands = _commands_from_selected_items(selected_items) or _extract_install_commands(req.plan)
+        # 增量重试：跳过上次已成功执行的命令，只重跑失败及未执行的
+        skip_set = {c for c in (req.skip_commands or []) if isinstance(c, str)}
+        if skip_set:
+            commands = [c for c in commands if c not in skip_set]
     except FileTransferError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     if not commands:
-        return JSONResponse(
-            {"error": "未选择可安装依赖，也未在方案中找到可执行的 conda/mamba/pip install 命令"},
-            status_code=400,
-        )
+        if skip_set:
+            # 上次已全部成功：本次只需重新验证
+            commands = []
+        else:
+            return JSONResponse(
+                {"error": "未选择可安装依赖，也未在方案中找到可执行的 conda/mamba/pip install 命令"},
+                status_code=400,
+            )
+
+    install_id = uuid.uuid4().hex
+    session = _install_sessions.setdefault(
+        install_id, {"proc": None, "cancelled": False, "fix_decisions": None},
+    )
 
     def event_stream():
         events: queue.Queue = queue.Queue()
         sentinel = object()
 
-        class _Progress:
-            """线程安全地限流推送进度事件（阶段或百分比变化时才推）。"""
-
-            def __init__(self, command_index: int, command_total: int):
-                self.base = command_index * 100.0 / command_total
-                self.span = 100.0 / command_total
-                self._last_percent: Optional[float] = None
-                self._last_stage = ""
-                self._last_ts = 0.0
-
-            def stage(self, text: str, percent: Optional[float] = None) -> None:
-                now = datetime.now().timestamp()
-                overall = None
-                if percent is not None:
-                    overall = self.base + self.span * min(100.0, max(0.0, percent)) / 100.0
-                stage_changed = text != self._last_stage
-                percent_changed = (
-                    overall is not None
-                    and (self._last_percent is None or abs(overall - self._last_percent) >= 1.0)
-                )
-                if not (stage_changed or percent_changed):
-                    return
-                # 阶段变化立即推送；纯百分比刷新限流到每 0.5 秒一次
-                if not stage_changed and now - self._last_ts < 0.5:
-                    return
-                self._last_percent = overall
-                self._last_stage = text
-                self._last_ts = now
-                events.put({
-                    "type": "progress",
-                    "percent": round(overall, 1) if overall is not None else None,
-                    "stage": text,
-                })
-
         def worker() -> None:
             results: list[dict] = []
             auto_fix_info: Optional[dict] = None
+            last_failure: Optional[dict] = None
+
+            def _emit_term(data: bytes) -> None:
+                """把命令在 PTY 里的原始输出字节流推给前端（xterm.js 真实渲染）。"""
+                events.put({"type": "term", "data": base64.b64encode(data).decode("ascii")})
+
             try:
                 with project_lock(workspace.project_dir):
+                    # conda 25.x 需要 accept ToS 才能访问软件源：安装前自动代为接受（幂等）
+                    ensure_conda_tos_accepted()
                     queue_commands = list(commands)
+                    # 先把完整命令列表发给前端：安装期间展示“命令视图”（所见即所执行）
+                    events.put({"type": "plan", "commands": list(queue_commands), "total": len(queue_commands),
+                                "install_id": install_id})
                     index = 0
                     fixed_for_current = False
+                    stripped_for_current = False
+                    pending_fix_reason: Optional[str] = None
                     while index < len(queue_commands):
+                        if session["cancelled"]:
+                            break
                         command = queue_commands[index]
                         events.put({"type": "command_start", "index": index, "command": command,
-                                    "total": len(queue_commands)})
-                        progress = _Progress(index, len(queue_commands))
+                                    "total": len(queue_commands),
+                                    "fixed": bool(pending_fix_reason), "fix_reason": pending_fix_reason or ""})
+                        pending_fix_reason = None
                         try:
                             argv = _normalize_install_command(command, workspace.conda_env_dir)
                         except FileTransferError as e:
@@ -3256,8 +3239,12 @@ def install_project_dependencies(req: ProjectInstallRequest):
                             events.put({"type": "command_done", "index": index, "returncode": 1,
                                         "output": str(e)})
                             break
+                        def _register_proc(proc_obj) -> None:
+                            session["proc"] = proc_obj
+
                         returncode, output = _run_install_command(
-                            command, argv, workspace.project_dir, progress.stage,
+                            argv, workspace.project_dir, _emit_term,
+                            on_spawn=_register_proc,
                         )
                         results.append({
                             "command": command,
@@ -3270,13 +3257,43 @@ def install_project_dependencies(req: ProjectInstallRequest):
                         if returncode == 0:
                             index += 1
                             fixed_for_current = False
+                            stripped_for_current = False
                             continue
 
-                        # 失败：先尝试 LLM 携真实版本自动修复，重试一次
-                        if not fixed_for_current:
+                        # 失败分类：决定走确定性策略、LLM 兑底还是直接终止
+                        failure = classify_install_failure(output)
+                        last_failure = failure
+                        ftype = failure["type"]
+
+                        # 策略 1（确定性）：求解冲突/版本不存在 → 去掉版本约束重试一次，
+                        # 让 conda/pip 求解器自选兼容组合（全自动，不打断用户）
+                        if ftype in ("solver_conflict", "version") and not stripped_for_current:
+                            stripped = _strip_version_constraints(command)
+                            if stripped and stripped != command:
+                                # 原失败命令标记为已被替代，最终成败只看重试命令
+                                if results:
+                                    results[-1]["superseded"] = True
+                                events.put({"type": "auto_fix", "status": "retry",
+                                            "strategy": "unpin", "reason": failure["message"],
+                                            "commands": [stripped]})
+                                queue_commands = (
+                                    queue_commands[:index] + [stripped] + queue_commands[index + 1:]
+                                )
+                                stripped_for_current = True
+                                continue
+
+                        # 策略 2（终止）：环境/基建类失败修正无意义，给出精确原因直接结束
+                        if ftype in ("disk", "network", "package_not_found", "build_failed"):
+                            events.put({"type": "auto_fix", "status": "terminated",
+                                        "reason": failure["message"]})
+                            break
+
+                        # 策略 3（LLM 兑底）：版本类残留 / Python 版本 / 未归类失败，
+                        # 生成修正命令后回弹窗经用户确认（挂起等待，终止安装可唤醒）
+                        if not fixed_for_current and not session["cancelled"]:
                             events.put({"type": "auto_fix", "status": "analyzing",
                                         "failed_command": command})
-                            fix = _llm_fix_install_commands(command, output, selected_items)
+                            fix = _llm_fix_install_commands(command, output, selected_items, failure)
                             if fix:
                                 fixed_commands, reason = fix
                                 auto_fix_info = {
@@ -3285,29 +3302,61 @@ def install_project_dependencies(req: ProjectInstallRequest):
                                     "commands": fixed_commands,
                                     "reason": reason,
                                 }
-                                # 原失败结果标记为已被自动修复取代：重试成功后
-                                # 最终成败只看修正命令，不因历史失败误报
-                                if results:
-                                    results[-1]["superseded"] = True
-                                events.put({"type": "auto_fix", "status": "retry",
-                                            "reason": reason, "commands": fixed_commands})
-                                # 用修正命令替换失败命令，后续原命令继续执行
-                                queue_commands = (
-                                    queue_commands[:index] + fixed_commands + queue_commands[index + 1:]
-                                )
-                                fixed_for_current = True
-                                continue
-                            events.put({"type": "auto_fix", "status": "failed",
-                                        "reason": "未能生成修正命令"})
+                                # 把修正方案推给前端，挂起等用户确认/放弃（无超时，
+                                # 终止安装端点会唤醒本队列）；面板附带失败输出摘录
+                                events.put({"type": "fix_proposal", "index": index,
+                                            "original_command": command,
+                                            "commands": fixed_commands, "reason": reason,
+                                            "failure": failure,
+                                            "output_tail": _trim_text(output.strip(), 1500)})
+                                # 复用 cancel 端点可能已提前创建的队列（用户在面板
+                                # 弹出前就点了终止）：保证 get() 一定能被唤醒
+                                decision_q = session.get("fix_decisions")
+                                if decision_q is None:
+                                    decision_q = queue.Queue()
+                                    session["fix_decisions"] = decision_q
+                                accepted = decision_q.get()
+                                session["fix_decisions"] = None
+                                # 竞态保护：用户可能在队列创建前就点了终止（cancel 端点
+                                # 找不到队列无法唤醒），唤醒后需再检查一次 cancelled
+                                if accepted and not session["cancelled"]:
+                                    # 原失败结果标记为已被自动修复取代：重试成功后
+                                    # 最终成败只看修正命令，不因历史失败误报
+                                    if results:
+                                        results[-1]["superseded"] = True
+                                    events.put({"type": "auto_fix", "status": "retry",
+                                                "strategy": "llm", "reason": reason, "commands": fixed_commands})
+                                    # 用修正命令替换失败命令，后续原命令继续执行
+                                    queue_commands = (
+                                        queue_commands[:index] + fixed_commands + queue_commands[index + 1:]
+                                    )
+                                    fixed_for_current = True
+                                    pending_fix_reason = reason
+                                    continue
+                                events.put({"type": "auto_fix", "status": "rejected", "reason": reason})
+                            else:
+                                events.put({"type": "auto_fix", "status": "failed",
+                                            "reason": "未能生成修正命令"})
                         break
 
                     effective_results = [r for r in results if not r.get("superseded")]
+                    if session["cancelled"]:
+                        events.put({"type": "error", "payload": {
+                            "error": "安装已被手动终止",
+                            "status": "cancelled",
+                            "project_name": workspace.project_name,
+                            "conda_env_dir": str(workspace.conda_env_dir),
+                            "results": results,
+                            "auto_fix": auto_fix_info,
+                        }})
+                        return
                     if any(r.get("returncode") for r in effective_results):
                         events.put({"type": "error", "payload": {
                             "error": "依赖安装失败：" + next(
                                 (r["command"] for r in effective_results if r.get("returncode")), ""
                             ),
                             "status": "failed",
+                            "failure": last_failure,
                             "project_name": workspace.project_name,
                             "conda_env_dir": str(workspace.conda_env_dir),
                             "results": results,
@@ -3336,6 +3385,7 @@ def install_project_dependencies(req: ProjectInstallRequest):
                     "results": results,
                 }})
             finally:
+                _install_sessions.pop(install_id, None)
                 events.put(sentinel)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -3350,6 +3400,49 @@ def install_project_dependencies(req: ProjectInstallRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/projects/install-deps/{install_id}/cancel")
+def cancel_install_deps(install_id: str):
+    """终止进行中的安装：kill 当前命令进程，worker 在下一轮检查后退出。"""
+    session = _install_sessions.get(install_id)
+    if not session:
+        return JSONResponse({"error": "安装会话不存在或已结束"}, status_code=404)
+    session["cancelled"] = True
+    # 若 worker 正挂起等待修正确认，唤醒它（投递 False = 放弃修正，尽快退出）；
+    # 队列尚不存在时先创建，保证 worker 侧 get() 拿到的是同一个队列
+    decision_q = session.get("fix_decisions")
+    if decision_q is None:
+        decision_q = queue.Queue()
+        session["fix_decisions"] = decision_q
+    try:
+        decision_q.put(False)
+    except Exception:
+        pass
+    killed = False
+    proc = session.get("proc")
+    if proc is not None:
+        try:
+            # PTY（ptyprocess）支持 terminate(force=True)；子进程 Popen 不收 force 参数
+            try:
+                proc.terminate(force=True)
+            except TypeError:
+                proc.terminate()
+            killed = True
+        except Exception:
+            pass
+    return {"status": "ok", "killed": killed}
+
+
+@app.post("/api/projects/install-deps/{install_id}/fix-decision")
+def install_fix_decision(install_id: str, req: FixDecisionRequest):
+    """投递用户对修正方案的决定（true=确认执行，false=放弃）。"""
+    session = _install_sessions.get(install_id)
+    decision_q = session.get("fix_decisions") if session else None
+    if not decision_q:
+        return JSONResponse({"error": "当前没有等待确认的修正方案"}, status_code=404)
+    decision_q.put(bool(req.accept))
+    return {"status": "ok"}
 
 
 @app.get("/api/projects/job-skeleton")
@@ -4683,7 +4776,14 @@ async def index():
     from pathlib import Path
     html_path = Path(__file__).parent / "static" / "index.html"
     if html_path.exists():
-        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+        # 响应不带 ETag/Last-Modified，若也不声明缓存策略，浏览器会
+        # 直接复用旧页面且无法重新验证，部署新版本后用户看不到更新。
+        # no-cache 强制每次回源取最新 HTML（页面体量小，回源代价可忽略）；
+        # /static 下的 js/css 由 StaticFiles 自动带 ETag，不受影响
+        return HTMLResponse(
+            html_path.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache"},
+        )
     return HTMLResponse("<h2>前端页面未找到，请创建 server/static/index.html</h2>")
 
 

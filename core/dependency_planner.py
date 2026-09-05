@@ -430,6 +430,47 @@ def _scan_markdown(path: Path, rel: str) -> list[DependencyItem]:
         if item:
             items.append(item)
 
+    # 3) 代码块内的依赖清单：每行一个 name=version（如 ```txt 块中的
+    #    requests==2.26.0 / dssp=3.0.0），既不是安装命令也不在小节列表里。
+    #    连续 ≥3 行匹配“单包名+可选版本约束”且无其它内容时才采纳，
+    #    避免把 shell 片段、示例输出误判成清单。
+    in_block = False
+    block_lines: list[str] = []
+    block_specs: list[list[str]] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_block and len(block_lines) >= 3:
+                block_specs.append(block_lines)
+            in_block = not in_block
+            block_lines = []
+            continue
+        if not in_block or not stripped or stripped.startswith("#"):
+            continue
+        if re.match(r"^[A-Za-z0-9_.-]+(==?|>=|<=|~=|!=)?[0-9A-Za-z][A-Za-z0-9.*_+!-]*$", stripped):
+            block_lines.append(stripped)
+        else:
+            # 块内出现清单以外的内容（shell 命令、说明文字等）则整块作废
+            block_lines = []
+    if in_block and len(block_lines) >= 3:
+        block_specs.append(block_lines)
+
+    for spec_lines in block_specs:
+        for value in spec_lines:
+            if "==" in value:
+                manager = "pip"
+            elif "=" in value:
+                # conda 风格 name=version（如 dssp=3.0.0）：这类包常是 conda
+                # 独有（PyPI 同名包可能不是同一个东西），默认走 conda 渠道，
+                # precheck 会用真实软件源查询验证并给出建议版本
+                manager = "conda"
+            else:
+                manager = "pip"
+            name, version = _split_requirement(value)
+            item = _make_item(name, version, manager, rel, "trusted", "high", "来自 README/文档代码块的依赖清单")
+            if item:
+                items.append(item)
+
     return items
 
 
@@ -795,6 +836,37 @@ def _parse_pip_available_versions(output: str) -> list[str]:
     return []
 
 
+_TOS_ACCEPTED = False
+
+
+def ensure_conda_tos_accepted(timeout: int = 60) -> None:
+    """
+    conda 25.x 首次访问软件源时要求接受 ToS（Terms of Service），否则
+    conda search / install 都会失败并提示手动执行 conda tos accept。
+    这里在依赖分析/安装前自动代为接受（幂等操作，重复执行无副作用），
+    用户无需知道也不需要手动执行。老版本 conda 无 tos 子命令，静默忽略。
+    """
+    global _TOS_ACCEPTED
+    if _TOS_ACCEPTED:
+        return
+    try:
+        conda_exe = find_conda_executable()
+    except FileTransferError:
+        return
+    for channel in get_conda_channels():
+        try:
+            subprocess.run(
+                [conda_exe, "tos", "accept", "--override-channels", "--channel", channel],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception:
+            # 一次执行异常即认为 conda 环境异常，不置缓存，下次重试
+            return
+    _TOS_ACCEPTED = True
+
+
 def precheck_dependencies(items: list[DependencyItem], conda_env_dir: Path | None = None) -> list[DependencyItem]:
     """
     预检分三部分：
@@ -986,3 +1058,176 @@ def serialize_items(items: list[DependencyItem]) -> list[dict[str, Any]]:
 
 def merge_dependency_items(items: list[DependencyItem]) -> list[DependencyItem]:
     return _dedupe(items)
+
+
+# ---------------------------------------------------------------------------
+# 安装失败分类：把 conda/pip 的真实错误输出归类并提取结构化信息，
+# 供安装引擎决定后续策略（终止 / 自动去版本重试 / LLM 修正）。
+# 纯函数，不依赖网络与环境，可单独测试。
+# ---------------------------------------------------------------------------
+
+# 致命错误几乎都集中在输出尾部；以尾部若干行为主匹配面，
+# 避免被 pip 构建日志中部的大量网络重试 WARNING 干扰
+FAILURE_TAIL_LINES = 60
+
+_FAILURE_DISK_ANCHORS = (
+    "No space left on device",
+    "EnvironmentNotWritableError",
+    "Read-only file system",
+)
+
+_FAILURE_NETWORK_ANCHORS = (
+    "CondaHTTPError",
+    "Downloaded bytes did not match Content-Length",
+    "ReadTimeoutError",
+    "ProxyError",
+    "SSLError",
+    "Connection timed out",
+    "NewConnectionError",
+)
+
+_FAILURE_CONFLICT_ANCHORS = (
+    "UnsatisfiableError",
+    "nothing provides",
+    "ResolvePackageNotFound",
+    "conflicting dependencies",
+    "The conflict is caused by",
+)
+
+_FAILURE_BUILD_ANCHORS = (
+    "subprocess-exited-with-error",
+    "Failed building wheel for",
+    "Could not build wheels for",
+)
+
+
+def _specs_after_anchor(text: str, anchor: str) -> list[str]:
+    """提取锚点行之后的 `- spec` 列表（PackagesNotFoundError 的典型格式）。"""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if anchor not in line:
+            continue
+        specs: list[str] = []
+        for follow in lines[i + 1:]:
+            m = re.match(r"^\s*-\s*(\S+)\s*$", follow)
+            if not m:
+                if specs:
+                    break
+                continue
+            specs.append(m.group(1))
+        return specs
+    return []
+
+
+def _tail_snippet(text: str, anchor: str, before: int = 1, after: int = 3) -> str:
+    """取锚点附近的少量原文行，用于冲突类错误的上下文展示。"""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if anchor in line:
+            start = max(0, i - before)
+            return "\n".join(lines[start:i + after]).strip()[:600]
+    return ""
+
+
+def classify_install_failure(output: str) -> dict[str, Any]:
+    """
+    归类安装失败原因。返回：
+
+      {"type": ..., "message": 面向用户的人话结论, "details": {结构化字段}}
+
+    type 取值（按“不可修 → 有确定性修法 → 可 LLM 修正”的大致顺序）：
+      disk / network / package_not_found / build_failed / solver_conflict /
+      version / python_version / other
+    """
+    text = str(output or "")
+    lines = text.splitlines()
+    tail = "\n".join(lines[-FAILURE_TAIL_LINES:])
+
+    # 1) 磁盘/权限：可能出现在输出中部，全文扫描
+    anchor = next((a for a in _FAILURE_DISK_ANCHORS if a in text), None)
+    if anchor:
+        return {
+            "type": "disk",
+            "message": "磁盘空间不足或环境目录不可写，请清理磁盘或检查目录权限后重试。",
+            "details": {"anchor": anchor},
+        }
+
+    # 2) pip：版本不存在（有真实 from versions 列表）/ 包名不存在（from versions: none）
+    m = re.search(r"could not find a version that satisfies the requirement (\S+)", tail, re.I)
+    if m:
+        req = m.group(1)
+        from_m = re.search(r"from versions: ([^)]*)\)", tail[m.end():m.end() + 400], re.I)
+        versions = [v.strip() for v in (from_m.group(1) if from_m else "").split(",") if v.strip()]
+        if versions and versions != ["none"]:
+            return {
+                "type": "version",
+                "message": f"{req} 的请求版本不存在（可用：{', '.join(versions[-5:])}）。",
+                "details": {"package": req, "from_versions": versions[-15:]},
+            }
+        return {
+            "type": "package_not_found",
+            "message": f"{req} 在 PyPI 上不存在，请在依赖列表中移除或更换包名。",
+            "details": {"packages": [req]},
+        }
+
+    # 3) conda PackagesNotFoundError：按 spec 是否带版本约束区分“版本不存在”与“包不存在”
+    specs = _specs_after_anchor(text, "PackagesNotFoundError")
+    if specs:
+        if any(re.search(r"[=<>!~]", s) for s in specs):
+            return {
+                "type": "version",
+                "message": f"{', '.join(specs)} 请求的版本在软件源中不存在。",
+                "details": {"specs": specs},
+            }
+        return {
+            "type": "package_not_found",
+            "message": f"{', '.join(specs)} 在所配置的软件源中不存在，请在依赖列表中移除或更换包名。",
+            "details": {"packages": specs},
+        }
+
+    # 4) 构建失败（源码编译缺编译器/系统依赖，LLM 无法修复）
+    if any(a in tail for a in _FAILURE_BUILD_ANCHORS):
+        m = re.search(r"Failed building wheels? for ([^,\n]+)", tail)
+        pkg = m.group(1).strip() if m else ""
+        return {
+            "type": "build_failed",
+            "message": f"{pkg or '依赖包'} 源码构建失败（通常缺编译器或系统依赖），无法自动修复；建议改用预编译版本。",
+            "details": {"package": pkg},
+        }
+
+    # 5) 网络（尾部匹配，避免构建日志中部的重试 WARNING 误判）
+    anchor = next((a for a in _FAILURE_NETWORK_ANCHORS if a in tail), None)
+    if anchor:
+        url_m = re.search(r"https?://\S+", tail)
+        return {
+            "type": "network",
+            "message": f"网络问题导致下载失败{f'（{url_m.group(0)[:120]}）' if url_m else ''}，请检查集群网络后重试。",
+            "details": {"anchor": anchor, "url": url_m.group(0) if url_m else ""},
+        }
+
+    # 6) 依赖求解冲突（conda/pip 通用）
+    anchor = next((a for a in _FAILURE_CONFLICT_ANCHORS if a in tail), None)
+    if anchor:
+        context = _tail_snippet(tail, anchor)
+        return {
+            "type": "solver_conflict",
+            "message": "依赖求解冲突，将尝试去掉版本约束重新求解。",
+            "details": {"anchor": anchor, "context": context},
+        }
+
+    # 7) Python 版本不匹配
+    m = re.search(r"requires a different Python[:\s]+(\S+)", tail)
+    if m:
+        pkg_m = re.search(r"Package '([^']+)'", tail)
+        return {
+            "type": "python_version",
+            "message": f"{pkg_m.group(1) if pkg_m else '依赖包'} 要求 Python {m.group(1)}，当前环境不满足。",
+            "details": {"requirement": m.group(1)},
+        }
+
+    # 8) 未命中任何锚点：LLM 兕底
+    return {
+        "type": "other",
+        "message": "安装失败，原因未明确归类。",
+        "details": {},
+    }

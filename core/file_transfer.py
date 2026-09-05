@@ -306,19 +306,31 @@ def ensure_project_directory(project_name: str) -> ProjectWorkspace:
     )
 
 
+def _conda_env_complete(conda_env_dir: Path) -> bool:
+    """环境完整 = 事务记录与解释器都在。conda create 是事务式的：
+    history 在事务早期就落盘，python 链接在后；create 中途被杀
+    （服务重启、手动 kill、与手动建环境竞争）会留下 history 存在
+    但 python 缺失的半成品，只查 history 会把坏环境当成已就绪。"""
+    return (
+        (conda_env_dir / "conda-meta" / "history").exists()
+        and (conda_env_dir / "bin" / "python").exists()
+    )
+
+
 def ensure_conda_room(conda_env_dir: Path) -> bool:
     """Create the per-project conda environment if it does not already exist."""
-    if (conda_env_dir / "conda-meta" / "history").exists():
+    if _conda_env_complete(conda_env_dir):
         return False
 
     conda_env_dir.parent.mkdir(parents=True, exist_ok=True)
     # conda_env_dir = <project>/.slurm-agent/conda-env，项目锁放在 <project>/.slurm-agent/ 下
     with project_lock(conda_env_dir.parent.parent):
         # 拿到锁后双重检查：可能已有并发请求完成创建
-        if (conda_env_dir / "conda-meta" / "history").exists():
+        if _conda_env_complete(conda_env_dir):
             return False
-        # 自愈：上次 conda create 中断会留下“有文件但无 conda-meta/history”的半成品环境，
-        # 直接再 create 会报 prefix already exists，先清理后重建
+        # 自愈：上次 conda create 中断会留下半成品环境（缺 history，或
+        # history 已落盘但 python 未链接完），直接再 create 会报
+        # prefix already exists，先清理后重建
         if conda_env_dir.exists():
             shutil.rmtree(conda_env_dir)
         conda_exe = find_conda_executable()
