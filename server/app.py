@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 import getpass
@@ -2491,7 +2492,11 @@ def docs_tree():
     """返回内置帮助文档的目录树。"""
     if not DOCS_ROOT.is_dir():
         return JSONResponse({"error": "文档目录不存在"}, status_code=500)
-    return {"status": "ok", "root": str(DOCS_ROOT), "tree": _docs_subtree(DOCS_ROOT)}
+    tree = _docs_subtree(DOCS_ROOT)
+    # 平台首页（USTC 本科生算力平台）与快速开始置顶：新用户最先需要的是
+    # “这是什么、怎么开始”，应排在各章节文件夹之前（稳定排序，保持原相对顺序）
+    tree.sort(key=lambda n: 0 if n.get("path") in ("index.md", "quickstart.md") else 1)
+    return {"status": "ok", "root": str(DOCS_ROOT), "tree": tree}
 
 
 @app.get("/api/docs/content")
@@ -2918,7 +2923,11 @@ def project_report(req: ProjectReportRequest):
     }
 
 
-INSTALL_COMMAND_TIMEOUT = int(os.environ.get("SLURM_INSTALL_TIMEOUT", "1800"))
+# 超时判定不用固定总时长：torch 这类包要下载数 GB（慢速网络下远超半小时），
+# 且下载期间终端一直在刷进度条，进程明显活着；真正的故障信号是
+# "长时间没有任何新输出"。总时长上限仅作兜底。均可用环境变量覆盖。
+INSTALL_STALL_TIMEOUT = int(os.environ.get("SLURM_INSTALL_STALL_TIMEOUT", str(10 * 60)))
+INSTALL_MAX_DURATION = int(os.environ.get("SLURM_INSTALL_MAX_DURATION", str(4 * 3600)))
 
 # 进行中的安装会话：install_id → {"proc": 子进程/PTY, "cancelled": bool, "fix_decisions": Queue}
 # 供终止安装端点 kill 当前命令、修正确认端点投递用户决定
@@ -2986,7 +2995,9 @@ def _run_install_command(
     原始终端字节流逐块回调 emit_term，前端 xterm.js 渲染真实终端
     （conda/pip 自带的下载进度条、颜色都是真实输出）。
     on_spawn 在进程创建后回调（注册到安装会话，供终止端点 kill）。
-    返回 (returncode, output)，output 已去 ANSI，供失败分类与 LLM 修复使用。
+    返回 (returncode, output, timeout_reason)，output 已去 ANSI，供失败分类
+    与 LLM 修复使用；timeout_reason 为空表示正常退出，否则是 "stall"
+    （长时间无输出，疑似卡死）或 "max_duration"（超过总时长上限）。
     """
     import ptyprocess
 
@@ -3002,7 +3013,7 @@ def _run_install_command(
             pass
     output_parts: list[str] = []
     text_tail = ""
-    timed_out = False
+    state = {"last_output": time.monotonic()}
 
     def _feed_text(chunk: str) -> None:
         """按 \r / \n 切行收集清洗后的输出，供失败分类使用。"""
@@ -3031,19 +3042,71 @@ def _run_install_command(
 
     reader = threading.Thread(target=_pty_reader, daemon=True)
     reader.start()
+    start_ts = time.monotonic()
+    timeout_reason = ""
+    while proc.isalive():
+        time.sleep(5)
+        now = time.monotonic()
+        if now - state["last_output"] > INSTALL_STALL_TIMEOUT:
+            timeout_reason = "stall"
+            break
+        if now - start_ts > INSTALL_MAX_DURATION:
+            timeout_reason = "max_duration"
+            break
+    if timeout_reason:
+        _feed_text("\n[正在终止命令：请求其自行退出，最多等待 6 秒，超时则强制终止]\n")
+        _terminate_install_proc(proc)
+        if timeout_reason == "stall":
+            output_parts.append(
+                f"[命令已超过 {INSTALL_STALL_TIMEOUT // 60} 分钟无任何输出，疑似卡死，已被终止]"
+            )
+        else:
+            output_parts.append(
+                f"[命令总时长已超过 {INSTALL_MAX_DURATION // 60} 分钟上限，已被终止]"
+            )
+    reader.join(timeout=10)
+    _feed_text("\n")  # 冲洗 tail 中残留的最后一行（如 successfully installed 提示）
+    returncode = 1 if timeout_reason else (proc.exitstatus or 0)
+    return returncode, "\n".join(output_parts), timeout_reason
+
+
+def _terminate_install_proc(proc, grace_seconds: int = 6) -> None:
+    """分级终止安装命令，降低环境文件被写坏的概率。
+
+    直接 SIGKILL 可能把 pip 解包一半、conda 事务中断，留下残缺的
+    site-packages 或环境元数据；SIGINT 下两者都会停止写入并退出。
+    因此先请求其自行退出，grace_seconds 秒仍未退出再 SIGKILL。
+    兼容 ptyprocess.PtyProcess 与 subprocess.Popen 两种进程对象。
+    """
+    def _alive() -> bool:
+        if hasattr(proc, "isalive"):
+            return proc.isalive()
+        return proc.poll() is None
+
+    # 第 1 级：请求自行退出（ptyprocess 的 terminate(force=False) 发 SIGHUP+SIGINT）
     try:
-        proc.wait(timeout=INSTALL_COMMAND_TIMEOUT)
-    except Exception:
-        timed_out = True
+        proc.terminate(force=False)
+    except TypeError:
         try:
-            proc.terminate(force=True)
+            proc.terminate()
         except Exception:
             pass
-        output_parts.append("[安装命令超时，已被终止]")
-    reader.join(timeout=10)
-    _feed_text("\n")  # 冲刷 tail 中残留的最后一行（如 successfully installed 提示）
-    returncode = 1 if timed_out else (proc.exitstatus or 0)
-    return returncode, "\n".join(output_parts)
+    except Exception:
+        pass
+    deadline = time.monotonic() + grace_seconds
+    while _alive() and time.monotonic() < deadline:
+        time.sleep(0.3)
+    if _alive():
+        # 第 2 级：未按时退出，强制终止
+        try:
+            proc.terminate(force=True)
+        except TypeError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 def _package_names_from_command(command: str) -> list[str]:
@@ -3069,11 +3132,29 @@ def _package_names_from_command(command: str) -> list[str]:
     return names
 
 
+def _conda_env_python_version(conda_env_dir: Path) -> str:
+    """目标环境的 Python 主次版本（如 "3.10"），读不到返回空串。
+
+    conda 三段式包规格的构建段以 pyXX 开头，必须与目标环境 Python
+    主次版本一致，否则求解必然失败（LLM 曾给 py3.10 环境选 py311 构建）。
+    """
+    try:
+        for meta in (conda_env_dir / "conda-meta").glob("python-3*:*.json"):
+            version = meta.name[len("python-"):].split("-")[0]
+            parts = version.split(".")
+            if len(parts) >= 2:
+                return f"{parts[0]}.{parts[1]}"
+    except OSError:
+        pass
+    return ""
+
+
 def _llm_fix_install_commands(
     failed_command: str,
     output: str,
     selected_items: list[dict],
     failure: Optional[dict] = None,
+    env_python_version: str = "",
 ) -> Optional[tuple[list[str], str]]:
     """
     安装失败后的 LLM 兑底修复：查询软件源真实版本 → LLM 重新选版 → 返回修正命令。
@@ -3123,6 +3204,10 @@ def _llm_fix_install_commands(
 {chr(10).join(search_lines)}
 </包管理查询结果>
 
+<目标环境>
+Python {env_python_version or "未知"}；conda 三段式包规格的构建段必须以 py{env_python_version.replace('.', '') if env_python_version else 'XX'} 开头（如 py310_xxx），pip install 无此约束
+</目标环境>
+
 <集群硬件上下文>
 {_hardware_context_text()}
 </集群硬件上下文>
@@ -3135,7 +3220,8 @@ def _llm_fix_install_commands(
 1. 只返回严格 JSON：{{"commands": ["conda install ...", ...], "reason": "一句话说明改了什么"}}
 2. commands 里只能有 conda install / pip install 命令，每条一行。
 3. 版本号必须来自上面的查询结果；需要 GPU 的包按硬件上下文选择构建（conda 三段式如 gromacs=2026.3=nompi_cuda）。
-4. 查询结果里没有合适的包/版本时，commands 返回空数组，并在 reason 里说明原因。"""
+4. 查询结果里没有合适的包/版本时，commands 返回空数组，并在 reason 里说明原因。
+5. conda 构建必须与目标环境的 Python 版本一致（pyXX 前缀），绝不能给 py3.10 环境选 py311 构建；拿不准就剥掉版本与构建只留包名。"""
 
     try:
         llm = LLMProvider()
@@ -3167,6 +3253,23 @@ def _llm_fix_install_commands(
     commands = _extract_install_commands("\n".join(commands))
     if not commands:
         return None
+    # 确定性校验：LLM 偶尔无视目标环境 Python 版本选 conda 构建（如给
+    # py3.10 环境选 py311 构建，求解必然失败），这类修正整体拒绝
+    if env_python_version:
+        expected = "py" + env_python_version.replace(".", "")
+        for cmd in commands:
+            if not cmd.lower().startswith("conda install"):
+                continue
+            for part in shlex.split(cmd)[2:]:
+                if part.startswith("-"):
+                    continue
+                m = re.search(r"=(py\d{2,3})(?:_|$)", part)
+                if m and m.group(1) != expected:
+                    logger.warning(
+                        "丢弃 LLM 修正：构建 %s 与目标环境 Python %s 不匹配",
+                        m.group(1), env_python_version,
+                    )
+                    return None
     return commands, reason
 
 
@@ -3232,6 +3335,7 @@ def install_project_dependencies(req: ProjectInstallRequest):
                 with project_lock(workspace.project_dir):
                     # conda 25.x 需要 accept ToS 才能访问软件源：安装前自动代为接受（幂等）
                     ensure_conda_tos_accepted()
+                    env_python_version = _conda_env_python_version(workspace.conda_env_dir)
                     queue_commands = list(commands)
                     # 先把完整命令列表发给前端：安装期间展示“命令视图”（所见即所执行）
                     events.put({"type": "plan", "commands": list(queue_commands), "total": len(queue_commands),
@@ -3259,7 +3363,7 @@ def install_project_dependencies(req: ProjectInstallRequest):
                         def _register_proc(proc_obj) -> None:
                             session["proc"] = proc_obj
 
-                        returncode, output = _run_install_command(
+                        returncode, output, timeout_reason = _run_install_command(
                             argv, workspace.project_dir, _emit_term,
                             on_spawn=_register_proc,
                         )
@@ -3277,8 +3381,29 @@ def install_project_dependencies(req: ProjectInstallRequest):
                             stripped_for_current = False
                             continue
 
-                        # 失败分类：决定走确定性策略、LLM 兑底还是直接终止
-                        failure = classify_install_failure(output)
+                        # 失败分类：决定走确定性策略、LLM 兑底还是直接终止。
+                        # 超时不进分类器也不喂 LLM（LLM 修不了"时间不够"）：
+                        # 给出明确原因直接终止，重试会利用 pip/conda 缓存大幅加快
+                        if timeout_reason == "stall":
+                            failure = {
+                                "type": "timeout",
+                                "message": (
+                                    f"命令已超过 {INSTALL_STALL_TIMEOUT // 60} 分钟无任何输出，"
+                                    "疑似卡死，已被终止"
+                                ),
+                                "details": {},
+                            }
+                        elif timeout_reason == "max_duration":
+                            failure = {
+                                "type": "timeout",
+                                "message": (
+                                    f"命令总时长超过 {INSTALL_MAX_DURATION // 60} 分钟上限"
+                                    "（大体积下载常见），已被终止；重试会利用缓存大幅加快"
+                                ),
+                                "details": {},
+                            }
+                        else:
+                            failure = classify_install_failure(output)
                         last_failure = failure
                         ftype = failure["type"]
 
@@ -3300,7 +3425,7 @@ def install_project_dependencies(req: ProjectInstallRequest):
                                 continue
 
                         # 策略 2（终止）：环境/基建类失败修正无意义，给出精确原因直接结束
-                        if ftype in ("disk", "network", "package_not_found", "build_failed"):
+                        if ftype in ("disk", "network", "package_not_found", "build_failed", "timeout"):
                             events.put({"type": "auto_fix", "status": "terminated",
                                         "reason": failure["message"]})
                             break
@@ -3310,7 +3435,7 @@ def install_project_dependencies(req: ProjectInstallRequest):
                         if not fixed_for_current and not session["cancelled"]:
                             events.put({"type": "auto_fix", "status": "analyzing",
                                         "failed_command": command})
-                            fix = _llm_fix_install_commands(command, output, selected_items, failure)
+                            fix = _llm_fix_install_commands(command, output, selected_items, failure, env_python_version)
                             if fix:
                                 fixed_commands, reason = fix
                                 auto_fix_info = {
@@ -3440,11 +3565,8 @@ def cancel_install_deps(install_id: str):
     proc = session.get("proc")
     if proc is not None:
         try:
-            # PTY（ptyprocess）支持 terminate(force=True)；子进程 Popen 不收 force 参数
-            try:
-                proc.terminate(force=True)
-            except TypeError:
-                proc.terminate()
+            # 分级终止：先请求退出，6 秒未退出才 SIGKILL，减少环境写坏的概率
+            _terminate_install_proc(proc)
             killed = True
         except Exception:
             pass
