@@ -8,6 +8,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -73,6 +74,22 @@ USER_DEPENDENCY_ALIASES = {
 }
 
 
+# import 名称与发行包名称并不总是一致。这里只保留稳定、常用且可确定的映射；
+# 未命中的名称交给第三层模型复核，避免用一张无法穷举的人工表强行判断。
+IMPORT_PACKAGE_ALIASES = {
+    "yaml": "PyYAML",
+    "pil": "Pillow",
+    "cv2": "opencv-python",
+    "sklearn": "scikit-learn",
+    "bs4": "beautifulsoup4",
+}
+
+IMPORT_SCAN_IGNORED_DIRS = {
+    ".git", ".slurm-agent", ".venv", "venv", "env", "__pycache__",
+    "node_modules", "build", "dist",
+}
+
+
 @dataclass
 class DependencyItem:
     name: str
@@ -89,6 +106,9 @@ class DependencyItem:
     # 版本感知预检的结果：软件源里真实存在的版本（逗号分隔，最近优先）与建议版本
     available_versions: str = ""
     suggested_version: str = ""
+    # 仅源码 import 候选使用。显式依赖保持为空，便于模型只复核未解决项。
+    import_name: str = ""
+    import_evidence: str = ""
 
 
 def _clean_name(value: str) -> str:
@@ -474,42 +494,130 @@ def _scan_markdown(path: Path, rel: str) -> list[DependencyItem]:
     return items
 
 
-def _scan_python_imports(project_dir: Path) -> list[DependencyItem]:
-    items: list[DependencyItem] = []
-    seen: set[str] = set()
-    stdlib_like = {
-        "argparse", "collections", "dataclasses", "datetime", "functools", "itertools",
-        "json", "logging", "math", "os", "pathlib", "re", "shutil", "subprocess",
-        "sys", "tempfile", "typing", "unittest", "urllib",
-    }
+def _normalized_package_name(value: str) -> str:
+    """Normalize distribution/import spellings for deterministic comparisons."""
+    return re.sub(r"[-_.]+", "-", str(value or "").strip()).lower()
+
+
+def _python_files(project_dir: Path) -> list[Path]:
+    files: list[Path] = []
     for path in sorted(project_dir.rglob("*.py")):
         rel = path.relative_to(project_dir)
-        if ".slurm-agent" in rel.parts or ".git" in rel.parts:
+        if any(part in IMPORT_SCAN_IGNORED_DIRS for part in rel.parts):
             continue
+        files.append(path)
+    return files
+
+
+def _local_python_modules(project_dir: Path, python_files: list[Path]) -> set[str]:
+    """Collect project-local module names, including src-layout and namespace packages."""
+    modules: set[str] = set()
+    for path in python_files:
+        rel = path.relative_to(project_dir)
+        if path.stem != "__init__":
+            modules.add(path.stem)
+        for part in rel.parts[:-1]:
+            if part.isidentifier() and part not in IMPORT_SCAN_IGNORED_DIRS:
+                modules.add(part)
+    return modules
+
+
+def _append_import_source(item: DependencyItem) -> None:
+    if "Python import 扫描" not in item.source:
+        item.source = f"{item.source}; Python import 扫描" if item.source else "Python import 扫描"
+
+
+def _scan_python_imports(
+    project_dir: Path,
+    declared_items: list[DependencyItem],
+) -> list[DependencyItem]:
+    """Return only unresolved third-party import candidates.
+
+    Layer 1 removes Python stdlib and project-local modules. Layer 2 resolves
+    same-name distributions and a deliberately small stable alias table.
+    """
+    python_files = _python_files(project_dir)
+    local_modules = _local_python_modules(project_dir, python_files)
+    stdlib_modules = set(getattr(sys, "stdlib_module_names", ()))
+    stdlib_modules.update({"__future__", "builtins"})
+
+    declared_by_name: dict[str, DependencyItem] = {}
+    for item in declared_items:
+        declared_by_name.setdefault(_normalized_package_name(item.name), item)
+
+    occurrences: dict[str, list[str]] = {}
+    for path in python_files:
+        rel = path.relative_to(project_dir)
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore")[:120000])
+            source = path.read_text(encoding="utf-8", errors="ignore")[:120000]
+            tree = ast.parse(source)
         except Exception:
             continue
         for node in ast.walk(tree):
-            name = ""
+            imported_names: list[str] = []
             if isinstance(node, ast.Import):
-                for alias in node.names:
-                    name = alias.name.split(".", 1)[0]
-                    if name and name not in seen and name not in stdlib_like:
-                        seen.add(name)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                name = node.module.split(".", 1)[0]
-                if name and name not in seen and name not in stdlib_like:
-                    seen.add(name)
-            if len(seen) >= MAX_IMPORT_ITEMS:
-                break
-        if len(seen) >= MAX_IMPORT_ITEMS:
-            break
-    for name in sorted(seen):
-        item = _make_item(name, "", "pip", "Python import 扫描", "inferred", "low", "从源码 import 推断，需用户确认")
+                imported_names = [alias.name.split(".", 1)[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                imported_names = [node.module.split(".", 1)[0]]
+            for name in imported_names:
+                if not name:
+                    continue
+                statement = (ast.get_source_segment(source, node) or f"import {name}").strip()
+                statement = " ".join(statement.split())[:180]
+                evidence = f"{rel}:{getattr(node, 'lineno', '?')}: {statement}"
+                bucket = occurrences.setdefault(name, [])
+                if evidence not in bucket and len(bucket) < 3:
+                    bucket.append(evidence)
+
+    items: list[DependencyItem] = []
+    for import_name in sorted(occurrences, key=str.lower):
+        if import_name in stdlib_modules or import_name in local_modules:
+            continue
+        package_name = IMPORT_PACKAGE_ALIASES.get(import_name.lower(), import_name)
+        declared = declared_by_name.get(_normalized_package_name(package_name))
+        if declared is not None:
+            _append_import_source(declared)
+            continue
+        evidence_text = "；".join(occurrences[import_name])
+        alias_note = (
+            f"；稳定映射为发行包 {package_name}"
+            if package_name != import_name else ""
+        )
+        item = _make_item(
+            package_name,
+            "",
+            "pip",
+            "Python import 扫描（待模型复核）",
+            "inferred",
+            "low",
+            f"源码导入 {import_name}{alias_note}；位置：{evidence_text}",
+        )
         if item:
+            item.import_name = import_name
+            item.import_evidence = evidence_text
+            item.selected = False
             items.append(item)
+        if len(items) >= MAX_IMPORT_ITEMS:
+            break
     return items
+
+
+def collapse_import_candidates(items: list[DependencyItem]) -> list[DependencyItem]:
+    """Merge import candidates covered by explicit dependencies across managers."""
+    declared_by_name: dict[str, DependencyItem] = {}
+    for item in items:
+        if not item.import_name:
+            declared_by_name.setdefault(_normalized_package_name(item.name), item)
+
+    result: list[DependencyItem] = []
+    for item in items:
+        if item.import_name:
+            declared = declared_by_name.get(_normalized_package_name(item.name))
+            if declared is not None:
+                _append_import_source(declared)
+                continue
+        result.append(item)
+    return _dedupe(result)
 
 
 def scan_project_dependencies(project_dir: Path) -> list[DependencyItem]:
@@ -518,7 +626,7 @@ def scan_project_dependencies(project_dir: Path) -> list[DependencyItem]:
         if not path.is_file():
             continue
         rel = path.relative_to(project_dir)
-        if ".slurm-agent" in rel.parts or ".git" in rel.parts:
+        if any(part in IMPORT_SCAN_IGNORED_DIRS for part in rel.parts):
             continue
         rel_text = str(rel)
         name = path.name
@@ -539,9 +647,10 @@ def scan_project_dependencies(project_dir: Path) -> list[DependencyItem]:
                 items.extend(_scan_markdown(path, rel_text))
         except OSError:
             continue
-    items.extend(_scan_python_imports(project_dir))
-    return _dedupe(items)
-
+    declared_items = _dedupe(items)
+    return collapse_import_candidates(
+        declared_items + _scan_python_imports(project_dir, declared_items)
+    )
 
 def _version_near_token(text: str, token: str) -> str:
     pattern = rf"\b{re.escape(token)}\b\s*(?:==|=|版本|version)?\s*([0-9][A-Za-z0-9.*_+!-]*(?:=[A-Za-z0-9.*_+!-]+)?)"
@@ -1019,17 +1128,22 @@ def items_to_markdown(items: list[DependencyItem], summary: str = "") -> str:
     return "\n".join(lines)
 
 
-def parse_ai_dependency_items(raw: str) -> list[DependencyItem]:
+def _parse_ai_dependency_payload(raw: str) -> Any:
     text = str(raw or "").strip()
     if not text:
-        return []
+        return None
     match = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.S)
     if match:
         text = match.group(1).strip()
     try:
-        data: Any = json.loads(text)
+        return json.loads(text)
     except json.JSONDecodeError:
-        return []
+        return None
+
+
+def parse_ai_dependency_items(raw: str) -> list[DependencyItem]:
+    """Parse optional dependency additions; retained for API compatibility."""
+    data: Any = _parse_ai_dependency_payload(raw)
     if isinstance(data, dict):
         data = data.get("dependencies", [])
     if not isinstance(data, list):
@@ -1041,16 +1155,102 @@ def parse_ai_dependency_items(raw: str) -> list[DependencyItem]:
             continue
         name = str(entry.get("name") or "").strip()
         version = str(entry.get("version") or "").strip()
-        manager = str(entry.get("manager") or "conda").strip().lower()
+        manager = str(entry.get("manager") or "pip").strip().lower()
         if manager not in {"conda", "pip"}:
-            manager = "conda"
-        reason = str(entry.get("reason") or "AI 根据项目内容推断，需用户确认").strip()
-        item = _make_item(name, version, manager, "AI 推断", "ai", "low", reason)
+            manager = "pip"
+        reason = str(entry.get("reason") or "AI 根据源码 import 复核，需用户确认").strip()
+        item = _make_item(name, version, manager, "AI import 复核", "ai", "low", reason)
         if item:
             item.selected = False
             items.append(item)
     return items
 
+
+def parse_ai_import_reviews(raw: str) -> list[dict[str, str]]:
+    """Parse the model's classifications for unresolved imports."""
+    data: Any = _parse_ai_dependency_payload(raw)
+    if not isinstance(data, dict) or not isinstance(data.get("import_reviews"), list):
+        return []
+    reviews: list[dict[str, str]] = []
+    allowed_actions = {"dependency", "covered", "optional", "ignore", "uncertain"}
+    for entry in data["import_reviews"][:MAX_IMPORT_ITEMS]:
+        if not isinstance(entry, dict):
+            continue
+        import_name = str(entry.get("import_name") or "").strip()
+        action = str(entry.get("action") or "uncertain").strip().lower()
+        if not import_name or action not in allowed_actions:
+            continue
+        manager = str(entry.get("manager") or "pip").strip().lower()
+        if manager not in {"conda", "pip"}:
+            manager = "pip"
+        reviews.append({
+            "import_name": import_name,
+            "action": action,
+            "package": str(entry.get("package") or "").strip(),
+            "provided_by": str(entry.get("provided_by") or "").strip(),
+            "manager": manager,
+            "version": str(entry.get("version") or "").strip(),
+            "reason": str(entry.get("reason") or "").strip(),
+        })
+    return reviews
+
+
+def apply_ai_import_reviews(
+    items: list[DependencyItem],
+    reviews: list[dict[str, str]],
+) -> list[DependencyItem]:
+    """Apply model decisions only to unresolved imports; explicit items are immutable."""
+    review_by_import = {
+        str(review.get("import_name") or "").lower(): review for review in reviews
+    }
+    declared_names = {
+        _normalized_package_name(item.name)
+        for item in items
+        if not item.import_name
+    }
+    result: list[DependencyItem] = []
+    for item in items:
+        if not item.import_name:
+            result.append(item)
+            continue
+        review = review_by_import.get(item.import_name.lower())
+        if review is None:
+            result.append(item)
+            continue
+        action = review["action"]
+        if action == "covered":
+            provider = _normalized_package_name(review.get("provided_by", ""))
+            # 模型不能凭空删除候选：只有确实存在的显式依赖才能作为 provider。
+            if provider and provider in declared_names:
+                continue
+            result.append(item)
+            continue
+        if action == "ignore":
+            continue
+        if action == "dependency":
+            package_name = review.get("package") or item.name
+            replacement = _make_item(
+                package_name,
+                review.get("version", ""),
+                review.get("manager", "pip"),
+                "AI import 复核",
+                "ai",
+                "low",
+                review.get("reason") or f"源码导入 {item.import_name}，模型判断为外部依赖",
+            )
+            if replacement:
+                replacement.import_name = item.import_name
+                replacement.import_evidence = item.import_evidence
+                replacement.selected = False
+                result.append(replacement)
+            else:
+                result.append(item)
+            continue
+        # optional / uncertain 均保留为未勾选候选，交给用户作最终决定。
+        if review.get("reason"):
+            item.reason = review["reason"]
+        result.append(item)
+    return collapse_import_candidates(result)
 
 def serialize_items(items: list[DependencyItem]) -> list[dict[str, Any]]:
     return [asdict(item) for item in items]

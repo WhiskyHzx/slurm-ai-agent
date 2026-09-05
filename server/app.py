@@ -62,12 +62,14 @@ from core.file_transfer import (
 from core.dependency_planner import (
     DependencyItem,
     _extract_json_object,
+    apply_ai_import_reviews,
     classify_install_failure,
+    collapse_import_candidates,
     ensure_conda_tos_accepted,
     installed_packages_snapshot,
     items_to_markdown,
     merge_dependency_items,
-    parse_ai_dependency_items,
+    parse_ai_import_reviews,
     precheck_dependencies,
     scan_project_dependencies,
     scan_user_dependency_notes,
@@ -100,7 +102,7 @@ chat_history_lock = threading.Lock()
 dependency_state_lock = threading.RLock()
 
 DEPENDENCY_STATE_FILENAME = "dependency-analysis.json"
-DEPENDENCY_STATE_VERSION = 3
+DEPENDENCY_STATE_VERSION = 4
 
 
 def _dependency_state_path(project_dir: Path) -> Path:
@@ -1062,36 +1064,50 @@ def _build_ai_dependency_json_prompt(
         notes_text = notes_path.read_text(encoding="utf-8", errors="ignore") if notes_path.exists() else "暂无项目需求记录。"
     if extra_notes.strip():
         notes_text += f"\n\n## 本次追加意见\n{extra_notes.strip()}\n"
-    scanned_json = json.dumps(serialize_items(scanned_items), ensure_ascii=False, indent=2)
-    context = f"""
-你是 USTC 107 算力平台的依赖规划助手。请只补充“扫描结果中可能缺失”的依赖项，返回严格 JSON，不要 Markdown，不要解释。
 
-返回格式：
-[
-  {{"name": "包名", "version": "版本或版本范围；未知留空", "manager": "conda 或 pip", "reason": "为什么需要"}}
-]
+    explicit_items = [item for item in scanned_items if not item.import_name]
+    unresolved_items = [item for item in scanned_items if item.import_name]
+    explicit_json = json.dumps(serialize_items(explicit_items), ensure_ascii=False, indent=2)
+    unresolved_json = json.dumps(serialize_items(unresolved_items), ensure_ascii=False, indent=2)
+    context = f"""
+你是 USTC 107 算力平台的依赖复核助手。后端已完成两层确定性处理：
+1. 已排除 Python 标准库和项目内模块；
+2. 已用显式依赖和少量稳定别名消除可确定的 import。
+
+你只负责第三层：逐项分类下面的“未解决 import”。显式依赖不可删除、不可改名。
+只返回严格 JSON 对象，不要 Markdown，不要解释：
+{{
+  "import_reviews": [
+    {{
+      "import_name": "必须与输入完全一致",
+      "action": "dependency|covered|optional|ignore|uncertain",
+      "package": "action=dependency 时填写真实发行包名，否则留空",
+      "provided_by": "action=covered 时填写显式依赖名称，否则留空",
+      "manager": "pip 或 conda",
+      "version": "只使用项目文件、用户输入或查询结果中明确存在的约束；否则留空",
+      "reason": "简短依据"
+    }}
+  ]
+}}
 
 规则：
-1. 已在扫描结果中出现的依赖不要重复返回。
-2. 只有当项目文本、用户需求或源码明显需要某个依赖时才返回。
-3. **版本号只能来自 <包管理查询结果> 中的真实版本、项目文件或用户输入**；不确定就留空，禁止凭记忆编造。特别禁止把其它集群 module 系统的版本号（如 gromacs/2019.4-gcc-9.2.0-openmpi）当作可安装版本。
-4. 涉及 GPU 的包：根据 <集群硬件上下文> 在查询结果的构建变体（build，如 nompi_cuda、cuda126、mpi_openmpi）里选择满足目标 GPU CUDA 要求的，并把构建写进 version（conda 三段式语法，如 "2026.3=nompi_cuda"）；查不到满足要求的构建就留空并在 reason 里说明。
-5. 不要返回 python、pip、setuptools、wheel。
-6. 安装命令里的 `-c <名称>` / `--channel <名称>`（如 `-c bioconda`）指定的是软件源 channel，不是依赖包，绝不要把 channel 名当成依赖返回。
-7. CUDA/PyTorch/TensorFlow 相关项要保守，版本不确定时写空。
-8. 最多返回 20 项。
+1. 每个未解决 import 必须恰好返回一项，不能增加输入中不存在的 import。
+2. dependency：确定是必须安装的第三方发行包；import 名与发行包名不同时填正确 package。
+3. covered：仅当 provided_by 确实出现在显式依赖中，并可提供该 import 时使用。
+4. optional：仅可选功能才需要，保留给用户确认；ignore：确定不是运行依赖；不确定用 uncertain。
+5. Python 标准库、项目内模块原则上已被后端移除；不要臆造版本或 CUDA 构建。
 
-<已扫描依赖（含预检的真实版本信息）>
-{scanned_json}
-</已扫描依赖>
+<显式依赖>
+{explicit_json}
+</显式依赖>
 
-<包管理查询结果>
-{_search_results_text(scanned_items, notes_text)}
-</包管理查询结果>
+<未解决 import（含文件、行号和语句）>
+{unresolved_json}
+</未解决 import>
 
-<集群硬件上下文>
-{_hardware_context_text()}
-</集群硬件上下文>
+<包管理器查询结果>
+{_search_results_text(unresolved_items, notes_text)}
+</包管理器查询结果>
 
 <用户输入记录>
 {notes_text}
@@ -1101,12 +1117,11 @@ def _build_ai_dependency_json_prompt(
 {_project_tree(workspace.project_dir)}
 </项目目录树>
 
-<项目目录内可直接阅读的文本文件内容>
+<项目可读文本内容（仅作判定上下文）>
 {_collect_readable_text_files(workspace.project_dir)}
-</项目目录内可直接阅读的文本文件内容>
+</项目可读文本内容>
 """
     return _trim_text(context, MAX_CONTEXT_TEXT_CHARS)
-
 
 def _extract_install_commands(plan: str) -> list[str]:
     commands: list[str] = []
@@ -2839,41 +2854,43 @@ def project_report(req: ProjectReportRequest):
             extra_notes=req.extra_notes,
         )
         notes_text = notes_path.read_text(encoding="utf-8", errors="ignore") if notes_path.exists() else req.extra_notes
-        scanned_items = merge_dependency_items(
-            scan_project_dependencies(workspace.project_dir)
-            + scan_user_dependency_notes(notes_text)
-        )
-        # conda 25.x 需要 accept ToS 才能访问软件源：分析前自动代为接受（幂等）
-        ensure_conda_tos_accepted()
-        # 先对静态扫描结果做版本感知预检，把真实可用版本/构建喂给 LLM，
-        # 避免 LLM 凭旧知识（或其它集群的 module 版本号）指定不存在的版本
-        scanned_items = precheck_dependencies(scanned_items, workspace.conda_env_dir)
-        llm = LLMProvider()
-        ai_items: list[DependencyItem] = []
-        try:
-            response = llm.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是谨慎的依赖识别助手，只返回严格 JSON 数组。",
-                    },
-                    {"role": "user", "content": _build_ai_dependency_json_prompt(workspace, scanned_items, req.extra_notes, notes_text)},
-                ],
-                temperature=0.1,
-                max_tokens=1400,
+        scanned_items = collapse_import_candidates(
+            merge_dependency_items(
+                scan_project_dependencies(workspace.project_dir)
+                + scan_user_dependency_notes(notes_text)
             )
-            ai_items = parse_ai_dependency_items(response.choices[0].message.content or "")
-        except Exception:
-            logger.exception("AI 依赖补充失败，继续使用静态扫描结果")
+        )
+        # conda 25.x 需要 accept ToS 才能访问软件源：分析前自动代为接受（幂等）。
+        ensure_conda_tos_accepted()
+        # 预检结果提供真实的软件源信息，但只有尚未解决的 import 会交给模型。
+        scanned_items = precheck_dependencies(scanned_items, workspace.conda_env_dir)
+        unresolved_items = [item for item in scanned_items if item.import_name]
+        if unresolved_items:
+            llm = LLMProvider()
+            try:
+                response = llm.chat(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "你只分类后端给出的未解决 Python import，并返回严格 JSON 对象。",
+                        },
+                        {
+                            "role": "user",
+                            "content": _build_ai_dependency_json_prompt(
+                                workspace, scanned_items, req.extra_notes, notes_text
+                            ),
+                        },
+                    ],
+                    temperature=0.1,
+                    max_tokens=1800,
+                )
+                reviews = parse_ai_import_reviews(response.choices[0].message.content or "")
+                scanned_items = apply_ai_import_reviews(scanned_items, reviews)
+            except Exception:
+                logger.exception("AI import 复核失败，保留未解决候选供用户确认")
 
-        # AI 新增的包再单独预检（扫描项已检过，search 有缓存不会重复查）
-        scanned_keys = {(item.manager, item.name.lower()) for item in scanned_items}
-        new_ai_items = [
-            item for item in ai_items
-            if (item.manager, item.name.lower()) not in scanned_keys
-        ]
-        new_ai_items = precheck_dependencies(new_ai_items, workspace.conda_env_dir)
-        dependency_items = merge_dependency_items(scanned_items + new_ai_items)
+        # 模型可能把 import 名映射为不同的发行包名；仅复检最终清单，查询缓存会避免重复请求。
+        dependency_items = precheck_dependencies(scanned_items, workspace.conda_env_dir)
         report = items_to_markdown(
             dependency_items,
             "下面是根据依赖文件、脚本、源码 import 和用户补充需求得到的安装清单。请在弹窗中确认勾选项后再安装。",
