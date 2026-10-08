@@ -1,0 +1,14 @@
+Slurm AI Agent —— 面向 USTC 107 算力平台的智能作业助手
+
+项目源码地址（GitHub）：
+https://github.com/WhiskyHzx/slurm-ai-agent
+
+使用说明请查看仓库根目录的 README.md，其中包含：
+  - 项目简介与功能总览
+  - 环境要求与部署步骤（登录节点 / Unix Socket / SSH 隧道）
+  - 必要环境变量配置（LLM_API_KEY、SLURM_JWT 等）
+  - 启动方式与访问入口
+
+配套文档：
+  - 作品简介.pdf
+  - 设计文档.pdf
